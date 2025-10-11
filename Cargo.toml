@@ -1,0 +1,28 @@
+[package]
+name = "jaeb"
+version = "0.1.0"
+edition = "2024"
+authors = ["linket <t.linke@pripares.com>"]
+description = "simple actor based event bus"
+license = "MIT"
+repository = "https://github.com/LinkeTh/jaeb"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+members = [
+    ".",
+    "examples/jaeb-demo",
+    "jaeb-macros",
+]
+[dependencies]
+metrics = { version = "0.24.2", optional = true }
+tokio = { version = "1.47.1", features = ["full"] }
+tracing = { version = "0.1", features = ["std", "log"] }
+inventory = "0.3"
+jaeb-macros = { version = "0.1.0", path = "jaeb-macros" }
+
+[features]
+default = []
+metrics = ["dep:metrics"]
