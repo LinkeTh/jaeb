@@ -38,7 +38,7 @@ pub(crate) struct RegisteredHandler {
 /// You do not need to implement it manually.
 ///
 /// The `Mode` type parameter (`AsyncMode` or `SyncMode`) is inferred from the
-/// handler trait, so callers simply write `bus.register(handler)`.
+    /// handler trait, so callers simply write `bus.subscribe(handler)`.
 #[allow(private_interfaces)]
 pub trait IntoHandler<E: Event, Mode> {
     #[doc(hidden)]

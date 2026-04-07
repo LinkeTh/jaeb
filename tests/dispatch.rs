@@ -58,7 +58,7 @@ async fn async_handler_receives_event() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.register(AsyncCounter { count: Arc::clone(&count) }).await.expect("register");
+    bus.subscribe(AsyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     bus.publish(Ping { value: 42 }).await.expect("publish");
 
@@ -74,7 +74,7 @@ async fn sync_handler_receives_event() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.register(SyncCounter { count: Arc::clone(&count) }).await.expect("register");
+    bus.subscribe(SyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     bus.publish(Ping { value: 7 }).await.expect("publish");
 
@@ -100,23 +100,23 @@ async fn multiple_handlers_same_event_all_receive() {
     let async_count_a = Arc::new(AtomicUsize::new(0));
     let async_count_b = Arc::new(AtomicUsize::new(0));
 
-    bus.register(SyncCounter {
+    bus.subscribe(SyncCounter {
         count: Arc::clone(&sync_count),
     })
     .await
-    .expect("register sync");
+    .expect("subscribe sync");
 
-    bus.register(AsyncCounter {
+    bus.subscribe(AsyncCounter {
         count: Arc::clone(&async_count_a),
     })
     .await
-    .expect("register async a");
+    .expect("subscribe async a");
 
-    bus.register(AsyncCounter {
+    bus.subscribe(AsyncCounter {
         count: Arc::clone(&async_count_b),
     })
     .await
-    .expect("register async b");
+    .expect("subscribe async b");
 
     bus.publish(Ping { value: 5 }).await.expect("publish");
 
@@ -135,17 +135,17 @@ async fn handlers_only_receive_their_event_type() {
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
 
-    bus.register(SyncCounter {
+    bus.subscribe(SyncCounter {
         count: Arc::clone(&ping_count),
     })
     .await
-    .expect("register ping");
+    .expect("subscribe ping");
 
-    bus.register(PongCounter {
+    bus.subscribe(PongCounter {
         count: Arc::clone(&pong_count),
     })
     .await
-    .expect("register pong");
+    .expect("subscribe pong");
 
     // Only publish Ping — Pong handler must not fire.
     bus.publish(Ping { value: 10 }).await.expect("publish ping");

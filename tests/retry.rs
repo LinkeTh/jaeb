@@ -69,14 +69,14 @@ async fn retry_policy_retries_async_handler() {
 
     let policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(1));
 
-    bus.register_with_policy(
+    bus.subscribe_with_policy(
         FailOnceAsync {
             attempts: Arc::clone(&attempts),
         },
         policy,
     )
     .await
-    .expect("register");
+    .expect("subscribe");
 
     bus.publish(Job).await.expect("publish");
 
@@ -93,14 +93,14 @@ async fn retry_policy_retries_sync_handler() {
 
     let policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(1));
 
-    bus.register_with_policy(
+    bus.subscribe_with_policy(
         FailOnceSync {
             attempts: Arc::clone(&attempts),
         },
         policy,
     )
     .await
-    .expect("register");
+    .expect("subscribe");
 
     bus.publish(Job).await.expect("publish");
 
@@ -118,7 +118,7 @@ async fn retry_multiple_attempts() {
     // Fail the first 3, succeed on the 4th → need max_retries=3.
     let policy = FailurePolicy::default().with_max_retries(3).with_retry_delay(Duration::from_millis(1));
 
-    bus.register_with_policy(
+    bus.subscribe_with_policy(
         FailNTimesAsync {
             attempts: Arc::clone(&attempts),
             fail_count: 3,
@@ -126,7 +126,7 @@ async fn retry_multiple_attempts() {
         policy,
     )
     .await
-    .expect("register");
+    .expect("subscribe");
 
     bus.publish(Job).await.expect("publish");
 
@@ -146,14 +146,14 @@ async fn retry_delay_is_respected() {
         .with_retry_delay(Duration::from_millis(50))
         .with_dead_letter(false);
 
-    bus.register_with_policy(
+    bus.subscribe_with_policy(
         AlwaysFailAsync {
             attempts: Arc::clone(&attempts),
         },
         policy,
     )
     .await
-    .expect("register");
+    .expect("subscribe");
 
     let start = Instant::now();
     bus.publish(Job).await.expect("publish");

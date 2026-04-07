@@ -26,7 +26,7 @@ async fn unsubscribe_stops_delivery() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    let sub = bus.register(Counter { count: Arc::clone(&count) }).await.expect("register");
+    let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     bus.publish(Tick).await.expect("publish");
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -44,7 +44,7 @@ async fn unsubscribe_by_id_stops_delivery() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    let sub = bus.register(Counter { count: Arc::clone(&count) }).await.expect("register");
+    let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
     let id = sub.id();
 
     bus.publish(Tick).await.expect("publish");
@@ -64,13 +64,13 @@ async fn unsubscribe_by_id_stops_delivery() {
 async fn unsubscribe_unknown_id_returns_false() {
     let bus = EventBus::new(16);
 
-    // Register and immediately unsubscribe to obtain a valid-but-removed id.
+    // Subscribe and immediately unsubscribe to obtain a valid-but-removed id.
     let sub = bus
-        .register(Counter {
+        .subscribe(Counter {
             count: Arc::new(AtomicUsize::new(0)),
         })
         .await
-        .expect("register");
+        .expect("subscribe");
     let id = sub.id();
     sub.unsubscribe().await.expect("first unsubscribe");
 
@@ -86,7 +86,7 @@ async fn double_unsubscribe_returns_false_second_time() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    let sub = bus.register(Counter { count: Arc::clone(&count) }).await.expect("register");
+    let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
     let id = sub.id();
 
     let first = sub.unsubscribe().await.expect("first unsubscribe");

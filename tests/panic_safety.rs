@@ -45,10 +45,10 @@ async fn panicking_handler_does_not_crash_bus() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.register(PanicHandler).await.expect("register panic handler");
-    bus.register(SafeCounter { count: Arc::clone(&count) })
+    bus.subscribe(PanicHandler).await.expect("subscribe panic handler");
+    bus.subscribe(SafeCounter { count: Arc::clone(&count) })
         .await
-        .expect("register safe handler");
+        .expect("subscribe safe handler");
 
     // Publish the event that triggers a panic.
     bus.publish(Boom).await.expect("publish Boom");

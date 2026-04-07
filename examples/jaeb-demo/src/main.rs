@@ -99,14 +99,14 @@ async fn checkout(order_id: i32, bus: &EventBus) {
         .expect("failed to publish checkout event");
 }
 
-async fn register_listeners(bus: &EventBus) {
+async fn subscribe_listeners(bus: &EventBus) {
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // In a real app, pass pool/config/etc. into handler structs here:
-    //   bus.register(OnOrderCheckout { pool: pool.clone(), attempts }).await;
+    //   bus.subscribe(OnOrderCheckout { pool: pool.clone(), attempts }).await;
     let retry_policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(100));
 
-    bus.register_with_policy(
+    bus.subscribe_with_policy(
         OnOrderCheckout {
             // pool,
             attempts,
@@ -114,16 +114,16 @@ async fn register_listeners(bus: &EventBus) {
         retry_policy,
     )
     .await
-    .expect("failed to register async handler");
+    .expect("failed to subscribe async handler");
 
-    bus.register(OnOrderCancelled).await.expect("failed to register sync handler");
+    bus.subscribe(OnOrderCancelled).await.expect("failed to subscribe sync handler");
 
     // Struct-based listener for simple one-off logging:
-    bus.register(CheckoutLogger).await.expect("failed to register checkout logger");
+    bus.subscribe(CheckoutLogger).await.expect("failed to subscribe checkout logger");
 
     bus.subscribe_dead_letters(DeadLetterLogger)
         .await
-        .expect("failed to register dead-letter listener");
+        .expect("failed to subscribe dead-letter listener");
 }
 
 #[tokio::main]
@@ -139,7 +139,7 @@ async fn main() {
     init_prometheus(&3000);
 
     let bus = EventBus::new(64);
-    register_listeners(&bus).await;
+    subscribe_listeners(&bus).await;
 
     checkout(42, &bus).await;
     cancellation(42, &bus).await;

@@ -22,29 +22,29 @@ impl EventBus {
         Self { tx }
     }
 
-    /// Register a handler for events of type `E`.
+    /// Subscribe a handler for events of type `E`.
     ///
     /// The dispatch mode (async vs sync) is determined automatically by the
     /// handler trait implementation:
     /// - [`EventHandler<E>`](crate::handler::EventHandler) → async dispatch
     /// - [`SyncEventHandler<E>`](crate::handler::SyncEventHandler) → sync dispatch
-    pub async fn register<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
+    pub async fn subscribe<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
-        self.register_with_policy(handler, FailurePolicy::default()).await
+        self.subscribe_with_policy(handler, FailurePolicy::default()).await
     }
 
-    /// Register a handler with a custom [`FailurePolicy`].
+    /// Subscribe a handler with a custom [`FailurePolicy`].
     ///
-    /// See [`register`](Self::register) for dispatch-mode details.
-    pub async fn register_with_policy<E, H, M>(&self, handler: H, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
+    /// See [`subscribe`](Self::subscribe) for dispatch-mode details.
+    pub async fn subscribe_with_policy<E, H, M>(&self, handler: H, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
-        trace!("event_bus.register");
+        trace!("event_bus.subscribe");
         let registered = handler.into_handler();
 
         let (ack_tx, ack_rx) = oneshot::channel();
@@ -58,26 +58,26 @@ impl EventBus {
             })
             .await
             .map_err(|e| {
-                error!(operation = "register", error = %e, "event_bus.send_failed");
+                error!(operation = "subscribe", error = %e, "event_bus.send_failed");
                 EventBusError::ActorStopped
             })?;
 
         let subscription_id = ack_rx.await.map_err(|_| {
-            error!(operation = "register", "event_bus.ack_wait_failed");
+            error!(operation = "subscribe", "event_bus.ack_wait_failed");
             EventBusError::ActorStopped
         })?;
 
         Ok(Subscription::new(subscription_id, self.clone()))
     }
 
-    /// Convenience: register a sync dead-letter handler with `dead_letter: false`
+    /// Convenience: subscribe a sync dead-letter handler with `dead_letter: false`
     /// to prevent infinite recursion.
     pub async fn subscribe_dead_letters<H>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         H: SyncEventHandler<DeadLetter>,
     {
         let policy = FailurePolicy::default().with_dead_letter(false);
-        self.register_with_policy::<DeadLetter, H, crate::handler::SyncMode>(handler, policy)
+        self.subscribe_with_policy::<DeadLetter, H, crate::handler::SyncMode>(handler, policy)
             .await
     }
 
@@ -156,7 +156,7 @@ impl EventBus {
     /// Gracefully stop the actor and wait for queued publish messages plus
     /// in-flight async handlers.
     ///
-    /// After shutdown, all publish/register operations return
+    /// After shutdown, all publish/subscribe operations return
     /// [`EventBusError::ActorStopped`].
     pub async fn shutdown(&self) -> Result<(), EventBusError> {
         trace!("event_bus.shutdown");

@@ -79,7 +79,7 @@ async fn failed_handler_emits_dead_letter() {
     .await
     .expect("subscribe dead letters");
 
-    bus.register(AlwaysFailSync).await.expect("register");
+    bus.subscribe(AlwaysFailSync).await.expect("subscribe");
 
     bus.publish(Alert("boom".into())).await.expect("publish");
 
@@ -104,7 +104,7 @@ async fn dead_letter_contains_correct_metadata() {
     .await
     .expect("subscribe dead letters");
 
-    let sub = bus.register(AlwaysFailSync).await.expect("register");
+    let sub = bus.subscribe(AlwaysFailSync).await.expect("subscribe");
     let expected_id = sub.id();
 
     bus.publish(Alert("test".into())).await.expect("publish");
@@ -137,7 +137,7 @@ async fn async_handler_failure_emits_dead_letter() {
     .await
     .expect("subscribe dead letters");
 
-    bus.register(AlwaysFailAsync).await.expect("register");
+    bus.subscribe(AlwaysFailAsync).await.expect("subscribe");
 
     bus.publish(Alert("async boom".into())).await.expect("publish");
 
@@ -161,9 +161,9 @@ async fn dead_letter_suppressed_when_disabled() {
     .await
     .expect("subscribe dead letters");
 
-    // Register a handler with dead_letter = false.
+    // Subscribe a handler with dead_letter = false.
     let policy = FailurePolicy::default().with_dead_letter(false);
-    bus.register_with_policy(AlwaysFailSync, policy).await.expect("register");
+    bus.subscribe_with_policy(AlwaysFailSync, policy).await.expect("subscribe");
 
     bus.publish(Alert("suppressed".into())).await.expect("publish");
 
@@ -185,7 +185,7 @@ async fn dead_letter_handler_failure_does_not_recurse() {
         .expect("subscribe dead letters");
 
     // Register a normal handler that always fails.
-    bus.register(AlwaysFailSync).await.expect("register");
+    bus.subscribe(AlwaysFailSync).await.expect("subscribe");
 
     bus.publish(Alert("recurse?".into())).await.expect("publish");
 

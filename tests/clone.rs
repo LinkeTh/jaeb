@@ -28,8 +28,8 @@ async fn cloned_bus_shares_state() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    // Register on the original handle.
-    bus.register(Counter { count: Arc::clone(&count) }).await.expect("register");
+    // Subscribe on the original handle.
+    bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     // Clone and publish on the clone.
     let bus2 = bus.clone();

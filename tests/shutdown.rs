@@ -51,7 +51,7 @@ async fn shutdown_stops_new_operations() {
     let bus = EventBus::new(16);
     bus.shutdown().await.expect("shutdown");
 
-    let reg_err = bus.register(NoOpSync).await.expect_err("register after shutdown");
+    let reg_err = bus.subscribe(NoOpSync).await.expect_err("subscribe after shutdown");
     assert_eq!(reg_err, EventBusError::ActorStopped);
 
     let pub_err = bus.publish(Work { value: 1 }).await.expect_err("publish after shutdown");
@@ -63,7 +63,7 @@ async fn unsubscribe_after_shutdown_returns_actor_stopped() {
     let bus = EventBus::new(16);
     let sum = Arc::new(AtomicUsize::new(0));
 
-    let sub = bus.register(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("register");
+    let sub = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
     let id = sub.id();
 
     bus.shutdown().await.expect("shutdown");
@@ -77,7 +77,7 @@ async fn shutdown_drains_queued_publishes() {
     let bus = EventBus::new(64);
     let sum = Arc::new(AtomicUsize::new(0));
 
-    bus.register(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("register");
+    bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
 
     // Enqueue several events via try_publish (non-blocking).
     for i in 1..=5 {
@@ -96,7 +96,7 @@ async fn shutdown_waits_for_inflight_async_handlers() {
     let bus = EventBus::new(16);
     let done = Arc::new(AtomicUsize::new(0));
 
-    bus.register(SlowAsync { done: Arc::clone(&done) }).await.expect("register");
+    bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
 
     bus.publish(Work { value: 1 }).await.expect("publish");
 
