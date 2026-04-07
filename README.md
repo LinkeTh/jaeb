@@ -4,7 +4,7 @@ Spring Boot Application Event like implementation.
 
 ---
 
-## Work in progress.
+## Work in progress
 
 ---
 
@@ -45,3 +45,4 @@ async fn checkout(order_id: i32, bus: &EventBus) {
 ```
 
 _This waits for synchronous listeners to complete, but may return before asynchronously-registered listeners finish their work._
+

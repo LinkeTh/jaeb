@@ -41,6 +41,59 @@ impl Drop for TimerGuard {
 pub trait Event: Send + Sync + 'static {}
 impl<T: Send + Sync + 'static> Event for T {}
 
+/// Trait for async struct-based event handlers that hold their own dependencies.
+///
+/// Handlers registered via [`EventBus::register`] are dispatched asynchronously
+/// (fire-and-forget via `tokio::spawn`). Use [`SyncEventHandler`] when the
+/// publisher should wait for the handler to complete before acking.
+///
+/// # Example
+///
+/// ```ignore
+/// use jaeb::{async_trait, EventHandler};
+///
+/// struct OnOrderCheckout {
+///     pool: PgPool,
+/// }
+///
+/// #[async_trait]
+/// impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
+///     async fn handle(&self, event: &OrderCheckOutEvent) {
+///         sqlx::query("UPDATE orders SET status = 'done' WHERE id = $1")
+///             .bind(event.order_id)
+///             .execute(&self.pool)
+///             .await
+///             .unwrap();
+///     }
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
+    async fn handle(&self, event: &E);
+}
+
+/// Trait for synchronous struct-based event handlers.
+///
+/// Handlers registered via [`EventBus::register_sync`] are awaited before the
+/// publish call returns its ack, matching [`EventBus::subscribe_sync`] semantics.
+///
+/// # Example
+///
+/// ```ignore
+/// use jaeb::SyncEventHandler;
+///
+/// struct OnOrderCancelled;
+///
+/// impl SyncEventHandler<OrderCancelledEvent> for OnOrderCancelled {
+///     fn handle(&self, event: &OrderCancelledEvent) {
+///         println!("order {} cancelled", event.order_id);
+///     }
+/// }
+/// ```
+pub trait SyncEventHandler<E: Event>: Send + Sync + 'static {
+    fn handle(&self, event: &E);
+}
+
 // A listener erased to take an Arc-erased event and return an async future.
 type HandlerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -245,6 +298,43 @@ impl EventBus {
         if let Err(_e) = ack_rx.await {
             error!("subscribe_async.ack_wait_failed: actor not available");
         }
+    }
+
+    /// Register a struct-based [`EventHandler`] for a given event type.
+    ///
+    /// The handler is wrapped in an `Arc` and dispatched via `subscribe_async`
+    /// internally -- the publish call may return before the handler finishes.
+    /// Dependencies live as fields on the handler struct.
+    pub async fn register<E, H>(&self, handler: H)
+    where
+        E: Event + Clone,
+        H: EventHandler<E>,
+    {
+        let handler = Arc::new(handler);
+        self.subscribe_async(move |event: E| {
+            let handler = handler.clone();
+            async move {
+                handler.handle(&event).await;
+            }
+        })
+        .await;
+    }
+
+    /// Register a struct-based [`SyncEventHandler`] for a given event type.
+    ///
+    /// The handler is wrapped in an `Arc` and dispatched via `subscribe_sync`
+    /// internally -- the publish call waits for all sync handlers to complete
+    /// before returning.
+    pub async fn register_sync<E, H>(&self, handler: H)
+    where
+        E: Event,
+        H: SyncEventHandler<E>,
+    {
+        let handler = Arc::new(handler);
+        self.subscribe_sync(move |event: &E| {
+            handler.handle(event);
+        })
+        .await;
     }
 
     /// Publish an event to all listeners.
