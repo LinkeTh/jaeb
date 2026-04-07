@@ -1,7 +1,10 @@
-use jaeb::{EventBus, EventHandler, SyncEventHandler, async_trait};
+use std::sync::Arc;
+
+use jaeb::{DeadLetter, EventBus, EventHandler, FailurePolicy, HandlerResult, SyncEventHandler};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_util::MetricKindMask;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
@@ -25,13 +28,20 @@ struct OrderCancelledEvent {
 /// Handles order checkout -- in a real app this would hold PgPool, mailer, etc.
 struct OnOrderCheckout {
     // pool: PgPool,
+    attempts: Arc<AtomicUsize>,
 }
 
-#[async_trait]
 impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
-    async fn handle(&self, event: &OrderCheckOutEvent) {
+    async fn handle(&self, event: &OrderCheckOutEvent) -> HandlerResult {
         // async work: send email, update DB via self.pool, etc.
+        // Simulate transient failure on first attempt.
+        let previous = self.attempts.fetch_add(1, Ordering::SeqCst);
+        if previous == 0 {
+            return Err("transient checkout failure".into());
+        }
+
         info!("async: order {} checked out", event.order_id);
+        Ok(())
     }
 }
 
@@ -39,8 +49,9 @@ impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
 struct OnOrderCancelled;
 
 impl SyncEventHandler<OrderCancelledEvent> for OnOrderCancelled {
-    fn handle(&self, event: &OrderCancelledEvent) {
+    fn handle(&self, event: &OrderCancelledEvent) -> HandlerResult {
         info!("sync: order {} cancelled", event.order_id);
+        Ok(())
     }
 }
 
@@ -51,27 +62,55 @@ async fn cancellation(order_id: i32, bus: &EventBus) {
     // order.cancel();
 
     // publish
-    bus.publish(OrderCancelledEvent { order_id }).await;
+    bus.publish(OrderCancelledEvent { order_id })
+        .await
+        .expect("failed to publish cancellation event");
 }
 async fn checkout(order_id: i32, bus: &EventBus) {
     // domain logic
     // order.checkout();
 
     // publish
-    bus.publish(OrderCheckOutEvent { order_id }).await;
+    bus.publish(OrderCheckOutEvent { order_id })
+        .await
+        .expect("failed to publish checkout event");
 }
 
 async fn register_listeners(bus: &EventBus) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+
     // In a real app, pass pool/config/etc. into handler structs here:
-    //   bus.register(OnOrderCheckout { pool: pool.clone() }).await;
-    bus.register(OnOrderCheckout { /* pool */ }).await;
-    bus.register_sync(OnOrderCancelled).await;
+    //   bus.register(OnOrderCheckout { pool: pool.clone(), attempts }).await;
+    let retry_policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(100));
+
+    bus.register_with_policy(
+        OnOrderCheckout {
+            // pool,
+            attempts,
+        },
+        retry_policy,
+    )
+    .await
+    .expect("failed to register async handler");
+    bus.register_sync(OnOrderCancelled).await.expect("failed to register sync handler");
 
     // Closures for simple one-off listeners:
     bus.subscribe_async(|e: OrderCheckOutEvent| async move {
         info!("closure: order {} checked out", e.order_id);
+        Ok(())
     })
-    .await;
+    .await
+    .expect("failed to register closure listener");
+
+    bus.subscribe_dead_letters(|dl: &DeadLetter| {
+        info!(
+            "dead-letter: event={} listener={} attempts={} error={}",
+            dl.event_name, dl.subscription_id, dl.attempts, dl.error
+        );
+        Ok(())
+    })
+    .await
+    .expect("failed to register dead-letter listener");
 }
 
 #[tokio::main]
@@ -92,6 +131,7 @@ async fn main() {
     checkout(42, &bus).await;
     cancellation(42, &bus).await;
     tokio::time::sleep(Duration::from_secs(20)).await;
+    bus.shutdown().await.expect("failed to shutdown event bus");
 }
 
 fn init_prometheus(port: &u16) {
