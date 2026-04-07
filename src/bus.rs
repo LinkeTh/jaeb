@@ -1,12 +1,11 @@
-use std::{any::TypeId, future::Future, sync::Arc};
+use std::any::TypeId;
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, trace, warn};
+use tracing::{error, trace};
 
-use crate::actor::{BusMessage, ErasedHandler, EventBusActor, ListenerMode};
-use crate::error::{EventBusError, HandlerResult};
-use crate::handler::EventHandler;
-use crate::handler::SyncEventHandler;
+use crate::actor::{BusMessage, EventBusActor};
+use crate::error::EventBusError;
+use crate::handler::{IntoHandler, SyncEventHandler};
 use crate::subscription::Subscription;
 use crate::types::{DeadLetter, Event, FailurePolicy};
 
@@ -23,114 +22,62 @@ impl EventBus {
         Self { tx }
     }
 
-    pub async fn subscribe_sync<E, F>(&self, callback: F) -> Result<Subscription, EventBusError>
+    /// Register a handler for events of type `E`.
+    ///
+    /// The dispatch mode (async vs sync) is determined automatically by the
+    /// handler trait implementation:
+    /// - [`EventHandler<E>`](crate::handler::EventHandler) → async dispatch
+    /// - [`SyncEventHandler<E>`](crate::handler::SyncEventHandler) → sync dispatch
+    pub async fn register<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
-        F: Fn(&E) -> HandlerResult + Send + Sync + 'static,
-    {
-        self.subscribe_sync_with_policy(callback, FailurePolicy::default()).await
-    }
-
-    pub async fn subscribe_sync_with_policy<E, F>(&self, callback: F, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
-    where
-        E: Event,
-        F: Fn(&E) -> HandlerResult + Send + Sync + 'static,
-    {
-        trace!("event_bus.subscribe_sync");
-
-        let handler: ErasedHandler = Arc::new(move |any: Arc<dyn std::any::Any + Send + Sync>| {
-            let result = if let Some(event) = any.as_ref().downcast_ref::<E>() {
-                callback(event)
-            } else {
-                warn!(expected = std::any::type_name::<E>(), "subscribe_sync.downcast_failed");
-                Ok(())
-            };
-
-            Box::pin(async move { result })
-        });
-
-        self.subscribe_erased::<E>(handler, ListenerMode::Sync, failure_policy).await
-    }
-
-    pub async fn subscribe_async<E, F, Fut>(&self, callback: F) -> Result<Subscription, EventBusError>
-    where
-        E: Event + Clone,
-        F: Fn(E) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = HandlerResult> + Send + 'static,
-    {
-        self.subscribe_async_with_policy(callback, FailurePolicy::default()).await
-    }
-
-    pub async fn subscribe_async_with_policy<E, F, Fut>(&self, callback: F, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
-    where
-        E: Event + Clone,
-        F: Fn(E) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = HandlerResult> + Send + 'static,
-    {
-        trace!("event_bus.subscribe_async");
-
-        let callback = Arc::new(callback);
-        let handler: ErasedHandler = Arc::new(move |any: Arc<dyn std::any::Any + Send + Sync>| {
-            let callback = Arc::clone(&callback);
-            if let Some(event) = any.as_ref().downcast_ref::<E>() {
-                let event = event.clone();
-                Box::pin(async move { callback(event).await })
-            } else {
-                warn!(expected = std::any::type_name::<E>(), "subscribe_async.downcast_failed");
-                Box::pin(async { Ok(()) })
-            }
-        });
-
-        self.subscribe_erased::<E>(handler, ListenerMode::Async, failure_policy).await
-    }
-
-    pub async fn subscribe_dead_letters<F>(&self, callback: F) -> Result<Subscription, EventBusError>
-    where
-        F: Fn(&DeadLetter) -> HandlerResult + Send + Sync + 'static,
-    {
-        let policy = FailurePolicy::default().with_dead_letter(false);
-        self.subscribe_sync_with_policy::<DeadLetter, _>(callback, policy).await
-    }
-
-    pub async fn register<E, H>(&self, handler: H) -> Result<Subscription, EventBusError>
-    where
-        E: Event + Clone,
-        H: EventHandler<E>,
+        H: IntoHandler<E, M>,
     {
         self.register_with_policy(handler, FailurePolicy::default()).await
     }
 
-    pub async fn register_with_policy<E, H>(&self, handler: H, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
-    where
-        E: Event + Clone,
-        H: EventHandler<E>,
-    {
-        let handler = Arc::new(handler);
-        self.subscribe_async_with_policy(
-            move |event: E| {
-                let handler = Arc::clone(&handler);
-                async move { handler.handle(&event).await }
-            },
-            failure_policy,
-        )
-        .await
-    }
-
-    pub async fn register_sync<E, H>(&self, handler: H) -> Result<Subscription, EventBusError>
+    /// Register a handler with a custom [`FailurePolicy`].
+    ///
+    /// See [`register`](Self::register) for dispatch-mode details.
+    pub async fn register_with_policy<E, H, M>(&self, handler: H, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
     where
         E: Event,
-        H: SyncEventHandler<E>,
+        H: IntoHandler<E, M>,
     {
-        self.register_sync_with_policy(handler, FailurePolicy::default()).await
+        trace!("event_bus.register");
+        let registered = handler.into_handler();
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.tx
+            .send(BusMessage::Subscribe {
+                event_type: TypeId::of::<E>(),
+                handler: registered.erased,
+                mode: registered.mode,
+                failure_policy,
+                ack: ack_tx,
+            })
+            .await
+            .map_err(|e| {
+                error!(operation = "register", error = %e, "event_bus.send_failed");
+                EventBusError::ActorStopped
+            })?;
+
+        let subscription_id = ack_rx.await.map_err(|_| {
+            error!(operation = "register", "event_bus.ack_wait_failed");
+            EventBusError::ActorStopped
+        })?;
+
+        Ok(Subscription::new(subscription_id, self.clone()))
     }
 
-    pub async fn register_sync_with_policy<E, H>(&self, handler: H, failure_policy: FailurePolicy) -> Result<Subscription, EventBusError>
+    /// Convenience: register a sync dead-letter handler with `dead_letter: false`
+    /// to prevent infinite recursion.
+    pub async fn subscribe_dead_letters<H>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
-        E: Event,
-        H: SyncEventHandler<E>,
+        H: SyncEventHandler<DeadLetter>,
     {
-        let handler = Arc::new(handler);
-        self.subscribe_sync_with_policy(move |event: &E| handler.handle(event), failure_policy)
+        let policy = FailurePolicy::default().with_dead_letter(false);
+        self.register_with_policy::<DeadLetter, H, crate::handler::SyncMode>(handler, policy)
             .await
     }
 
@@ -209,7 +156,7 @@ impl EventBus {
     /// Gracefully stop the actor and wait for queued publish messages plus
     /// in-flight async handlers.
     ///
-    /// After shutdown, all publish/subscribe/register operations return
+    /// After shutdown, all publish/register operations return
     /// [`EventBusError::ActorStopped`].
     pub async fn shutdown(&self) -> Result<(), EventBusError> {
         trace!("event_bus.shutdown");
@@ -224,37 +171,5 @@ impl EventBus {
             error!(operation = "shutdown", "event_bus.ack_wait_failed");
             EventBusError::ActorStopped
         })
-    }
-
-    async fn subscribe_erased<E>(
-        &self,
-        handler: ErasedHandler,
-        mode: ListenerMode,
-        failure_policy: FailurePolicy,
-    ) -> Result<Subscription, EventBusError>
-    where
-        E: Event,
-    {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx
-            .send(BusMessage::Subscribe {
-                event_type: TypeId::of::<E>(),
-                handler,
-                mode,
-                failure_policy,
-                ack: ack_tx,
-            })
-            .await
-            .map_err(|e| {
-                error!(operation = "subscribe", error = %e, "event_bus.send_failed");
-                EventBusError::ActorStopped
-            })?;
-
-        let subscription_id = ack_rx.await.map_err(|_| {
-            error!(operation = "subscribe", "event_bus.ack_wait_failed");
-            EventBusError::ActorStopped
-        })?;
-
-        Ok(Subscription::new(subscription_id, self.clone()))
     }
 }

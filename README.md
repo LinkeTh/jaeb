@@ -4,7 +4,8 @@ In-process, actor-based event bus for Tokio applications.
 
 JAEB provides:
 
-- sync + async listeners
+- sync + async listeners via a unified `register` API
+- automatic dispatch-mode selection based on handler trait
 - explicit listener unsubscription
 - dependency injection via handler structs
 - retry policies for failing handlers
@@ -53,6 +54,18 @@ impl SyncEventHandler<OrderCheckoutEvent> for SyncAuditHandler {
     }
 }
 
+struct DeadLetterLogger;
+
+impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
+    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+        eprintln!(
+            "dead-letter: event={} listener={} attempts={} error={}",
+            dl.event_name, dl.subscription_id, dl.attempts, dl.error
+        );
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), EventBusError> {
     let bus = EventBus::new(64);
@@ -61,22 +74,16 @@ async fn main() -> Result<(), EventBusError> {
         .with_max_retries(2)
         .with_retry_delay(Duration::from_millis(50));
 
+    // Async handler -- dispatch mode inferred from EventHandler impl
     let checkout_sub = bus
-        .register_with_policy::<OrderCheckoutEvent, _>(AsyncCheckoutHandler, retry_policy)
+        .register_with_policy(AsyncCheckoutHandler, retry_policy)
         .await?;
 
-    let _audit_sub = bus
-        .register_sync::<OrderCheckoutEvent, _>(SyncAuditHandler)
-        .await?;
+    // Sync handler -- dispatch mode inferred from SyncEventHandler impl
+    let _audit_sub = bus.register(SyncAuditHandler).await?;
 
-    bus.subscribe_dead_letters(|dl: &DeadLetter| {
-        eprintln!(
-            "dead-letter: event={} listener={} attempts={} error={}",
-            dl.event_name, dl.subscription_id, dl.attempts, dl.error
-        );
-        Ok(())
-    })
-    .await?;
+    // Dead-letter handler (convenience method, auto-sets dead_letter: false)
+    bus.subscribe_dead_letters(DeadLetterLogger).await?;
 
     bus.publish(OrderCheckoutEvent { order_id: 42 }).await?;
     bus.try_publish(OrderCheckoutEvent { order_id: 43 })?;
@@ -89,15 +96,18 @@ async fn main() -> Result<(), EventBusError> {
 
 ## API Overview
 
-- `subscribe_sync::<E, _>(Fn(&E) -> HandlerResult) -> Result<Subscription, EventBusError>`
-- `subscribe_async::<E, _, _>(Fn(E) -> Future<Output = HandlerResult>) -> Result<Subscription, EventBusError>`
-- `register::<E, H>(handler) -> Result<Subscription, EventBusError>`
-- `register_with_policy::<E, H>(handler, FailurePolicy) -> Result<Subscription, EventBusError>`
-- `register_sync::<E, H>(handler) -> Result<Subscription, EventBusError>`
-- `publish::<E>(event) -> Result<(), EventBusError>`
-- `try_publish::<E>(event) -> Result<(), EventBusError>`
+- `register(handler) -> Result<Subscription, EventBusError>` -- dispatch mode inferred from trait
+- `register_with_policy(handler, FailurePolicy) -> Result<Subscription, EventBusError>`
+- `subscribe_dead_letters(handler) -> Result<Subscription, EventBusError>`
+- `publish(event) -> Result<(), EventBusError>`
+- `try_publish(event) -> Result<(), EventBusError>`
 - `unsubscribe(subscription_id) -> Result<bool, EventBusError>`
 - `shutdown() -> Result<(), EventBusError>`
+
+### Handler Traits
+
+- `EventHandler<E>` -- async handler, dispatched on a spawned task
+- `SyncEventHandler<E>` -- sync handler, awaited inline during dispatch
 
 ### Types
 

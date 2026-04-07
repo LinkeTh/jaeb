@@ -55,6 +55,29 @@ impl SyncEventHandler<OrderCancelledEvent> for OnOrderCancelled {
     }
 }
 
+/// Logs order checkouts (simple listener).
+struct CheckoutLogger;
+
+impl EventHandler<OrderCheckOutEvent> for CheckoutLogger {
+    async fn handle(&self, event: &OrderCheckOutEvent) -> HandlerResult {
+        info!("logger: order {} checked out", event.order_id);
+        Ok(())
+    }
+}
+
+/// Logs dead letters.
+struct DeadLetterLogger;
+
+impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
+    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+        info!(
+            "dead-letter: event={} listener={} attempts={} error={}",
+            dl.event_name, dl.subscription_id, dl.attempts, dl.error
+        );
+        Ok(())
+    }
+}
+
 // ── App logic ───────────────────────────────────────────────────────────
 
 async fn cancellation(order_id: i32, bus: &EventBus) {
@@ -92,25 +115,15 @@ async fn register_listeners(bus: &EventBus) {
     )
     .await
     .expect("failed to register async handler");
-    bus.register_sync(OnOrderCancelled).await.expect("failed to register sync handler");
 
-    // Closures for simple one-off listeners:
-    bus.subscribe_async(|e: OrderCheckOutEvent| async move {
-        info!("closure: order {} checked out", e.order_id);
-        Ok(())
-    })
-    .await
-    .expect("failed to register closure listener");
+    bus.register(OnOrderCancelled).await.expect("failed to register sync handler");
 
-    bus.subscribe_dead_letters(|dl: &DeadLetter| {
-        info!(
-            "dead-letter: event={} listener={} attempts={} error={}",
-            dl.event_name, dl.subscription_id, dl.attempts, dl.error
-        );
-        Ok(())
-    })
-    .await
-    .expect("failed to register dead-letter listener");
+    // Struct-based listener for simple one-off logging:
+    bus.register(CheckoutLogger).await.expect("failed to register checkout logger");
+
+    bus.subscribe_dead_letters(DeadLetterLogger)
+        .await
+        .expect("failed to register dead-letter listener");
 }
 
 #[tokio::main]

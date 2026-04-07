@@ -310,7 +310,10 @@ impl EventBusActor {
         }
     }
 
-    fn handle_listener_failure(&mut self, failure: ListenerFailure) {
+    /// Log the failure and record metrics.  Returns `Some(DeadLetter)` when
+    /// the failure policy requests one and the event is not itself a dead
+    /// letter (preventing recursion).
+    fn log_failure(&self, failure: &ListenerFailure) -> Option<DeadLetter> {
         error!(
             event = failure.event_name,
             listener_id = failure.subscription_id.as_u64(),
@@ -324,13 +327,23 @@ impl EventBusActor {
 
         let dead_letter_type = std::any::type_name::<DeadLetter>();
         if failure.dead_letter && failure.event_name != dead_letter_type {
-            let dead_letter = DeadLetter {
+            Some(DeadLetter {
                 event_name: failure.event_name,
                 subscription_id: failure.subscription_id,
                 attempts: failure.attempts,
-                error: failure.error,
-            };
+                error: failure.error.clone(),
+            })
+        } else {
+            None
+        }
+    }
 
+    /// Handle a failure during normal (non-drain) operation by enqueuing the
+    /// dead letter through the actor's own channel so it is processed in a
+    /// future loop iteration.
+    fn handle_listener_failure(&mut self, failure: ListenerFailure) {
+        if let Some(dead_letter) = self.log_failure(&failure) {
+            let dead_letter_type = std::any::type_name::<DeadLetter>();
             match self.tx.try_send(BusMessage::Publish {
                 event_type: TypeId::of::<DeadLetter>(),
                 event: Box::new(dead_letter),
@@ -356,6 +369,16 @@ impl EventBusActor {
         }
     }
 
+    /// Handle a failure during drain/shutdown by dispatching the dead letter
+    /// directly to registered listeners, bypassing the (possibly closed)
+    /// channel.
+    async fn handle_listener_failure_direct(&mut self, failure: ListenerFailure) {
+        if let Some(dead_letter) = self.log_failure(&failure) {
+            let dead_letter_type = std::any::type_name::<DeadLetter>();
+            self.dispatch(TypeId::of::<DeadLetter>(), Box::new(dead_letter), dead_letter_type).await;
+        }
+    }
+
     fn reap_finished_async_tasks(&mut self) {
         while let Some(result) = self.async_tasks.try_join_next() {
             match result {
@@ -369,7 +392,7 @@ impl EventBusActor {
     async fn drain_async_tasks(&mut self) {
         while let Some(result) = self.async_tasks.join_next().await {
             match result {
-                Ok(Some(failure)) => self.handle_listener_failure(failure),
+                Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
                 Ok(None) => {}
                 Err(join_error) => self.log_join_error("unknown", join_error),
             }

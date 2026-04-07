@@ -17,6 +17,6 @@ pub mod types;
 
 pub use bus::EventBus;
 pub use error::{EventBusError, HandlerError, HandlerResult};
-pub use handler::{EventHandler, SyncEventHandler};
+pub use handler::{AsyncMode, EventHandler, IntoHandler, SyncEventHandler, SyncMode};
 pub use subscription::Subscription;
 pub use types::{DeadLetter, Event, FailurePolicy, SubscriptionId};
