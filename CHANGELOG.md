@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - Unreleased
 
+### Changed
+
+- `EventBus::shutdown()` now returns `Err(EventBusError::ShutdownTimeout)` when a
+  configured `shutdown_timeout` deadline expires and in-flight async tasks are
+  forcibly aborted. Previously, shutdown always returned `Ok(())` even when tasks
+  were aborted.
+
 ### Added
 
 - Actor-based in-process event bus for Tokio applications.

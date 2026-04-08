@@ -357,7 +357,8 @@ impl EventBus {
     /// in-flight async handlers.
     ///
     /// If a `shutdown_timeout` was configured via the builder, remaining tasks
-    /// are aborted after the deadline.
+    /// are aborted after the deadline and [`EventBusError::ShutdownTimeout`] is
+    /// returned.
     ///
     /// After shutdown, all publish/subscribe operations return
     /// [`EventBusError::ActorStopped`].
@@ -387,6 +388,6 @@ impl EventBus {
         ack_rx.await.map_err(|_| {
             error!(operation = "shutdown", "event_bus.ack_wait_failed");
             EventBusError::ActorStopped
-        })
+        })?
     }
 }

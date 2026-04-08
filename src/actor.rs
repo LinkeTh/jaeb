@@ -70,7 +70,7 @@ pub(crate) enum BusMessage {
         ack: Option<oneshot::Sender<()>>,
     },
     Shutdown {
-        ack: oneshot::Sender<()>,
+        ack: oneshot::Sender<Result<(), crate::error::EventBusError>>,
     },
 }
 
@@ -149,8 +149,13 @@ impl EventBusActor {
                 BusMessage::Shutdown { ack } => {
                     self.rx.close();
                     self.drain_queued_messages().await;
-                    self.drain_async_tasks().await;
-                    if let Err(_e) = ack.send(()) {
+                    let timed_out = self.drain_async_tasks().await;
+                    let result = if timed_out {
+                        Err(crate::error::EventBusError::ShutdownTimeout)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(_e) = ack.send(result) {
                         warn!("shutdown.ack_receiver_dropped");
                     }
                     break;
@@ -160,7 +165,7 @@ impl EventBusActor {
             self.reap_finished_async_tasks();
         }
 
-        self.drain_async_tasks().await;
+        let _ = self.drain_async_tasks().await;
         debug!("event_bus_actor.stopped");
     }
 
@@ -217,7 +222,7 @@ impl EventBusActor {
                     }
                 }
                 BusMessage::Shutdown { ack } => {
-                    let _ = ack.send(());
+                    let _ = ack.send(Ok(()));
                 }
             }
 
@@ -417,7 +422,9 @@ impl EventBusActor {
         }
     }
 
-    async fn drain_async_tasks(&mut self) {
+    /// Drain in-flight async tasks. Returns `true` if the shutdown timeout
+    /// fired and remaining tasks were aborted.
+    async fn drain_async_tasks(&mut self) -> bool {
         match self.shutdown_timeout {
             Some(timeout) => {
                 let deadline = tokio::time::Instant::now() + timeout;
@@ -428,14 +435,14 @@ impl EventBusActor {
                             Ok(None) => {}
                             Err(join_error) => self.log_join_error("unknown", join_error),
                         },
-                        Ok(None) => break, // all tasks done
+                        Ok(None) => return false, // all tasks done before deadline
                         Err(_elapsed) => {
                             let remaining = self.async_tasks.len();
                             warn!(remaining, "shutdown.timeout_reached, aborting remaining tasks");
                             self.async_tasks.abort_all();
                             // Drain the abort results
                             while self.async_tasks.join_next().await.is_some() {}
-                            break;
+                            return true;
                         }
                     }
                 }
@@ -448,6 +455,7 @@ impl EventBusActor {
                         Err(join_error) => self.log_join_error("unknown", join_error),
                     }
                 }
+                false
             }
         }
     }

@@ -178,6 +178,7 @@ JAEB uses the `tracing` crate throughout. Key spans and events:
 
 - `EventBusError::ActorStopped` -- the actor has shut down or the channel is closed
 - `EventBusError::ChannelFull` -- the internal queue is full (`try_publish` only)
+- `EventBusError::ShutdownTimeout` -- the configured `shutdown_timeout` expired and in-flight async tasks were forcibly aborted
 
 ## Examples
 

@@ -45,6 +45,18 @@ impl EventHandler<Work> for SlowAsync {
     }
 }
 
+struct VerySlowAsync {
+    done: Arc<AtomicUsize>,
+}
+
+impl EventHandler<Work> for VerySlowAsync {
+    async fn handle(&self, _event: &Work) -> HandlerResult {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        self.done.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -105,5 +117,43 @@ async fn shutdown_waits_for_inflight_async_handlers() {
     bus.shutdown().await.expect("shutdown");
 
     // Shutdown should have waited for the in-flight handler.
+    assert_eq!(done.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn shutdown_returns_timeout_when_tasks_aborted() {
+    let bus = EventBus::builder().buffer_size(16).shutdown_timeout(Duration::from_millis(50)).build();
+
+    let done = Arc::new(AtomicUsize::new(0));
+
+    bus.subscribe(VerySlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
+
+    bus.publish(Work { value: 1 }).await.expect("publish");
+
+    // The async handler sleeps for 5s but timeout is 50ms — tasks will be aborted.
+    let result = bus.shutdown().await;
+    assert_eq!(result, Err(EventBusError::ShutdownTimeout));
+
+    // The handler should not have completed.
+    assert_eq!(done.load(Ordering::SeqCst), 0);
+
+    // The bus should be fully stopped afterward.
+    let err = bus.publish(Work { value: 2 }).await.expect_err("publish after shutdown");
+    assert_eq!(err, EventBusError::ActorStopped);
+}
+
+#[tokio::test]
+async fn shutdown_succeeds_when_tasks_finish_before_deadline() {
+    let bus = EventBus::builder().buffer_size(16).shutdown_timeout(Duration::from_secs(5)).build();
+
+    let done = Arc::new(AtomicUsize::new(0));
+
+    // SlowAsync sleeps 100ms, well within the 5s deadline.
+    bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
+
+    bus.publish(Work { value: 1 }).await.expect("publish");
+
+    bus.shutdown().await.expect("shutdown should succeed when tasks finish in time");
+
     assert_eq!(done.load(Ordering::SeqCst), 1);
 }
