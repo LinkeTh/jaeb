@@ -1,11 +1,13 @@
 [package]
 name = "summer-jaeb-macros"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "Proc macros for summer-jaeb event listener auto-registration"
 license = "MIT"
 repository = "https://github.com/LinkeTh/jaeb"
+readme = "README.md"
+rust-version = "1.85"
 
 [lib]
 proc-macro = true

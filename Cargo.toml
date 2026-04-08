@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple actor based event bus"
@@ -38,4 +38,3 @@ tokio = { version = "1.51", features = ["full", "test-util"] }
 [[bench]]
 name = "throughput"
 harness = false
-

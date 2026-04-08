@@ -1,5 +1,9 @@
 # JAEB - Just Another Event Bus
 
+[![crates.io](https://img.shields.io/crates/v/jaeb.svg)](https://crates.io/crates/jaeb)
+[![docs.rs](https://docs.rs/jaeb/badge.svg)](https://docs.rs/jaeb)
+[![license](https://img.shields.io/crates/l/jaeb.svg)](https://github.com/LinkeTh/jaeb/blob/main/LICENSE)
+
 In-process, actor-based event bus for Tokio applications.
 
 JAEB provides:
