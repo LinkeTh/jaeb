@@ -25,10 +25,10 @@ struct OrderCancelledEvent {
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
-
+struct DbPool;
 /// Handles order checkout -- in a real app this would hold PgPool, mailer, etc.
 struct OnOrderCheckout {
-    // pool: PgPool,
+    pool: DbPool,
     attempts: Arc<AtomicUsize>,
 }
 
@@ -103,13 +103,13 @@ async fn checkout(order_id: i32, bus: &EventBus) {
 async fn subscribe_listeners(bus: &EventBus) {
     let attempts = Arc::new(AtomicUsize::new(0));
 
+    let pool = DbPool;
     // In a real app, pass pool/config/etc. into handler structs here:
-    //   bus.subscribe(OnOrderCheckout { pool: pool.clone(), attempts }).await;
     let retry_policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(100));
 
     bus.subscribe_with_policy(
         OnOrderCheckout {
-            // pool,
+            pool,
             attempts,
         },
         retry_policy,

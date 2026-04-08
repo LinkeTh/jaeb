@@ -1,0 +1,10 @@
+[jaeb]
+buffer_size = 128
+handler_timeout_secs = 5
+
+[web]
+port = 8080
+
+[web.openapi]
+doc_prefix = "/docs"
+info = { title = "Summer Jaeb Demo API", version = "0.1.0" }

@@ -1,0 +1,20 @@
+[package]
+name = "summer-jaeb"
+version = "0.1.0"
+edition = "2024"
+authors = ["linket <t.linke@pripares.com>"]
+description = "summer-rs plugin for the jaeb actor-based event bus"
+license = "MIT"
+repository = "https://github.com/LinkeTh/jaeb"
+keywords = ["event-bus", "actor", "tokio", "summer", "pubsub"]
+categories = ["asynchronous", "concurrency", "web-programming"]
+
+[features]
+default = []
+metrics = ["jaeb/metrics"]
+
+[dependencies]
+jaeb = { path = ".." }
+summer = "0.5"
+serde = { version = "1", features = ["derive"] }
+schemars = "1"

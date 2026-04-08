@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple actor based event bus"
@@ -18,10 +18,12 @@ path = "src/lib.rs"
 members = [
     ".",
     "examples/jaeb-demo",
+    "examples/summer-jaeb-demo",
+    "summer-jaeb",
 ]
 [dependencies]
-metrics = { version = "0.24.2", optional = true }
-tokio = { version = "1.47.1", features = ["full"] }
+metrics = { version = "0.24", optional = true }
+tokio = { version = "1.51", features = ["full"] }
 tracing = { version = "0.1", features = ["std", "log"] }
 
 [features]
@@ -29,9 +31,10 @@ default = []
 metrics = ["dep:metrics"]
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
-tokio = { version = "1.47.1", features = ["full", "test-util"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
+tokio = { version = "1.51", features = ["full", "test-util"] }
 
 [[bench]]
 name = "throughput"
 harness = false
+
