@@ -7,6 +7,7 @@ pub type HandlerResult = Result<(), HandlerError>;
 pub enum EventBusError {
     ActorStopped,
     ChannelFull,
+    ShutdownTimeout,
 }
 
 impl fmt::Display for EventBusError {
@@ -14,6 +15,7 @@ impl fmt::Display for EventBusError {
         match self {
             Self::ActorStopped => write!(f, "event bus actor has stopped"),
             Self::ChannelFull => write!(f, "event bus channel is full"),
+            Self::ShutdownTimeout => write!(f, "shutdown timed out waiting for in-flight tasks"),
         }
     }
 }

@@ -60,3 +60,25 @@ pub struct DeadLetter {
 
 pub trait Event: Send + Sync + 'static {}
 impl<T: Send + Sync + 'static> Event for T {}
+
+/// Internal configuration for the event bus actor.
+#[derive(Debug, Clone)]
+pub(crate) struct BusConfig {
+    pub buffer_size: usize,
+    pub handler_timeout: Option<Duration>,
+    pub max_concurrent_async: Option<usize>,
+    pub default_failure_policy: FailurePolicy,
+    pub shutdown_timeout: Option<Duration>,
+}
+
+impl Default for BusConfig {
+    fn default() -> Self {
+        Self {
+            buffer_size: 256,
+            handler_timeout: None,
+            max_concurrent_async: None,
+            default_failure_policy: FailurePolicy::default(),
+            shutdown_timeout: None,
+        }
+    }
+}

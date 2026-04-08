@@ -4,9 +4,10 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
+    time::Duration,
 };
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, error, trace, warn};
 
@@ -14,7 +15,7 @@ use tracing::{Instrument, debug, error, trace, warn};
 use metrics::counter;
 
 use crate::error::HandlerResult;
-use crate::types::{DeadLetter, FailurePolicy, SubscriptionId};
+use crate::types::{BusConfig, DeadLetter, FailurePolicy, SubscriptionId};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::TimerGuard;
@@ -79,10 +80,14 @@ pub(crate) struct EventBusActor {
     listener_index: HashMap<SubscriptionId, TypeId>,
     next_subscription_id: u64,
     async_tasks: JoinSet<HandlerTaskOutcome>,
+    handler_timeout: Option<Duration>,
+    async_semaphore: Option<Arc<Semaphore>>,
+    shutdown_timeout: Option<Duration>,
 }
 
 impl EventBusActor {
-    pub fn new(tx: mpsc::Sender<BusMessage>, rx: mpsc::Receiver<BusMessage>) -> Self {
+    pub fn new(tx: mpsc::Sender<BusMessage>, rx: mpsc::Receiver<BusMessage>, config: &BusConfig) -> Self {
+        let async_semaphore = config.max_concurrent_async.map(|n| Arc::new(Semaphore::new(n)));
         Self {
             tx,
             rx,
@@ -90,6 +95,9 @@ impl EventBusActor {
             listener_index: HashMap::new(),
             next_subscription_id: 1,
             async_tasks: JoinSet::new(),
+            handler_timeout: config.handler_timeout,
+            async_semaphore,
+            shutdown_timeout: config.shutdown_timeout,
         }
     }
 
@@ -226,6 +234,8 @@ impl EventBusActor {
         let listeners_count = listeners.len();
         debug!(event = event_name, listeners = listeners_count, "publish.dispatch");
 
+        let handler_timeout = self.handler_timeout;
+
         let mut sync_tasks = Vec::new();
         for listener in listeners {
             let handler = Arc::clone(&listener.handler);
@@ -239,12 +249,20 @@ impl EventBusActor {
                 ListenerMode::Sync => tracing::trace_span!("eventbus.handler", event = event_name, mode = "sync", listener_id = listener_id.as_u64()),
             };
 
-            let execution = Self::execute_listener(handler, event, event_name, listener_id, failure_policy).instrument(span);
+            let execution = Self::execute_listener(handler, event, event_name, listener_id, failure_policy, handler_timeout).instrument(span);
 
             match listener.mode {
                 ListenerMode::Async => {
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.async");
-                    self.async_tasks.spawn(execution);
+                    if let Some(ref sem) = self.async_semaphore {
+                        let permit = Arc::clone(sem);
+                        self.async_tasks.spawn(async move {
+                            let _permit = permit.acquire().await.expect("semaphore closed");
+                            execution.await
+                        });
+                    } else {
+                        self.async_tasks.spawn(execution);
+                    }
                 }
                 ListenerMode::Sync => {
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.sync");
@@ -268,6 +286,7 @@ impl EventBusActor {
         event_name: &'static str,
         subscription_id: SubscriptionId,
         failure_policy: FailurePolicy,
+        handler_timeout: Option<Duration>,
     ) -> HandlerTaskOutcome {
         let mut retries_left = failure_policy.max_retries;
         let mut attempts = 0;
@@ -278,7 +297,15 @@ impl EventBusActor {
             #[cfg(feature = "metrics")]
             let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
 
-            match handler(Arc::clone(&event)).await {
+            let result = match handler_timeout {
+                Some(timeout) => match tokio::time::timeout(timeout, handler(Arc::clone(&event))).await {
+                    Ok(inner) => inner,
+                    Err(_elapsed) => Err(format!("handler timed out after {timeout:?}").into()),
+                },
+                None => handler(Arc::clone(&event)).await,
+            };
+
+            match result {
                 Ok(()) => return None,
                 Err(err) => {
                     let error_message = err.to_string();
@@ -390,11 +417,36 @@ impl EventBusActor {
     }
 
     async fn drain_async_tasks(&mut self) {
-        while let Some(result) = self.async_tasks.join_next().await {
-            match result {
-                Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
-                Ok(None) => {}
-                Err(join_error) => self.log_join_error("unknown", join_error),
+        match self.shutdown_timeout {
+            Some(timeout) => {
+                let deadline = tokio::time::Instant::now() + timeout;
+                loop {
+                    match tokio::time::timeout_at(deadline, self.async_tasks.join_next()).await {
+                        Ok(Some(result)) => match result {
+                            Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
+                            Ok(None) => {}
+                            Err(join_error) => self.log_join_error("unknown", join_error),
+                        },
+                        Ok(None) => break, // all tasks done
+                        Err(_elapsed) => {
+                            let remaining = self.async_tasks.len();
+                            warn!(remaining, "shutdown.timeout_reached, aborting remaining tasks");
+                            self.async_tasks.abort_all();
+                            // Drain the abort results
+                            while self.async_tasks.join_next().await.is_some() {}
+                            break;
+                        }
+                    }
+                }
+            }
+            None => {
+                while let Some(result) = self.async_tasks.join_next().await {
+                    match result {
+                        Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
+                        Ok(None) => {}
+                        Err(join_error) => self.log_join_error("unknown", join_error),
+                    }
+                }
             }
         }
     }
