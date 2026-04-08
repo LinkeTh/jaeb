@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::sync::Arc;
 
 use jaeb::{DeadLetter, EventBus, EventHandler, FailurePolicy, HandlerResult, SyncEventHandler};

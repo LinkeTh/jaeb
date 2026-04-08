@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #![forbid(unsafe_code)]
 
 //! JAEB is an in-process, actor-based event bus for Tokio applications.

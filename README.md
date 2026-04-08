@@ -201,3 +201,12 @@ RUST_LOG=info,jaeb=trace cargo run
 - Events must be `Send + Sync + 'static`. Async handlers additionally require events to be `Clone`.
 - Events are in-process only (no persistence, replay, or broker integration).
 - The crate enforces `#![forbid(unsafe_code)]`.
+
+## License
+
+jaeb is distributed under the [MIT License](LICENCE).
+
+Copyright (c) 2025-2026 Linke Thomas
+
+This project uses third-party libraries. See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES)
+for the full list of dependencies, their versions, and their respective license terms.

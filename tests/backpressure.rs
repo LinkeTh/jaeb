@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use jaeb::{EventBus, EventBusError};
 
 // ── Event types ──────────────────────────────────────────────────────

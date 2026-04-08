@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::{
     any::{Any, TypeId},
     collections::HashMap,

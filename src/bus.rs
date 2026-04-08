@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::any::TypeId;
 use std::time::Duration;
 

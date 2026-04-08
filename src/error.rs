@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::fmt;
 
 pub type HandlerError = Box<dyn std::error::Error + Send + Sync + 'static>;
