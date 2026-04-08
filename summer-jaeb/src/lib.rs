@@ -32,11 +32,7 @@ pub use summer_jaeb_macros::event_listener;
 pub trait TypedListenerRegistrar: Send + Sync + 'static {
     /// Subscribe this listener to the event bus, resolving any required state
     /// from the application's component registry.
-    fn register<'a>(
-        &self,
-        bus: &'a EventBus,
-        app: &'a AppBuilder,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn register<'a>(&self, bus: &'a EventBus, app: &'a AppBuilder) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 // Collect `&'static dyn TypedListenerRegistrar` — matches summer-rs's own pattern
@@ -115,9 +111,7 @@ impl Plugin for SummerJaeb {
     }
 
     async fn build(&self, app: &mut AppBuilder) {
-        let config = app
-            .get_config::<Config>()
-            .expect("summer-jaeb: failed to load [jaeb] config");
+        let config = app.get_config::<Config>().expect("summer-jaeb: failed to load [jaeb] config");
 
         let mut builder = EventBus::builder();
 

@@ -21,12 +21,12 @@
 use jaeb::{DeadLetter, EventBus, HandlerResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use summer::App;
 use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::auto_config;
-use summer::plugin::{MutableComponentRegistry, Plugin};
-use summer::App;
 use summer::extractor::Component;
+use summer::plugin::{MutableComponentRegistry, Plugin};
 use summer_jaeb::{SummerJaeb, event_listener};
 use summer_web::axum::Json;
 use summer_web::extractor::Component as WebComponent;
@@ -133,10 +133,7 @@ struct OrderResponse {
 ///
 /// @tag Orders
 #[post_api("/orders")]
-async fn place_order(
-    WebComponent(bus): WebComponent<EventBus>,
-    Json(body): Json<PlaceOrderRequest>,
-) -> Json<OrderResponse> {
+async fn place_order(WebComponent(bus): WebComponent<EventBus>, Json(body): Json<PlaceOrderRequest>) -> Json<OrderResponse> {
     bus.publish(OrderPlacedEvent { order_id: body.order_id })
         .await
         .expect("failed to publish OrderPlacedEvent");
@@ -153,10 +150,7 @@ async fn place_order(
 ///
 /// @tag Orders
 #[post_api("/orders/{id}/ship")]
-async fn ship_order(
-    WebComponent(bus): WebComponent<EventBus>,
-    Path(id): Path<u32>,
-) -> Json<OrderResponse> {
+async fn ship_order(WebComponent(bus): WebComponent<EventBus>, Path(id): Path<u32>) -> Json<OrderResponse> {
     bus.publish(OrderShippedEvent { order_id: id })
         .await
         .expect("failed to publish OrderShippedEvent");

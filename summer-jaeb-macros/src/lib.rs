@@ -13,7 +13,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{parse_macro_input, FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Token, Type};
+use syn::{FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Token, Type, parse_macro_input};
 
 // ── Attribute arguments ──────────────────────────────────────────────────────
 
