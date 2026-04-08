@@ -10,7 +10,7 @@ use std::time::Duration;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
 
 // ── Events ──────────────────────────────────────────────────────────────
 
@@ -26,6 +26,12 @@ struct OrderCancelledEvent {
 
 // ── Handlers ────────────────────────────────────────────────────────────
 struct DbPool;
+
+impl DbPool {
+    fn persist(&self, order_id: i32) {
+        info!(order_id, "DbPool: persisted order to database");
+    }
+}
 /// Handles order checkout -- in a real app this would hold PgPool, mailer, etc.
 struct OnOrderCheckout {
     pool: DbPool,
@@ -35,6 +41,7 @@ struct OnOrderCheckout {
 impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
     async fn handle(&self, event: &OrderCheckOutEvent) -> HandlerResult {
         // async work: send email, update DB via self.pool, etc.
+        self.pool.persist(event.order_id);
         // Simulate transient failure on first attempt.
         let previous = self.attempts.fetch_add(1, Ordering::SeqCst);
         if previous == 0 {
@@ -107,15 +114,9 @@ async fn subscribe_listeners(bus: &EventBus) {
     // In a real app, pass pool/config/etc. into handler structs here:
     let retry_policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(100));
 
-    bus.subscribe_with_policy(
-        OnOrderCheckout {
-            pool,
-            attempts,
-        },
-        retry_policy,
-    )
-    .await
-    .expect("failed to subscribe async handler");
+    bus.subscribe_with_policy(OnOrderCheckout { pool, attempts }, retry_policy)
+        .await
+        .expect("failed to subscribe async handler");
 
     bus.subscribe(OnOrderCancelled).await.expect("failed to subscribe sync handler");
 

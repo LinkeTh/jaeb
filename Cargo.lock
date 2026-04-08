@@ -1456,9 +1456,9 @@ dependencies = [
 
 [[package]]
 name = "metrics-exporter-prometheus"
-version = "0.17.2"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b166dea96003ee2531cf14833efedced545751d800f03535801d833313f8c15"
+checksum = "3589659543c04c7dc5526ec858591015b87cd8746583b51b48ef4353f99dbcda"
 dependencies = [
  "base64",
  "http-body-util",
@@ -1470,6 +1470,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "quanta",
+ "rustls",
  "thiserror",
  "tokio",
  "tracing",
@@ -2418,10 +2419,13 @@ dependencies = [
 name = "summer-jaeb"
 version = "0.1.0"
 dependencies = [
+ "inventory",
  "jaeb",
  "schemars",
  "serde",
  "summer",
+ "summer-jaeb-macros",
+ "tracing",
 ]
 
 [[package]]
@@ -2436,6 +2440,15 @@ dependencies = [
  "summer-web",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "summer-jaeb-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

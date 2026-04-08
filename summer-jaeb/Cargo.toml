@@ -15,6 +15,9 @@ metrics = ["jaeb/metrics"]
 
 [dependencies]
 jaeb = { path = ".." }
+summer-jaeb-macros = { path = "../summer-jaeb-macros" }
 summer = "0.5"
+inventory = "0.3"
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
+tracing = { version = "0.1", features = ["std", "log"] }

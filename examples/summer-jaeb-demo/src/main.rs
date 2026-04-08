@@ -2,27 +2,37 @@
 //
 // summer-jaeb-demo: demonstrates the SummerJaeb plugin within a summer-rs web app.
 //
+// Features showcased:
+//   - Stateful listener with `Component<DbPool>` state injection
+//   - Failure policy attributes (`retries`, `retry_delay_ms`, `dead_letter`)
+//   - Dead-letter listener (auto-detected `DeadLetter` event type)
+//   - Async and sync listeners
+//
 // Flow:
-//   1. SummerJaeb reads [jaeb] config, builds the EventBus, registers it as a component.
-//   2. The #[component] setup_handlers function depends on SummerJaeb, retrieves the bus
-//      via DI, and subscribes event handlers at startup.
-//   3. HTTP endpoints use Component<EventBus> to publish events when requests arrive.
-//   4. Handlers react to the events in the background.
+//   1. DbPoolPlugin registers a dummy DbPool as a summer component.
+//   2. SummerJaeb reads [jaeb] config, builds the EventBus, registers it as a component.
+//   3. All #[event_listener] functions are auto-discovered via inventory and subscribed
+//      to the bus during plugin startup — no manual setup_handlers component needed.
+//   4. HTTP endpoints use Component<EventBus> to publish events when requests arrive.
+//   5. Handlers react to the events in the background.
 //
 // OpenAPI docs are served at /docs (Scalar UI).
 
-use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
+use jaeb::{DeadLetter, EventBus, HandlerResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use summer::app::AppBuilder;
+use summer::async_trait;
 use summer::auto_config;
-use summer::extractor::Component;
+use summer::plugin::{MutableComponentRegistry, Plugin};
 use summer::App;
-use summer_jaeb::SummerJaeb;
+use summer::extractor::Component;
+use summer_jaeb::{SummerJaeb, event_listener};
 use summer_web::axum::Json;
 use summer_web::extractor::Component as WebComponent;
 use summer_web::extractor::Path;
-use summer_web::{post_api, WebConfigurator, WebPlugin};
-use tracing::info;
+use summer_web::{WebConfigurator, WebPlugin, post_api};
+use tracing::{info, warn};
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
@@ -36,50 +46,70 @@ struct OrderShippedEvent {
     order_id: u32,
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+// ── Dummy component (simulates a database pool) ─────────────────────────────
 
-/// Async handler: reacts to a new order being placed.
-struct OnOrderPlaced;
+/// A dummy database pool for demonstration purposes.
+/// In a real app this would be `PgPool`, `sea_orm::DatabaseConnection`, etc.
+#[derive(Clone, Debug)]
+struct DbPool;
 
-impl EventHandler<OrderPlacedEvent> for OnOrderPlaced {
-    async fn handle(&self, event: &OrderPlacedEvent) -> HandlerResult {
-        info!(order_id = event.order_id, "order placed — sending confirmation email");
-        Ok(())
+impl DbPool {
+    fn log_order(&self, order_id: u32) {
+        info!(order_id, "DbPool: persisted order to database");
     }
 }
 
-/// Sync handler: reacts to an order being shipped.
-struct OnOrderShipped;
+/// Plugin that registers the `DbPool` component.
+/// Must be added **before** `SummerJaeb` so the pool is available when
+/// `#[event_listener]` functions that depend on `Component<DbPool>` are registered.
+struct DbPoolPlugin;
 
-impl SyncEventHandler<OrderShippedEvent> for OnOrderShipped {
-    fn handle(&self, event: &OrderShippedEvent) -> HandlerResult {
-        info!(order_id = event.order_id, "order shipped — updating inventory");
-        Ok(())
+#[async_trait]
+impl Plugin for DbPoolPlugin {
+    fn name(&self) -> &str {
+        "DbPoolPlugin"
+    }
+
+    async fn build(&self, app: &mut AppBuilder) {
+        app.add_component(DbPool);
+        info!("DbPoolPlugin: registered dummy DbPool component");
     }
 }
 
-// ── Handler subscription via #[component] ────────────────────────────────────
+// ── Listeners (auto-registered by SummerJaeb plugin) ─────────────────────────
 
-/// Marker type returned by setup_handlers (the #[component] macro requires a return value).
-#[derive(Clone)]
-struct HandlerSetup;
+/// Async listener with state injection: reacts to a new order being placed.
+/// The `Component<DbPool>` parameter is automatically resolved from summer's
+/// component registry at listener registration time.
+#[event_listener]
+async fn on_order_placed(event: &OrderPlacedEvent, Component(db): Component<DbPool>) -> HandlerResult {
+    db.log_order(event.order_id);
+    info!(order_id = event.order_id, "order placed — confirmation email sent");
+    Ok(())
+}
 
-/// Subscribes event handlers at startup. The #[inject("SummerJaeb")] attribute tells
-/// the macro to declare a dependency on the SummerJaeb plugin so the EventBus is
-/// available when this component function runs.
-#[summer::component]
-async fn setup_handlers(
-    #[inject("SummerJaeb")] Component(bus): Component<EventBus>,
-) -> HandlerSetup {
-    bus.subscribe(OnOrderPlaced)
-        .await
-        .expect("failed to subscribe OnOrderPlaced");
+/// Sync listener with failure policy: reacts to an order being shipped.
+/// Retries up to 2 times with a 500ms delay, and sends to dead-letter queue on exhaustion.
+#[event_listener(retries = 2, retry_delay_ms = 500, dead_letter = true)]
+fn on_order_shipped(event: &OrderShippedEvent) -> HandlerResult {
+    info!(order_id = event.order_id, "order shipped — updating inventory");
+    Ok(())
+}
 
-    bus.subscribe(OnOrderShipped)
-        .await
-        .expect("failed to subscribe OnOrderShipped");
-
-    HandlerSetup
+/// Dead-letter listener: logs events that failed all retry attempts.
+/// Must be sync — the macro enforces this because `subscribe_dead_letters`
+/// requires `SyncEventHandler`. The `DeadLetter` event type is auto-detected,
+/// so `subscribe_dead_letters()` is used instead of `subscribe()`.
+#[event_listener]
+fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+    warn!(
+        event = event.event_name,
+        subscription = %event.subscription_id,
+        attempts = event.attempts,
+        error = %event.error,
+        "dead letter received"
+    );
+    Ok(())
 }
 
 // ── HTTP request / response types ────────────────────────────────────────────
@@ -143,6 +173,7 @@ async fn ship_order(
 #[tokio::main]
 async fn main() {
     App::new()
+        .add_plugin(DbPoolPlugin)
         .add_plugin(SummerJaeb)
         .add_plugin(WebPlugin)
         .run()

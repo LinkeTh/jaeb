@@ -19,6 +19,7 @@ members = [
     ".",
     "examples/jaeb-demo",
     "examples/summer-jaeb-demo",
+    "summer-jaeb-macros",
     "summer-jaeb",
 ]
 [dependencies]
