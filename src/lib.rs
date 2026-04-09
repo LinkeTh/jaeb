@@ -16,7 +16,8 @@
 //!
 //! # Important semantics
 //!
-//! - **Sync handlers** — dispatched via `tokio::spawn` and awaited before
+//! - **Sync handlers** — executed inline on the actor task (with panic
+//!   isolation via `catch_unwind`) and complete before
 //!   [`EventBus::publish`](bus::EventBus::publish) returns.
 //! - **Async handlers** — spawned into a [`JoinSet`](tokio::task::JoinSet);
 //!   `publish` may return before they finish.  Async events require `E: Clone`

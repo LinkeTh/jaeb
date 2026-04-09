@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 use std::any::TypeId;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -61,6 +62,10 @@ impl EventBusBuilder {
     /// When a handler exceeds this timeout, the attempt is treated as an error
     /// and is eligible for retry or dead-lettering according to the listener's
     /// [`FailurePolicy`].
+    ///
+    /// **Note:** This timeout only applies to **async** handlers. Sync handlers
+    /// execute inline on the actor task and complete immediately from Tokio's
+    /// perspective, so the timeout has no practical effect on them.
     ///
     /// By default there is no timeout.
     pub fn handler_timeout(mut self, timeout: Duration) -> Self {
@@ -259,7 +264,6 @@ impl EventBus {
             .send_and_ack(|ack| BusMessage::Subscribe {
                 event_type: TypeId::of::<E>(),
                 handler: registered.erased,
-                mode: registered.mode,
                 failure_policy,
                 ack,
             })
@@ -307,7 +311,7 @@ impl EventBus {
 
         self.send_and_ack(|ack| BusMessage::Publish {
             event_type: TypeId::of::<E>(),
-            event: Box::new(event),
+            event: Arc::new(event),
             event_name: std::any::type_name::<E>(),
             ack: Some(ack),
         })
@@ -340,7 +344,7 @@ impl EventBus {
 
         match self.tx.try_send(BusMessage::Publish {
             event_type: TypeId::of::<E>(),
-            event: Box::new(event),
+            event: Arc::new(event),
             event_name: std::any::type_name::<E>(),
             ack: None,
         }) {

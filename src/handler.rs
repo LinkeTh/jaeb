@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
+use std::any::Any;
 use std::future::Future;
 use std::sync::Arc;
 
 use tracing::warn;
 
-use crate::actor::{ArcEvent, ErasedHandler, ListenerMode};
+use crate::actor::{ErasedAsyncHandler, ErasedHandler, ErasedSyncHandler, EventType};
 use crate::error::HandlerResult;
 use crate::types::Event;
 
@@ -26,10 +27,9 @@ pub struct AsyncMode;
 /// Marker type selecting the synchronous dispatch path.
 pub struct SyncMode;
 
-/// A type-erased handler paired with its dispatch mode, produced by [`IntoHandler`].
+/// A type-erased handler produced by [`IntoHandler`].
 pub(crate) struct RegisteredHandler {
     pub erased: ErasedHandler,
-    pub mode: ListenerMode,
 }
 
 /// Trait that converts a concrete handler into an erased handler with its dispatch mode.
@@ -54,19 +54,18 @@ where
 {
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let erased: ErasedHandler = Arc::new(move |any: ArcEvent| {
+        let erased: ErasedAsyncHandler = Arc::new(move |any: EventType| {
             let handler = Arc::clone(&handler);
             if let Some(event) = any.as_ref().downcast_ref::<E>() {
                 let event = event.clone();
-                Box::pin(async move { handler.handle(&event).await })
+                Box::pin(async move { handler.handle(&event).await }) as _
             } else {
                 warn!(expected = std::any::type_name::<E>(), "handler.downcast_failed");
-                Box::pin(async { Err("internal error: event type downcast failed".into()) })
+                Box::pin(async { Err("internal error: event type downcast failed".into()) }) as _
             }
         });
         RegisteredHandler {
-            erased,
-            mode: ListenerMode::Async,
+            erased: ErasedHandler::Async(erased),
         }
     }
 }
@@ -79,18 +78,16 @@ where
 {
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let erased: ErasedHandler = Arc::new(move |any: ArcEvent| {
-            let result = if let Some(event) = any.as_ref().downcast_ref::<E>() {
+        let erased: ErasedSyncHandler = Arc::new(move |any: &(dyn Any + Send + Sync)| {
+            if let Some(event) = any.downcast_ref::<E>() {
                 handler.handle(event)
             } else {
                 warn!(expected = std::any::type_name::<E>(), "handler.downcast_failed");
                 Err("internal error: event type downcast failed".into())
-            };
-            Box::pin(async move { result })
+            }
         });
         RegisteredHandler {
-            erased,
-            mode: ListenerMode::Sync,
+            erased: ErasedHandler::Sync(erased),
         }
     }
 }

@@ -3,6 +3,7 @@ use std::{
     any::{Any, TypeId},
     collections::HashMap,
     future::Future,
+    panic::{AssertUnwindSafe, catch_unwind},
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -22,20 +23,21 @@ use crate::types::{BusConfig, DeadLetter, FailurePolicy, SubscriptionId};
 use crate::metrics::TimerGuard;
 
 pub(crate) type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
-pub(crate) type ArcEvent = Arc<dyn Any + Send + Sync>;
-pub(crate) type ErasedHandler = Arc<dyn Fn(ArcEvent) -> HandlerFuture + Send + Sync + 'static>;
+pub(crate) type EventType = Arc<dyn Any + Send + Sync>;
+pub(crate) type ErasedAsyncHandler = Arc<dyn Fn(EventType) -> HandlerFuture + Send + Sync + 'static>;
+pub(crate) type ErasedSyncHandler = Arc<dyn Fn(&(dyn Any + Send + Sync)) -> HandlerResult + Send + Sync + 'static>;
 
-#[derive(Clone, Copy)]
-pub(crate) enum ListenerMode {
-    Async,
-    Sync,
+/// Type-erased handler that preserves the sync/async dispatch mode.
+#[derive(Clone)]
+pub(crate) enum ErasedHandler {
+    Async(ErasedAsyncHandler),
+    Sync(ErasedSyncHandler),
 }
 
 #[derive(Clone)]
 pub(crate) struct Listener {
     pub id: SubscriptionId,
     pub handler: ErasedHandler,
-    pub mode: ListenerMode,
     pub failure_policy: FailurePolicy,
 }
 
@@ -49,13 +51,11 @@ struct ListenerFailure {
 }
 
 type HandlerTaskOutcome = Option<ListenerFailure>;
-type EventType = Box<dyn Any + Send + Sync>;
 
 pub(crate) enum BusMessage {
     Subscribe {
         event_type: TypeId,
         handler: ErasedHandler,
-        mode: ListenerMode,
         failure_policy: FailurePolicy,
         ack: oneshot::Sender<SubscriptionId>,
     },
@@ -88,7 +88,15 @@ impl BusMessage {
 pub(crate) struct EventBusActor {
     tx: mpsc::Sender<BusMessage>,
     rx: mpsc::Receiver<BusMessage>,
-    listeners: HashMap<TypeId, Vec<Listener>>,
+    /// Copy-on-write listener lists.
+    ///
+    /// Each event type maps to an `Arc<Vec<Listener>>`.  During dispatch the
+    /// `Arc` is cheaply cloned (O(1)), allowing iteration without borrowing
+    /// `&self` mutably.  Mutations (subscribe/unsubscribe) go through
+    /// `Arc::make_mut`, which clones the inner `Vec` only when other clones
+    /// are still alive — giving us copy-on-write semantics without manual
+    /// reference counting.
+    listeners: HashMap<TypeId, Arc<Vec<Listener>>>,
     listener_index: HashMap<SubscriptionId, TypeId>,
     next_subscription_id: u64,
     async_tasks: JoinSet<HandlerTaskOutcome>,
@@ -132,16 +140,14 @@ impl EventBusActor {
                         BusMessage::Subscribe {
                             event_type,
                             handler,
-                            mode,
                             failure_policy,
                             ack,
                         } => {
                             let id = self.next_subscription_id();
                             let list = self.listeners.entry(event_type).or_default();
-                            list.push(Listener {
+                            Arc::make_mut(list).push(Listener {
                                 id,
                                 handler,
-                                mode,
                                 failure_policy,
                             });
                             self.listener_index.insert(id, event_type);
@@ -219,11 +225,12 @@ impl EventBusActor {
         let mut removed = false;
 
         if let Some(list) = self.listeners.get_mut(&event_type) {
-            if let Some(index) = list.iter().position(|listener| listener.id == subscription_id) {
-                list.swap_remove(index);
+            let vec = Arc::make_mut(list);
+            if let Some(index) = vec.iter().position(|listener| listener.id == subscription_id) {
+                vec.swap_remove(index);
                 removed = true;
             }
-            remove_key = list.is_empty();
+            remove_key = vec.is_empty();
         }
 
         if remove_key {
@@ -266,8 +273,13 @@ impl EventBusActor {
     }
 
     async fn dispatch(&mut self, event_type: TypeId, event: EventType, event_name: &'static str) {
-        let listeners = self.listeners.get(&event_type).cloned().unwrap_or_default();
-        let event: ArcEvent = Arc::from(event);
+        let Some(listeners) = self.listeners.get(&event_type).cloned() else {
+            #[cfg(feature = "metrics")]
+            counter!("eventbus.publish", "event" => event_name).increment(1);
+
+            debug!(event = event_name, listeners = 0, "publish.dispatch");
+            return;
+        };
 
         #[cfg(feature = "metrics")]
         counter!("eventbus.publish", "event" => event_name).increment(1);
@@ -277,23 +289,18 @@ impl EventBusActor {
 
         let handler_timeout = self.handler_timeout;
 
-        let mut sync_tasks = Vec::new();
-        for listener in listeners {
-            let handler = Arc::clone(&listener.handler);
-            let event = Arc::clone(&event);
+        for listener in listeners.iter() {
             let listener_id = listener.id;
             let failure_policy = listener.failure_policy;
-            let span = match listener.mode {
-                ListenerMode::Async => {
-                    tracing::trace_span!("eventbus.handler", event = event_name, mode = "async", listener_id = listener_id.as_u64())
-                }
-                ListenerMode::Sync => tracing::trace_span!("eventbus.handler", event = event_name, mode = "sync", listener_id = listener_id.as_u64()),
-            };
 
-            let execution = Self::execute_listener(handler, event, event_name, listener_id, failure_policy, handler_timeout).instrument(span);
+            match listener.handler {
+                ErasedHandler::Async(ref handler) => {
+                    let handler = Arc::clone(handler);
+                    let event = Arc::clone(&event);
+                    let span = tracing::trace_span!("eventbus.handler", event = event_name, mode = "async", listener_id = listener_id.as_u64());
+                    let execution =
+                        Self::execute_async_listener(handler, event, event_name, listener_id, failure_policy, handler_timeout).instrument(span);
 
-            match listener.mode {
-                ListenerMode::Async => {
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.async");
                     if let Some(ref sem) = self.async_semaphore {
                         let permit = Arc::clone(sem);
@@ -310,40 +317,101 @@ impl EventBusActor {
                         self.async_tasks.spawn(execution);
                     }
                 }
-                ListenerMode::Sync => {
+                ErasedHandler::Sync(ref handler) => {
+                    let span = tracing::trace_span!("eventbus.handler", event = event_name, mode = "sync", listener_id = listener_id.as_u64());
+                    let _enter = span.enter();
+
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.sync");
-                    sync_tasks.push(tokio::spawn(execution));
-                }
-            }
-        }
-
-        for task in sync_tasks {
-            match task.await {
-                Ok(Some(failure)) => self.handle_listener_failure(failure),
-                Ok(None) => {}
-                Err(join_error) => {
-                    error!(event = event_name, error = %join_error, "handler.join_error");
-
-                    #[cfg(feature = "metrics")]
-                    counter!("eventbus.handler.join_error", "event" => event_name).increment(1);
-
-                    // Route panics through dead-letter pipeline.
-                    let failure = ListenerFailure {
-                        event_name,
-                        subscription_id: SubscriptionId(0),
-                        attempts: 1,
-                        error: join_error.to_string(),
-                        dead_letter: true,
-                    };
-                    self.handle_listener_failure(failure);
+                    let outcome = Self::execute_sync_listener_inline(handler, &event, event_name, listener_id, failure_policy).await;
+                    if let Some(failure) = outcome {
+                        self.handle_listener_failure(failure);
+                    }
                 }
             }
         }
     }
 
-    async fn execute_listener(
-        handler: ErasedHandler,
-        event: ArcEvent,
+    /// Execute a sync listener inline on the actor task with panic isolation
+    /// via `catch_unwind`.
+    ///
+    /// # Safety rationale for `AssertUnwindSafe`
+    ///
+    /// The `catch_unwind` + `AssertUnwindSafe` combination is safe here because:
+    /// - The handler closure captures only `&(dyn Any + Send + Sync)` (an
+    ///   immutable reference) and the handler function pointer, neither of
+    ///   which can be left in an inconsistent state by a panic.
+    /// - No mutable actor state is accessed inside the `catch_unwind` block.
+    /// - Panics are converted into `Err` results that flow through the normal
+    ///   retry / dead-letter pipeline.
+    async fn execute_sync_listener_inline(
+        handler: &ErasedSyncHandler,
+        event: &EventType,
+        event_name: &'static str,
+        subscription_id: SubscriptionId,
+        failure_policy: FailurePolicy,
+    ) -> HandlerTaskOutcome {
+        let mut retries_left = failure_policy.max_retries;
+        let mut attempts = 0;
+
+        loop {
+            attempts += 1;
+
+            #[cfg(feature = "metrics")]
+            let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
+
+            let handler_ref = handler.as_ref();
+            let event_ref: &(dyn Any + Send + Sync) = event.as_ref();
+            let result = catch_unwind(AssertUnwindSafe(|| handler_ref(event_ref)));
+
+            let result = match result {
+                Ok(r) => r,
+                Err(panic_payload) => {
+                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "handler panicked".to_string()
+                    };
+                    Err(msg.into())
+                }
+            };
+
+            match result {
+                Ok(()) => return None,
+                Err(err) => {
+                    let error_message = err.to_string();
+                    if retries_left == 0 {
+                        return Some(ListenerFailure {
+                            event_name,
+                            subscription_id,
+                            attempts,
+                            error: error_message,
+                            dead_letter: failure_policy.dead_letter,
+                        });
+                    }
+
+                    retries_left -= 1;
+                    warn!(
+                        event = event_name,
+                        listener_id = subscription_id.as_u64(),
+                        attempts,
+                        retries_left,
+                        error = %error_message,
+                        "handler.retry"
+                    );
+
+                    if let Some(delay) = failure_policy.retry_delay {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn execute_async_listener(
+        handler: ErasedAsyncHandler,
+        event: EventType,
         event_name: &'static str,
         subscription_id: SubscriptionId,
         failure_policy: FailurePolicy,
@@ -434,7 +502,7 @@ impl EventBusActor {
             let dead_letter_type = std::any::type_name::<DeadLetter>();
             match self.tx.try_send(BusMessage::Publish {
                 event_type: TypeId::of::<DeadLetter>(),
-                event: Box::new(dead_letter),
+                event: Arc::new(dead_letter),
                 event_name: dead_letter_type,
                 ack: None,
             }) {
@@ -469,7 +537,7 @@ impl EventBusActor {
     async fn handle_listener_failure_direct(&mut self, failure: ListenerFailure) {
         if let Some(dead_letter) = self.log_failure(&failure) {
             let dead_letter_type = std::any::type_name::<DeadLetter>();
-            self.dispatch(TypeId::of::<DeadLetter>(), Box::new(dead_letter), dead_letter_type).await;
+            self.dispatch(TypeId::of::<DeadLetter>(), Arc::new(dead_letter), dead_letter_type).await;
         }
     }
 
