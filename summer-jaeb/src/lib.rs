@@ -62,6 +62,27 @@ pub mod _private {
 /// summer-rs plugin that registers a [`jaeb::EventBus`] as an application component
 /// and auto-subscribes all `#[event_listener]` functions.
 ///
+/// # Plugin Dependencies
+///
+/// If your `#[event_listener]` functions inject components (via `Component<T>`),
+/// those components must be registered by plugins that are built **before**
+/// `SummerJaeb`. Declare the providing plugins as dependencies so the summer-rs
+/// runtime can enforce the correct build order:
+///
+/// ```rust,ignore
+/// use summer::App;
+/// use summer_jaeb::SummerJaeb;
+///
+/// App::new()
+///     .add_plugin(DbPoolPlugin)
+///     .add_plugin(SummerJaeb::new().with_dependency("DbPoolPlugin"))
+///     .run()
+///     .await;
+/// ```
+///
+/// The runtime guarantees that `DbPoolPlugin` is built before `SummerJaeb`,
+/// regardless of the order they are added.
+///
 /// # Shutdown
 ///
 /// The summer `Plugin` trait does not provide a teardown hook, so this plugin
@@ -90,13 +111,13 @@ pub mod _private {
 /// ```
 ///
 /// ```rust,ignore
-/// use summer::app::App;
+/// use summer::App;
 /// use summer_jaeb::SummerJaeb;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     App::new()
-///         .add_plugin(SummerJaeb)
+///         .add_plugin(SummerJaeb::new())
 ///         .run()
 ///         .await;
 /// }
@@ -121,12 +142,50 @@ pub mod _private {
 ///
 /// let bus: EventBus = app.get_component().unwrap();
 /// ```
-pub struct SummerJaeb;
+pub struct SummerJaeb {
+    deps: Vec<String>,
+}
+
+impl SummerJaeb {
+    /// Create a new `SummerJaeb` plugin with no declared dependencies.
+    pub fn new() -> Self {
+        Self { deps: Vec::new() }
+    }
+
+    /// Declare that this plugin depends on another named plugin.
+    ///
+    /// The summer-rs runtime will build the named plugin before building
+    /// `SummerJaeb`. Can be chained: `.with_dependency("A").with_dependency("B")`.
+    pub fn with_dependency(mut self, name: impl Into<String>) -> Self {
+        self.deps.push(name.into());
+        self
+    }
+
+    /// Declare multiple plugin dependencies at once.
+    ///
+    /// ```rust,ignore
+    /// SummerJaeb::new().with_dependencies(["DbPoolPlugin", "CachePlugin"])
+    /// ```
+    pub fn with_dependencies(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.deps.extend(names.into_iter().map(Into::into));
+        self
+    }
+}
+
+impl Default for SummerJaeb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Plugin for SummerJaeb {
     fn name(&self) -> &str {
         "SummerJaeb"
+    }
+
+    fn dependencies(&self) -> Vec<&str> {
+        self.deps.iter().map(String::as_str).collect()
     }
 
     async fn build(&self, app: &mut AppBuilder) {
@@ -170,5 +229,41 @@ impl Plugin for SummerJaeb {
         for registrar in listeners {
             registrar.register(&bus, app).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use summer::plugin::Plugin;
+
+    #[test]
+    fn default_has_no_dependencies() {
+        let plugin = SummerJaeb::default();
+        assert!(plugin.dependencies().is_empty());
+    }
+
+    #[test]
+    fn new_has_no_dependencies() {
+        let plugin = SummerJaeb::new();
+        assert!(plugin.dependencies().is_empty());
+    }
+
+    #[test]
+    fn with_dependency_adds_single_dep() {
+        let plugin = SummerJaeb::new().with_dependency("DbPoolPlugin");
+        assert_eq!(plugin.dependencies(), vec!["DbPoolPlugin"]);
+    }
+
+    #[test]
+    fn with_dependencies_adds_multiple_deps() {
+        let plugin = SummerJaeb::new().with_dependencies(["A", "B", "C"]);
+        assert_eq!(plugin.dependencies(), vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn chained_with_dependency() {
+        let plugin = SummerJaeb::new().with_dependency("First").with_dependency("Second");
+        assert_eq!(plugin.dependencies(), vec!["First", "Second"]);
     }
 }

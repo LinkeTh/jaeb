@@ -306,7 +306,7 @@ impl EventBus {
         failure_policy: FailurePolicy,
         once: bool,
     ) -> Result<Subscription, EventBusError> {
-        trace!("event_bus.subscribe");
+        trace!("event_bus.subscribe {:?}", &registered.name);
 
         let subscription_id = self
             .send_and_ack(|ack| BusMessage::Subscribe {
@@ -469,7 +469,7 @@ impl EventBus {
     where
         E: Event + Clone,
     {
-        trace!("event_bus.publish");
+        trace!("event_bus.publish {:?}", std::any::type_name::<E>());
 
         self.send_and_ack(|ack| BusMessage::Publish {
             event_type: TypeId::of::<E>(),

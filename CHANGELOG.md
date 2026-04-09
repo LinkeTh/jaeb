@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [summer-jaeb 0.1.4] - 2026-04-09
+
+### Added
+
+- **Plugin dependency support for `SummerJaeb`.** `SummerJaeb` is now a builder
+  struct (was a unit struct). Use `SummerJaeb::new()` or `SummerJaeb::default()`
+  where you previously wrote `SummerJaeb`. Declare plugin build-order
+  dependencies via `.with_dependency("PluginName")` or
+  `.with_dependencies(["A", "B"])`, which overrides `Plugin::dependencies()` so
+  summer-rs builds the named plugins first. This eliminates non-deterministic
+  startup panics when `#[event_listener]` functions inject components from
+  plugins that may not yet have been built.
+
+### Breaking Changes
+
+- `SummerJaeb` is no longer a unit struct. All uses of the bare `SummerJaeb`
+  expression must be replaced with `SummerJaeb::new()` (or
+  `SummerJaeb::default()`).
+
 ## [0.2.3] - 2026-04-09
 
 ### Breaking Changes

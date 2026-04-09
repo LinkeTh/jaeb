@@ -56,6 +56,9 @@ impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
         info!("async: order {} checked out", event.order_id);
         Ok(())
     }
+    fn name(&self) -> Option<&'static str> {
+        Some("checkout-event")
+    }
 }
 
 /// Handles order cancellation synchronously.
@@ -65,6 +68,10 @@ impl SyncEventHandler<OrderCancelledEvent> for OnOrderCancelled {
     fn handle(&self, event: &OrderCancelledEvent) -> HandlerResult {
         info!("sync: order {} cancelled", event.order_id);
         Ok(())
+    }
+
+    fn name(&self) -> Option<&'static str> {
+        Some("cancellation-event")
     }
 }
 
@@ -76,6 +83,10 @@ impl EventHandler<OrderCheckOutEvent> for CheckoutLogger {
         info!("logger: order {} checked out", event.order_id);
         Ok(())
     }
+
+    fn name(&self) -> Option<&'static str> {
+        Some("order-audit-event")
+    }
 }
 
 /// Always-failing handler to demonstrate the dead-letter pipeline.
@@ -85,6 +96,10 @@ struct OnPaymentFailed;
 impl EventHandler<PaymentFailedEvent> for OnPaymentFailed {
     async fn handle(&self, event: &PaymentFailedEvent) -> HandlerResult {
         Err(format!("payment gateway unavailable for order {}", event.order_id).into())
+    }
+
+    fn name(&self) -> Option<&'static str> {
+        Some("payment-failed-event")
     }
 }
 
@@ -98,6 +113,10 @@ impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
             dl.event_name, dl.subscription_id, dl.attempts, dl.error
         );
         Ok(())
+    }
+
+    fn name(&self) -> Option<&'static str> {
+        Some("dead-letter-event")
     }
 }
 

@@ -60,19 +60,17 @@ impl DbPool {
 }
 
 /// Plugin that registers the `DbPool` component.
-/// Must be added **before** `SummerJaeb` so the pool is available when
-/// `#[event_listener]` functions that depend on `Component<DbPool>` are registered.
 struct DbPoolPlugin;
 
 #[async_trait]
 impl Plugin for DbPoolPlugin {
-    fn name(&self) -> &str {
-        "DbPoolPlugin"
-    }
-
     async fn build(&self, app: &mut AppBuilder) {
         app.add_component(DbPool);
         info!("DbPoolPlugin: registered dummy DbPool component");
+    }
+
+    fn name(&self) -> &str {
+        "DbPoolPlugin"
     }
 }
 
@@ -91,7 +89,7 @@ async fn on_order_placed(event: &OrderPlacedEvent, Component(db): Component<DbPo
 /// Sync listener: reacts to an order being shipped.
 /// Sync handlers execute exactly once — retries are only available for async
 /// handlers. On failure, a dead letter is emitted (enabled by default).
-#[event_listener]
+#[event_listener(name = "order_shipped")]
 fn on_order_shipped(event: &OrderShippedEvent) -> HandlerResult {
     info!(order_id = event.order_id, "order shipped — updating inventory");
     Ok(())
@@ -101,7 +99,7 @@ fn on_order_shipped(event: &OrderShippedEvent) -> HandlerResult {
 /// Must be sync — the macro enforces this because `subscribe_dead_letters`
 /// requires `SyncEventHandler`. The `DeadLetter` event type is auto-detected,
 /// so `subscribe_dead_letters()` is used instead of `subscribe()`.
-#[event_listener]
+#[event_listener(name = "dead_letter")]
 fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
     warn!(
         event = event.event_name,
@@ -169,8 +167,8 @@ async fn ship_order(WebComponent(bus): WebComponent<EventBus>, Path(id): Path<u3
 async fn main() {
     App::new()
         .add_plugin(DbPoolPlugin)
-        .add_plugin(SummerJaeb)
         .add_plugin(WebPlugin)
+        .add_plugin(SummerJaeb::new().with_dependency("DbPoolPlugin"))
         .run()
         .await;
 }

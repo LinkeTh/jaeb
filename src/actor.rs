@@ -163,6 +163,7 @@ pub(crate) struct EventBusActor {
 impl EventBusActor {
     pub fn new(tx: mpsc::Sender<BusMessage>, rx: mpsc::Receiver<BusMessage>, config: &BusConfig) -> Self {
         let async_semaphore = config.max_concurrent_async.map(|n| Arc::new(Semaphore::new(n)));
+        trace!("event_bus_actor.init {:?}", &config);
         Self {
             tx,
             rx,
