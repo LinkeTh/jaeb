@@ -7,6 +7,13 @@
 //! injection via handler structs, unsubscribe handles, retry/dead-letter
 //! failure policies, and graceful shutdown.
 //!
+//! # Requirements
+//!
+//! An active **Tokio runtime** must be available when constructing an
+//! [`EventBus`] (via [`new`](bus::EventBus::new) or
+//! [`builder().build()`](bus::EventBusBuilder::build)), because the internal
+//! actor task is spawned immediately via [`tokio::spawn`].
+//!
 //! # Important semantics
 //!
 //! - **Sync handlers** — dispatched via `tokio::spawn` and awaited before

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
 
@@ -59,15 +58,14 @@ async fn async_handler_receives_event() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(AsyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
+    let _ = bus.subscribe(AsyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     bus.publish(Ping { value: 42 }).await.expect("publish");
 
-    // Async handlers run in the background; give them a moment.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Shutdown drains in-flight async handlers deterministically.
+    bus.shutdown().await.expect("shutdown");
 
     assert_eq!(count.load(Ordering::SeqCst), 42);
-    bus.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
@@ -75,7 +73,7 @@ async fn sync_handler_receives_event() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
+    let _ = bus.subscribe(SyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     bus.publish(Ping { value: 7 }).await.expect("publish");
 
@@ -101,33 +99,35 @@ async fn multiple_handlers_same_event_all_receive() {
     let async_count_a = Arc::new(AtomicUsize::new(0));
     let async_count_b = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SyncCounter {
-        count: Arc::clone(&sync_count),
-    })
-    .await
-    .expect("subscribe sync");
+    let _ = bus
+        .subscribe(SyncCounter {
+            count: Arc::clone(&sync_count),
+        })
+        .await
+        .expect("subscribe sync");
 
-    bus.subscribe(AsyncCounter {
-        count: Arc::clone(&async_count_a),
-    })
-    .await
-    .expect("subscribe async a");
+    let _ = bus
+        .subscribe(AsyncCounter {
+            count: Arc::clone(&async_count_a),
+        })
+        .await
+        .expect("subscribe async a");
 
-    bus.subscribe(AsyncCounter {
-        count: Arc::clone(&async_count_b),
-    })
-    .await
-    .expect("subscribe async b");
+    let _ = bus
+        .subscribe(AsyncCounter {
+            count: Arc::clone(&async_count_b),
+        })
+        .await
+        .expect("subscribe async b");
 
     bus.publish(Ping { value: 5 }).await.expect("publish");
 
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Shutdown drains in-flight async handlers deterministically.
+    bus.shutdown().await.expect("shutdown");
 
     assert_eq!(sync_count.load(Ordering::SeqCst), 5);
     assert_eq!(async_count_a.load(Ordering::SeqCst), 5);
     assert_eq!(async_count_b.load(Ordering::SeqCst), 5);
-
-    bus.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
@@ -136,17 +136,19 @@ async fn handlers_only_receive_their_event_type() {
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SyncCounter {
-        count: Arc::clone(&ping_count),
-    })
-    .await
-    .expect("subscribe ping");
+    let _ = bus
+        .subscribe(SyncCounter {
+            count: Arc::clone(&ping_count),
+        })
+        .await
+        .expect("subscribe ping");
 
-    bus.subscribe(PongCounter {
-        count: Arc::clone(&pong_count),
-    })
-    .await
-    .expect("subscribe pong");
+    let _ = bus
+        .subscribe(PongCounter {
+            count: Arc::clone(&pong_count),
+        })
+        .await
+        .expect("subscribe pong");
 
     // Only publish Ping — Pong handler must not fire.
     bus.publish(Ping { value: 10 }).await.expect("publish ping");

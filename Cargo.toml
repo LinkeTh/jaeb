@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple actor based event bus"
@@ -24,7 +24,7 @@ members = [
 ]
 [dependencies]
 metrics = { version = "0.24", optional = true }
-tokio = { version = "1.51", features = ["full"] }
+tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 tracing = { version = "0.1", features = ["std", "log"] }
 
 [features]

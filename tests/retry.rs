@@ -70,21 +70,21 @@ async fn retry_policy_retries_async_handler() {
 
     let policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(1));
 
-    bus.subscribe_with_policy(
-        FailOnceAsync {
-            attempts: Arc::clone(&attempts),
-        },
-        policy,
-    )
-    .await
-    .expect("subscribe");
+    let _ = bus
+        .subscribe_with_policy(
+            FailOnceAsync {
+                attempts: Arc::clone(&attempts),
+            },
+            policy,
+        )
+        .await
+        .expect("subscribe");
 
     bus.publish(Job).await.expect("publish");
 
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-
+    // Shutdown drains in-flight async handlers (including retries).
     bus.shutdown().await.expect("shutdown");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -94,14 +94,15 @@ async fn retry_policy_retries_sync_handler() {
 
     let policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(1));
 
-    bus.subscribe_with_policy(
-        FailOnceSync {
-            attempts: Arc::clone(&attempts),
-        },
-        policy,
-    )
-    .await
-    .expect("subscribe");
+    let _ = bus
+        .subscribe_with_policy(
+            FailOnceSync {
+                attempts: Arc::clone(&attempts),
+            },
+            policy,
+        )
+        .await
+        .expect("subscribe");
 
     bus.publish(Job).await.expect("publish");
 
@@ -119,22 +120,22 @@ async fn retry_multiple_attempts() {
     // Fail the first 3, succeed on the 4th → need max_retries=3.
     let policy = FailurePolicy::default().with_max_retries(3).with_retry_delay(Duration::from_millis(1));
 
-    bus.subscribe_with_policy(
-        FailNTimesAsync {
-            attempts: Arc::clone(&attempts),
-            fail_count: 3,
-        },
-        policy,
-    )
-    .await
-    .expect("subscribe");
+    let _ = bus
+        .subscribe_with_policy(
+            FailNTimesAsync {
+                attempts: Arc::clone(&attempts),
+                fail_count: 3,
+            },
+            policy,
+        )
+        .await
+        .expect("subscribe");
 
     bus.publish(Job).await.expect("publish");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(attempts.load(Ordering::SeqCst), 4); // 1 initial + 3 retries
-
+    // Shutdown drains in-flight async handlers (including retries).
     bus.shutdown().await.expect("shutdown");
+    assert_eq!(attempts.load(Ordering::SeqCst), 4); // 1 initial + 3 retries
 }
 
 #[tokio::test]
@@ -147,25 +148,24 @@ async fn retry_delay_is_respected() {
         .with_retry_delay(Duration::from_millis(50))
         .with_dead_letter(false);
 
-    bus.subscribe_with_policy(
-        AlwaysFailAsync {
-            attempts: Arc::clone(&attempts),
-        },
-        policy,
-    )
-    .await
-    .expect("subscribe");
+    let _ = bus
+        .subscribe_with_policy(
+            AlwaysFailAsync {
+                attempts: Arc::clone(&attempts),
+            },
+            policy,
+        )
+        .await
+        .expect("subscribe");
 
     let start = Instant::now();
     bus.publish(Job).await.expect("publish");
 
-    // Wait for the retry to complete.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Shutdown waits for in-flight tasks (including retry delays).
+    bus.shutdown().await.expect("shutdown");
     let elapsed = start.elapsed();
 
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    // The retry delay should have caused at least ~40ms of total elapsed time.
-    assert!(elapsed >= Duration::from_millis(40), "expected >= 40ms, got {elapsed:?}");
-
-    bus.shutdown().await.expect("shutdown");
+    // With a 50ms retry delay and 1 retry, the total should be at least 50ms.
+    assert!(elapsed >= Duration::from_millis(45), "expected >= 45ms, got {elapsed:?}");
 }

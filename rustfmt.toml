@@ -1,1 +1,4 @@
 max_width = 150
+tab_spaces = 4
+hard_tabs = false
+edition = "2024"

@@ -40,7 +40,7 @@ async fn semaphore_limited_bus_shuts_down_cleanly() {
 
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
+    let _ = bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
 
     // Publish several events — with concurrency limit of 1, most will be
     // queued behind the semaphore.
@@ -64,15 +64,13 @@ async fn semaphore_limited_handlers_execute_normally() {
 
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
+    let _ = bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
 
     for _ in 0..4 {
         bus.publish(Ping).await.expect("publish");
     }
 
-    // Give handlers time to finish (4 handlers * 50ms, with concurrency 2 ≈ 100ms).
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
+    // Shutdown drains in-flight async handlers deterministically.
     bus.shutdown().await.expect("shutdown");
 
     assert_eq!(count.load(Ordering::SeqCst), 4);

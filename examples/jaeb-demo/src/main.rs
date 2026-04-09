@@ -24,6 +24,11 @@ struct OrderCancelledEvent {
     order_id: i32,
 }
 
+#[derive(Clone, Debug)]
+struct PaymentFailedEvent {
+    order_id: i32,
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────
 struct DbPool;
 
@@ -73,6 +78,16 @@ impl EventHandler<OrderCheckOutEvent> for CheckoutLogger {
     }
 }
 
+/// Always-failing handler to demonstrate the dead-letter pipeline.
+/// After exhausting retries the event is routed to the dead-letter listener.
+struct OnPaymentFailed;
+
+impl EventHandler<PaymentFailedEvent> for OnPaymentFailed {
+    async fn handle(&self, event: &PaymentFailedEvent) -> HandlerResult {
+        Err(format!("payment gateway unavailable for order {}", event.order_id).into())
+    }
+}
+
 /// Logs dead letters.
 struct DeadLetterLogger;
 
@@ -114,16 +129,28 @@ async fn subscribe_listeners(bus: &EventBus) {
     // In a real app, pass pool/config/etc. into handler structs here:
     let retry_policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(100));
 
-    bus.subscribe_with_policy(OnOrderCheckout { pool, attempts }, retry_policy)
+    let _ = bus
+        .subscribe_with_policy(OnOrderCheckout { pool, attempts }, retry_policy)
         .await
         .expect("failed to subscribe async handler");
 
-    bus.subscribe(OnOrderCancelled).await.expect("failed to subscribe sync handler");
+    let _ = bus.subscribe(OnOrderCancelled).await.expect("failed to subscribe sync handler");
 
     // Struct-based listener for simple one-off logging:
-    bus.subscribe(CheckoutLogger).await.expect("failed to subscribe checkout logger");
+    let _ = bus.subscribe(CheckoutLogger).await.expect("failed to subscribe checkout logger");
 
-    bus.subscribe_dead_letters(DeadLetterLogger)
+    // Always-failing handler with dead-letter enabled to demonstrate the dead-letter pipeline.
+    let dl_policy = FailurePolicy::default()
+        .with_max_retries(2)
+        .with_retry_delay(Duration::from_millis(50))
+        .with_dead_letter(true);
+    let _ = bus
+        .subscribe_with_policy(OnPaymentFailed, dl_policy)
+        .await
+        .expect("failed to subscribe payment-failed handler");
+
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterLogger)
         .await
         .expect("failed to subscribe dead-letter listener");
 }
@@ -145,7 +172,14 @@ async fn main() {
 
     checkout(42, &bus).await;
     cancellation(42, &bus).await;
-    tokio::time::sleep(Duration::from_secs(20)).await;
+
+    // Publish an event that will always fail, demonstrating the dead-letter path.
+    bus.publish(PaymentFailedEvent { order_id: 99 })
+        .await
+        .expect("failed to publish payment-failed event");
+
+    // Give async handlers and retries time to complete, then shut down cleanly.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     bus.shutdown().await.expect("failed to shutdown event bus");
 }
 

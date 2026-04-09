@@ -5,7 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [Unreleased]
+
+## [0.2.2] - 2026-04-09
+
+### Fixed
+
+- Async handler failures are now reaped promptly even when the bus is idle,
+  using `tokio::select!` in the actor loop instead of polling only after
+  processing a new message.
+- Handler panics now flow through the retry/dead-letter pipeline instead of
+  being silently logged and dropped.
+- Type-erasure downcast failures now return an error instead of silently
+  succeeding with `Ok(())`.
+- Fixed redundant doc-link target in crate-level documentation.
+
+### Changed
+
+- `Subscription` is now `#[must_use]` to prevent accidental drops that leave
+  listeners registered.
+- `SubscriptionId` generation uses `checked_add` and panics on overflow instead
+  of silently saturating at `u64::MAX`.
+- Narrowed `tokio` dependency from `features = ["full"]` to only the features
+  actually used (`rt`, `rt-multi-thread`, `sync`, `macros`, `time`).
+- Replaced sleep-based test synchronization with deterministic `shutdown()`
+  draining for more reliable CI.
+- CI now tests the full workspace (`--workspace`) including `summer-jaeb` and
+  `summer-jaeb-macros`.
+- Improved `jaeb-demo` example: reduced 20s sleep to 1s + shutdown, added
+  `PaymentFailedEvent` demonstrating the dead-letter pipeline end-to-end.
+
+### Added
+
+- Comprehensive doc comments on `FailurePolicy` fields, `DeadLetter` struct,
+  `EventBus::unsubscribe`, and crate-level Tokio runtime requirement.
+
+### Added (summer-jaeb-macros 0.1.2)
+
+- `#[event_listener]` now validates that the return type is `HandlerResult`.
+- Duplicate macro attributes (e.g. `retries` specified twice) now produce a
+  compile error instead of silently using the last value.
+- Split `lib.rs` into `attrs`, `validate`, and `codegen` modules.
+- Collapsed nested `if` blocks to use Rust 2024 let-chains.
+
+### Fixed (summer-jaeb 0.1.2)
+
+- Removed redundant `#[must_use]` on internal `auto_listeners()` function
+  (clippy `double_must_use`).
+- Documented plugin startup panic behavior.
+
+## [0.2.1]
+
+### Fixed
+
+- Documentation and metadata updates.
+
+## [0.2.0]
 
 ### Changed
 
@@ -13,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configured `shutdown_timeout` deadline expires and in-flight async tasks are
   forcibly aborted. Previously, shutdown always returned `Ok(())` even when tasks
   were aborted.
+
+## [0.1.0]
 
 ### Added
 

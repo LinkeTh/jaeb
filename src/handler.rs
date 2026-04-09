@@ -61,7 +61,7 @@ where
                 Box::pin(async move { handler.handle(&event).await })
             } else {
                 warn!(expected = std::any::type_name::<E>(), "handler.downcast_failed");
-                Box::pin(async { Ok(()) })
+                Box::pin(async { Err("internal error: event type downcast failed".into()) })
             }
         });
         RegisteredHandler {
@@ -84,7 +84,7 @@ where
                 handler.handle(event)
             } else {
                 warn!(expected = std::any::type_name::<E>(), "handler.downcast_failed");
-                Ok(())
+                Err("internal error: event type downcast failed".into())
             };
             Box::pin(async move { result })
         });

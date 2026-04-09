@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use jaeb::{EventBus, HandlerResult, SyncEventHandler};
 
@@ -46,16 +45,14 @@ async fn panicking_handler_does_not_crash_bus() {
     let bus = EventBus::new(16);
     let count = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(PanicHandler).await.expect("subscribe panic handler");
-    bus.subscribe(SafeCounter { count: Arc::clone(&count) })
+    let _ = bus.subscribe(PanicHandler).await.expect("subscribe panic handler");
+    let _ = bus
+        .subscribe(SafeCounter { count: Arc::clone(&count) })
         .await
         .expect("subscribe safe handler");
 
     // Publish the event that triggers a panic.
     bus.publish(Boom).await.expect("publish Boom");
-
-    // Give the runtime a moment to process the panic.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // The bus should still be alive. Publish to a different event type.
     bus.publish(Safe).await.expect("publish Safe after panic");

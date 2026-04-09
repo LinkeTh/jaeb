@@ -43,7 +43,6 @@ inventory::collect!(&'static dyn TypedListenerRegistrar);
 ///
 /// This is an internal helper used by `SummerJaeb::build()`. The double reference
 /// (`&'static dyn`) comes from how `inventory` stores and iterates trait objects.
-#[must_use]
 pub(crate) fn auto_listeners() -> impl Iterator<Item = &'static &'static dyn TypedListenerRegistrar> {
     inventory::iter::<&'static dyn TypedListenerRegistrar>.into_iter()
 }
@@ -62,6 +61,15 @@ pub mod _private {
 
 /// summer-rs plugin that registers a [`jaeb::EventBus`] as an application component
 /// and auto-subscribes all `#[event_listener]` functions.
+///
+/// # Panics
+///
+/// The plugin panics during [`build`](Plugin::build) if:
+/// - The `[jaeb]` configuration section cannot be loaded.
+/// - The resulting `EventBusBuilder` configuration is invalid (e.g. zero buffer size).
+/// - A listener's `Component<T>` dependency is not registered in the application.
+/// - A listener subscription fails (e.g. bus already shut down, which shouldn't
+///   happen during normal startup).
 ///
 /// # Usage
 ///

@@ -24,7 +24,7 @@ JAEB provides:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.0" }
+jaeb = { version = "0.2.2" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -32,7 +32,7 @@ To enable metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.0", features = ["metrics"] }
+jaeb = { version = "0.2.1", features = ["metrics"] }
 ```
 
 ## Quick Start
@@ -147,9 +147,9 @@ to remove the handler, or use `bus.unsubscribe(id)` directly.
 
 ## Feature Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `metrics` | off | Enables Prometheus-compatible instrumentation via the `metrics` crate |
+| Flag      | Default | Description                                                           |
+|-----------|---------|-----------------------------------------------------------------------|
+| `metrics` | off     | Enables Prometheus-compatible instrumentation via the `metrics` crate |
 
 When the `metrics` feature is enabled, the bus records:
 
@@ -209,7 +209,7 @@ RUST_LOG=info,jaeb=trace cargo run
 
 ## License
 
-jaeb is distributed under the [MIT License](LICENCE).
+jaeb is distributed under the [MIT License](LICENSE).
 
 Copyright (c) 2025-2026 Linke Thomas
 

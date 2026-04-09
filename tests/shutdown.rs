@@ -64,7 +64,10 @@ async fn shutdown_stops_new_operations() {
     let bus = EventBus::new(16);
     bus.shutdown().await.expect("shutdown");
 
-    let reg_err = bus.subscribe(NoOpSync).await.expect_err("subscribe after shutdown");
+    let reg_err = match bus.subscribe(NoOpSync).await {
+        Ok(_) => panic!("subscribe after shutdown unexpectedly succeeded"),
+        Err(err) => err,
+    };
     assert_eq!(reg_err, EventBusError::ActorStopped);
 
     let pub_err = bus.publish(Work { value: 1 }).await.expect_err("publish after shutdown");
@@ -90,7 +93,7 @@ async fn shutdown_drains_queued_publishes() {
     let bus = EventBus::new(64);
     let sum = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
+    let _ = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
 
     // Enqueue several events via try_publish (non-blocking).
     for i in 1..=5 {
@@ -109,7 +112,7 @@ async fn shutdown_waits_for_inflight_async_handlers() {
     let bus = EventBus::new(16);
     let done = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
+    let _ = bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
 
     bus.publish(Work { value: 1 }).await.expect("publish");
 
@@ -130,7 +133,7 @@ async fn shutdown_returns_timeout_when_tasks_aborted() {
 
     let done = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe(VerySlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
+    let _ = bus.subscribe(VerySlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
 
     bus.publish(Work { value: 1 }).await.expect("publish");
 
@@ -157,7 +160,7 @@ async fn shutdown_succeeds_when_tasks_finish_before_deadline() {
     let done = Arc::new(AtomicUsize::new(0));
 
     // SlowAsync sleeps 100ms, well within the 5s deadline.
-    bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
+    let _ = bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
 
     bus.publish(Work { value: 1 }).await.expect("publish");
 

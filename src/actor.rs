@@ -115,65 +115,86 @@ impl EventBusActor {
 
     pub async fn run(mut self) {
         trace!("event_bus_actor.run");
-        while let Some(msg) = self.rx.recv().await {
-            match msg {
-                BusMessage::Subscribe {
-                    event_type,
-                    handler,
-                    mode,
-                    failure_policy,
-                    ack,
-                } => {
-                    let id = self.next_subscription_id();
-                    let list = self.listeners.entry(event_type).or_default();
-                    list.push(Listener {
-                        id,
-                        handler,
-                        mode,
-                        failure_policy,
-                    });
-                    self.listener_index.insert(id, event_type);
+        loop {
+            // Use select! to concurrently poll the message channel and in-flight
+            // async tasks.  This ensures that async handler failures and dead
+            // letters are processed promptly even when the bus is idle.
+            tokio::select! {
+                biased;
 
-                    if let Err(_e) = ack.send(id) {
-                        warn!("subscribe.ack_receiver_dropped");
-                    }
-                }
-                BusMessage::Unsubscribe { subscription_id, ack } => {
-                    let removed = self.remove_listener(subscription_id);
-                    if let Err(_e) = ack.send(removed) {
-                        warn!(subscription_id = subscription_id.as_u64(), "unsubscribe.ack_receiver_dropped");
-                    }
-                }
-                BusMessage::Publish {
-                    event_type,
-                    event,
-                    event_name,
-                    ack,
-                } => {
-                    self.dispatch(event_type, event, event_name).await;
-                    if let Some(ack) = ack
-                        && let Err(_e) = ack.send(())
-                    {
-                        warn!(event = event_name, "publish.ack_receiver_dropped");
-                    }
-                }
-                BusMessage::Shutdown { ack } => {
-                    self.rx.close();
-                    self.drain_queued_messages().await;
-                    let timed_out = self.drain_async_tasks().await;
-                    let result = if timed_out {
-                        Err(crate::error::EventBusError::ShutdownTimeout)
-                    } else {
-                        Ok(())
+                msg = self.rx.recv() => {
+                    let Some(msg) = msg else {
+                        // Channel closed without an explicit Shutdown message.
+                        break;
                     };
-                    if let Err(_e) = ack.send(result) {
-                        warn!("shutdown.ack_receiver_dropped");
+
+                    match msg {
+                        BusMessage::Subscribe {
+                            event_type,
+                            handler,
+                            mode,
+                            failure_policy,
+                            ack,
+                        } => {
+                            let id = self.next_subscription_id();
+                            let list = self.listeners.entry(event_type).or_default();
+                            list.push(Listener {
+                                id,
+                                handler,
+                                mode,
+                                failure_policy,
+                            });
+                            self.listener_index.insert(id, event_type);
+
+                            if let Err(_e) = ack.send(id) {
+                                warn!("subscribe.ack_receiver_dropped");
+                            }
+                        }
+                        BusMessage::Unsubscribe { subscription_id, ack } => {
+                            let removed = self.remove_listener(subscription_id);
+                            if let Err(_e) = ack.send(removed) {
+                                warn!(subscription_id = subscription_id.as_u64(), "unsubscribe.ack_receiver_dropped");
+                            }
+                        }
+                        BusMessage::Publish {
+                            event_type,
+                            event,
+                            event_name,
+                            ack,
+                        } => {
+                            self.dispatch(event_type, event, event_name).await;
+                            if let Some(ack) = ack
+                                && let Err(_e) = ack.send(())
+                            {
+                                warn!(event = event_name, "publish.ack_receiver_dropped");
+                            }
+                        }
+                        BusMessage::Shutdown { ack } => {
+                            self.rx.close();
+                            self.drain_queued_messages().await;
+                            let timed_out = self.drain_async_tasks().await;
+                            let result = if timed_out {
+                                Err(crate::error::EventBusError::ShutdownTimeout)
+                            } else {
+                                Ok(())
+                            };
+                            if let Err(_e) = ack.send(result) {
+                                warn!("shutdown.ack_receiver_dropped");
+                            }
+                            break;
+                        }
                     }
-                    break;
+
+                    // Also reap any tasks that finished while we were handling
+                    // the message above.
+                    self.reap_finished_async_tasks();
+                }
+
+                // An in-flight async task completed while the channel was idle.
+                Some(result) = self.async_tasks.join_next() => {
+                    self.handle_join_result(result);
                 }
             }
-
-            self.reap_finished_async_tasks();
         }
 
         let _ = self.drain_async_tasks().await;
@@ -182,7 +203,10 @@ impl EventBusActor {
 
     fn next_subscription_id(&mut self) -> SubscriptionId {
         let id = SubscriptionId(self.next_subscription_id);
-        self.next_subscription_id = self.next_subscription_id.saturating_add(1);
+        self.next_subscription_id = self
+            .next_subscription_id
+            .checked_add(1)
+            .expect("subscription ID overflow: exceeded u64::MAX subscriptions");
         id
     }
 
@@ -297,7 +321,22 @@ impl EventBusActor {
             match task.await {
                 Ok(Some(failure)) => self.handle_listener_failure(failure),
                 Ok(None) => {}
-                Err(join_error) => self.log_join_error(event_name, join_error),
+                Err(join_error) => {
+                    error!(event = event_name, error = %join_error, "handler.join_error");
+
+                    #[cfg(feature = "metrics")]
+                    counter!("eventbus.handler.join_error", "event" => event_name).increment(1);
+
+                    // Route panics through dead-letter pipeline.
+                    let failure = ListenerFailure {
+                        event_name,
+                        subscription_id: SubscriptionId(0),
+                        attempts: 1,
+                        error: join_error.to_string(),
+                        dead_letter: true,
+                    };
+                    self.handle_listener_failure(failure);
+                }
             }
         }
     }
@@ -436,10 +475,35 @@ impl EventBusActor {
 
     fn reap_finished_async_tasks(&mut self) {
         while let Some(result) = self.async_tasks.try_join_next() {
-            match result {
-                Ok(Some(failure)) => self.handle_listener_failure(failure),
-                Ok(None) => {}
-                Err(join_error) => self.log_join_error("unknown", join_error),
+            self.handle_join_result(result);
+        }
+    }
+
+    /// Process the outcome of a completed async handler task.
+    ///
+    /// Panics in handler tasks are converted into [`ListenerFailure`]s so they
+    /// flow through the normal dead-letter pipeline instead of being silently
+    /// dropped.
+    fn handle_join_result(&mut self, result: Result<HandlerTaskOutcome, tokio::task::JoinError>) {
+        match result {
+            Ok(Some(failure)) => self.handle_listener_failure(failure),
+            Ok(None) => {}
+            Err(join_error) => {
+                error!(error = %join_error, "handler.join_error");
+
+                #[cfg(feature = "metrics")]
+                counter!("eventbus.handler.join_error").increment(1);
+
+                // Treat panics / cancellations as terminal failures eligible
+                // for dead-lettering.
+                let failure = ListenerFailure {
+                    event_name: "unknown",
+                    subscription_id: SubscriptionId(0),
+                    attempts: 1,
+                    error: join_error.to_string(),
+                    dead_letter: true,
+                };
+                self.handle_listener_failure(failure);
             }
         }
     }
@@ -452,11 +516,7 @@ impl EventBusActor {
                 let deadline = tokio::time::Instant::now() + timeout;
                 loop {
                     match tokio::time::timeout_at(deadline, self.async_tasks.join_next()).await {
-                        Ok(Some(result)) => match result {
-                            Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
-                            Ok(None) => {}
-                            Err(join_error) => self.log_join_error("unknown", join_error),
-                        },
+                        Ok(Some(result)) => self.handle_join_result_direct(result).await,
                         Ok(None) => return false, // all tasks done before deadline
                         Err(_elapsed) => {
                             let remaining = self.async_tasks.len();
@@ -471,21 +531,34 @@ impl EventBusActor {
             }
             None => {
                 while let Some(result) = self.async_tasks.join_next().await {
-                    match result {
-                        Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
-                        Ok(None) => {}
-                        Err(join_error) => self.log_join_error("unknown", join_error),
-                    }
+                    self.handle_join_result_direct(result).await;
                 }
                 false
             }
         }
     }
 
-    fn log_join_error(&self, event_name: &'static str, join_error: tokio::task::JoinError) {
-        error!(event = event_name, error = %join_error, "handler.join_error");
+    /// Like [`handle_join_result`] but dispatches dead letters directly during
+    /// shutdown, bypassing the (possibly closed) channel.
+    async fn handle_join_result_direct(&mut self, result: Result<HandlerTaskOutcome, tokio::task::JoinError>) {
+        match result {
+            Ok(Some(failure)) => self.handle_listener_failure_direct(failure).await,
+            Ok(None) => {}
+            Err(join_error) => {
+                error!(error = %join_error, "handler.join_error");
 
-        #[cfg(feature = "metrics")]
-        counter!("eventbus.handler.join_error", "event" => event_name).increment(1);
+                #[cfg(feature = "metrics")]
+                counter!("eventbus.handler.join_error").increment(1);
+
+                let failure = ListenerFailure {
+                    event_name: "unknown",
+                    subscription_id: SubscriptionId(0),
+                    attempts: 1,
+                    error: join_error.to_string(),
+                    dead_letter: true,
+                };
+                self.handle_listener_failure_direct(failure).await;
+            }
+        }
     }
 }

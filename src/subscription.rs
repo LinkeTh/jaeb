@@ -6,6 +6,7 @@ use crate::error::EventBusError;
 use crate::types::SubscriptionId;
 
 #[derive(Clone)]
+#[must_use = "dropping the Subscription leaves the listener registered; call .unsubscribe() or store the handle"]
 pub struct Subscription {
     id: SubscriptionId,
     bus: EventBus,

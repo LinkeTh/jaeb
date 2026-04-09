@@ -350,11 +350,18 @@ impl EventBus {
         }
     }
 
+    /// Remove a previously registered listener by its [`SubscriptionId`](crate::types::SubscriptionId).
+    ///
+    /// Returns `Ok(true)` if the listener was found and removed, `Ok(false)` if
+    /// no listener with that ID exists (e.g. already unsubscribed), or
+    /// `Err(EventBusError::ActorStopped)` if the bus has shut down.
+    ///
+    /// Prefer using [`Subscription::unsubscribe`](crate::subscription::Subscription::unsubscribe)
+    /// when you have the subscription handle.
     pub async fn unsubscribe(&self, subscription_id: crate::types::SubscriptionId) -> Result<bool, EventBusError> {
         trace!(subscription_id = subscription_id.as_u64(), "event_bus.unsubscribe");
 
-        self.send_and_ack(|ack| BusMessage::Unsubscribe { subscription_id, ack })
-            .await
+        self.send_and_ack(|ack| BusMessage::Unsubscribe { subscription_id, ack }).await
     }
 
     /// Gracefully stop the actor and wait for queued publish messages plus

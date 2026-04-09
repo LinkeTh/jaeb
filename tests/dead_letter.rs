@@ -73,14 +73,15 @@ async fn failed_handler_emits_dead_letter() {
     let notify = Arc::new(Notify::new());
     let seen = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe_dead_letters(DeadLetterCounter {
-        seen: Arc::clone(&seen),
-        notify: Arc::clone(&notify),
-    })
-    .await
-    .expect("subscribe dead letters");
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCounter {
+            seen: Arc::clone(&seen),
+            notify: Arc::clone(&notify),
+        })
+        .await
+        .expect("subscribe dead letters");
 
-    bus.subscribe(AlwaysFailSync).await.expect("subscribe");
+    let _ = bus.subscribe(AlwaysFailSync).await.expect("subscribe");
 
     bus.publish(Alert("boom".into())).await.expect("publish");
 
@@ -98,12 +99,13 @@ async fn dead_letter_contains_correct_metadata() {
     let notify = Arc::new(Notify::new());
     let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
 
-    bus.subscribe_dead_letters(DeadLetterCollector {
-        letters: Arc::clone(&letters),
-        notify: Arc::clone(&notify),
-    })
-    .await
-    .expect("subscribe dead letters");
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCollector {
+            letters: Arc::clone(&letters),
+            notify: Arc::clone(&notify),
+        })
+        .await
+        .expect("subscribe dead letters");
 
     let sub = bus.subscribe(AlwaysFailSync).await.expect("subscribe");
     let expected_id = sub.id();
@@ -131,14 +133,15 @@ async fn async_handler_failure_emits_dead_letter() {
     let bus = EventBus::new(16);
     let seen = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe_dead_letters(DeadLetterCounter {
-        seen: Arc::clone(&seen),
-        notify: Arc::new(Notify::new()),
-    })
-    .await
-    .expect("subscribe dead letters");
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCounter {
+            seen: Arc::clone(&seen),
+            notify: Arc::new(Notify::new()),
+        })
+        .await
+        .expect("subscribe dead letters");
 
-    bus.subscribe(AlwaysFailAsync).await.expect("subscribe");
+    let _ = bus.subscribe(AlwaysFailAsync).await.expect("subscribe");
 
     bus.publish(Alert("async boom".into())).await.expect("publish");
 
@@ -155,16 +158,17 @@ async fn dead_letter_suppressed_when_disabled() {
     let notify = Arc::new(Notify::new());
     let seen = Arc::new(AtomicUsize::new(0));
 
-    bus.subscribe_dead_letters(DeadLetterCounter {
-        seen: Arc::clone(&seen),
-        notify: Arc::clone(&notify),
-    })
-    .await
-    .expect("subscribe dead letters");
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCounter {
+            seen: Arc::clone(&seen),
+            notify: Arc::clone(&notify),
+        })
+        .await
+        .expect("subscribe dead letters");
 
     // Subscribe a handler with dead_letter = false.
     let policy = FailurePolicy::default().with_dead_letter(false);
-    bus.subscribe_with_policy(AlwaysFailSync, policy).await.expect("subscribe");
+    let _ = bus.subscribe_with_policy(AlwaysFailSync, policy).await.expect("subscribe");
 
     bus.publish(Alert("suppressed".into())).await.expect("publish");
 
@@ -181,12 +185,13 @@ async fn dead_letter_handler_failure_does_not_recurse() {
     let bus = EventBus::new(16);
 
     // Subscribe a dead-letter handler that itself fails.
-    bus.subscribe_dead_letters(FailingDeadLetterHandler)
+    let _ = bus
+        .subscribe_dead_letters(FailingDeadLetterHandler)
         .await
         .expect("subscribe dead letters");
 
     // Register a normal handler that always fails.
-    bus.subscribe(AlwaysFailSync).await.expect("subscribe");
+    let _ = bus.subscribe(AlwaysFailSync).await.expect("subscribe");
 
     bus.publish(Alert("recurse?".into())).await.expect("publish");
 

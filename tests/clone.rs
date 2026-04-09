@@ -30,7 +30,7 @@ async fn cloned_bus_shares_state() {
     let count = Arc::new(AtomicUsize::new(0));
 
     // Subscribe on the original handle.
-    bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
+    let _ = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
 
     // Clone and publish on the clone.
     let bus2 = bus.clone();

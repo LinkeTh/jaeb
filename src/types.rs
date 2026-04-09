@@ -17,6 +17,18 @@ impl fmt::Display for SubscriptionId {
     }
 }
 
+/// Policy controlling how handler failures are treated.
+///
+/// - `max_retries`: how many *additional* attempts after the first failure
+///   (0 means no retries).
+/// - `retry_delay`: optional delay between retry attempts. Ignored when
+///   `max_retries` is 0.
+/// - `dead_letter`: whether a [`DeadLetter`] event is emitted after all
+///   attempts are exhausted. Automatically forced to `false` for dead-letter
+///   listeners to prevent infinite recursion.
+///
+/// All fields are public for convenience; invalid combinations (e.g.
+/// `retry_delay` set with `max_retries: 0`) are harmless but have no effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FailurePolicy {
     pub max_retries: usize,
@@ -51,6 +63,12 @@ impl FailurePolicy {
     }
 }
 
+/// A dead-letter record emitted when a handler exhausts all retry attempts.
+///
+/// The original error is stored as a [`String`] rather than a typed error
+/// because `DeadLetter` must be `Clone` (it is published as an event) and
+/// `Box<dyn Error>` does not implement `Clone`. Use [`error`](Self::error)
+/// for diagnostics or pattern-match on the stringified message.
 #[derive(Clone, Debug)]
 pub struct DeadLetter {
     pub event_name: &'static str,
