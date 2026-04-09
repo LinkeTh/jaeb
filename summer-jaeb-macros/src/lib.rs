@@ -153,6 +153,23 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
         ));
     }
 
+    // Warn about likely mistakes in failure policy configuration
+    if attrs.retry_delay_ms.is_some() && attrs.retries.is_none() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "`retry_delay_ms` has no effect without `retries`; add `retries = N` or remove `retry_delay_ms`",
+        ));
+    }
+
+    // Retry attributes are only supported on async handlers — sync handlers
+    // execute exactly once.
+    if !is_async && (attrs.retries.is_some() || attrs.retry_delay_ms.is_some()) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "`retries` and `retry_delay_ms` are only supported on async handlers — sync handlers execute exactly once (failures produce dead letters when enabled)",
+        ));
+    }
+
     // Parse remaining parameters as Component state
     let state_params = parse_state_params(&func.sig.inputs)?;
     let has_state = !state_params.is_empty();

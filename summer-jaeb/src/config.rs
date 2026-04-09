@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use schemars::JsonSchema;
 use serde::Deserialize;
 use summer::config::Configurable;
@@ -14,7 +15,7 @@ use summer::config::Configurable;
 /// max_concurrent_async = 100
 /// shutdown_timeout_secs = 10
 /// ```
-#[derive(Debug, Configurable, JsonSchema, Deserialize)]
+#[derive(Debug, Default, Configurable, JsonSchema, Deserialize)]
 #[config_prefix = "jaeb"]
 pub struct Config {
     /// Internal channel buffer size. Defaults to 256.

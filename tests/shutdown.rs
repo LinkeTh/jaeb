@@ -61,7 +61,7 @@ impl EventHandler<Work> for VerySlowAsync {
 
 #[tokio::test]
 async fn shutdown_stops_new_operations() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     bus.shutdown().await.expect("shutdown");
 
     let reg_err = match bus.subscribe(NoOpSync).await {
@@ -76,7 +76,7 @@ async fn shutdown_stops_new_operations() {
 
 #[tokio::test]
 async fn unsubscribe_after_shutdown_returns_actor_stopped() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let sum = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
@@ -90,7 +90,7 @@ async fn unsubscribe_after_shutdown_returns_actor_stopped() {
 
 #[tokio::test]
 async fn shutdown_drains_queued_publishes() {
-    let bus = EventBus::new(64);
+    let bus = EventBus::new(64).expect("valid config");
     let sum = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
@@ -109,7 +109,7 @@ async fn shutdown_drains_queued_publishes() {
 
 #[tokio::test]
 async fn shutdown_waits_for_inflight_async_handlers() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let done = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");

@@ -7,9 +7,7 @@ use jaeb::{EventBus, EventBusError};
 fn build_with_zero_buffer_size_returns_error() {
     let result = EventBus::builder().buffer_size(0).build();
     match result {
-        Err(EventBusError::InvalidConfig(msg)) => {
-            assert!(msg.contains("buffer_size"), "error message should mention buffer_size: {msg}");
-        }
+        Err(EventBusError::InvalidConfig(jaeb::ConfigError::ZeroBufferSize)) => {}
         Err(other) => panic!("expected InvalidConfig error, got {other}"),
         Ok(_) => panic!("expected error, got Ok"),
     }
@@ -19,12 +17,7 @@ fn build_with_zero_buffer_size_returns_error() {
 fn build_with_zero_max_concurrent_async_returns_error() {
     let result = EventBus::builder().max_concurrent_async(0).build();
     match result {
-        Err(EventBusError::InvalidConfig(msg)) => {
-            assert!(
-                msg.contains("max_concurrent_async"),
-                "error message should mention max_concurrent_async: {msg}"
-            );
-        }
+        Err(EventBusError::InvalidConfig(jaeb::ConfigError::ZeroConcurrency)) => {}
         Err(other) => panic!("expected InvalidConfig error, got {other}"),
         Ok(_) => panic!("expected error, got Ok"),
     }
@@ -41,7 +34,11 @@ async fn build_with_valid_config_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "buffer size must be greater than zero")]
-fn new_with_zero_buffer_panics() {
-    let _bus = EventBus::new(0);
+fn new_with_zero_buffer_returns_error() {
+    let result = EventBus::new(0);
+    match result {
+        Err(EventBusError::InvalidConfig(jaeb::ConfigError::ZeroBufferSize)) => {}
+        Err(other) => panic!("expected InvalidConfig(ZeroBufferSize) error, got {other}"),
+        Ok(_) => panic!("expected error, got Ok"),
+    }
 }

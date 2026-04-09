@@ -20,12 +20,15 @@ impl fmt::Display for SubscriptionId {
 /// Policy controlling how handler failures are treated.
 ///
 /// - `max_retries`: how many *additional* attempts after the first failure
-///   (0 means no retries).
+///   (0 means no retries). **Only supported for async handlers.** Subscribing
+///   a sync handler with `max_retries > 0` returns
+///   [`EventBusError::SyncRetryNotSupported`](crate::EventBusError::SyncRetryNotSupported).
 /// - `retry_delay`: optional delay between retry attempts. Ignored when
-///   `max_retries` is 0.
+///   `max_retries` is 0. Only applies to async handlers.
 /// - `dead_letter`: whether a [`DeadLetter`] event is emitted after all
-///   attempts are exhausted. Automatically forced to `false` for dead-letter
-///   listeners to prevent infinite recursion.
+///   attempts are exhausted (or on first failure for sync handlers).
+///   Automatically forced to `false` for dead-letter listeners to prevent
+///   infinite recursion.
 ///
 /// All fields are public for convenience; invalid combinations (e.g.
 /// `retry_delay` set with `max_retries: 0`) are harmless but have no effect.

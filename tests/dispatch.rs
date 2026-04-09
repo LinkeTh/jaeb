@@ -55,7 +55,7 @@ impl SyncEventHandler<Pong> for PongCounter {
 
 #[tokio::test]
 async fn async_handler_receives_event() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(AsyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -70,7 +70,7 @@ async fn async_handler_receives_event() {
 
 #[tokio::test]
 async fn sync_handler_receives_event() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SyncCounter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -84,7 +84,7 @@ async fn sync_handler_receives_event() {
 
 #[tokio::test]
 async fn publish_with_no_listeners_is_noop() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
 
     // Publishing with no registered handlers should not error or panic.
     bus.publish(Ping { value: 99 }).await.expect("publish with no listeners");
@@ -94,7 +94,7 @@ async fn publish_with_no_listeners_is_noop() {
 
 #[tokio::test]
 async fn multiple_handlers_same_event_all_receive() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let sync_count = Arc::new(AtomicUsize::new(0));
     let async_count_a = Arc::new(AtomicUsize::new(0));
     let async_count_b = Arc::new(AtomicUsize::new(0));
@@ -132,7 +132,7 @@ async fn multiple_handlers_same_event_all_receive() {
 
 #[tokio::test]
 async fn handlers_only_receive_their_event_type() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
 

@@ -21,17 +21,17 @@
 use jaeb::{DeadLetter, EventBus, HandlerResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use summer::App;
 use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::auto_config;
 use summer::extractor::Component;
 use summer::plugin::{MutableComponentRegistry, Plugin};
-use summer_jaeb::{SummerJaeb, event_listener};
+use summer::App;
+use summer_jaeb::{event_listener, SummerJaeb};
 use summer_web::axum::Json;
 use summer_web::extractor::Component as WebComponent;
 use summer_web::extractor::Path;
-use summer_web::{WebConfigurator, WebPlugin, post_api};
+use summer_web::{post_api, WebConfigurator, WebPlugin};
 use tracing::{info, warn};
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -81,16 +81,17 @@ impl Plugin for DbPoolPlugin {
 /// Async listener with state injection: reacts to a new order being placed.
 /// The `Component<DbPool>` parameter is automatically resolved from summer's
 /// component registry at listener registration time.
-#[event_listener]
+#[event_listener(retries = 2, retry_delay_ms = 500, dead_letter = true)]
 async fn on_order_placed(event: &OrderPlacedEvent, Component(db): Component<DbPool>) -> HandlerResult {
     db.log_order(event.order_id);
     info!(order_id = event.order_id, "order placed — confirmation email sent");
     Ok(())
 }
 
-/// Sync listener with failure policy: reacts to an order being shipped.
-/// Retries up to 2 times with a 500ms delay, and sends to dead-letter queue on exhaustion.
-#[event_listener(retries = 2, retry_delay_ms = 500, dead_letter = true)]
+/// Sync listener: reacts to an order being shipped.
+/// Sync handlers execute exactly once — retries are only available for async
+/// handlers. On failure, a dead letter is emitted (enabled by default).
+#[event_listener]
 fn on_order_shipped(event: &OrderShippedEvent) -> HandlerResult {
     info!(order_id = event.order_id, "order shipped — updating inventory");
     Ok(())

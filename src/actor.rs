@@ -22,7 +22,16 @@ use crate::types::{BusConfig, DeadLetter, FailurePolicy, SubscriptionId};
 #[cfg(feature = "metrics")]
 use crate::metrics::TimerGuard;
 
+/// Type alias for the boxed future returned by async handlers.
+///
+/// Each async handler invocation allocates one `Box::pin(Future)` — this is
+/// the cost of type-erased async dispatch and cannot be avoided without
+/// monomorphisation across all handler types.
 pub(crate) type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
+
+/// Events are wrapped in `Arc` once at publish time and shared by reference
+/// across all listeners.  Async listeners clone the `Arc` (cheap ref-count
+/// bump); sync listeners receive `&dyn Any` with zero additional allocation.
 pub(crate) type EventType = Arc<dyn Any + Send + Sync>;
 pub(crate) type ErasedAsyncHandler = Arc<dyn Fn(EventType) -> HandlerFuture + Send + Sync + 'static>;
 pub(crate) type ErasedSyncHandler = Arc<dyn Fn(&(dyn Any + Send + Sync)) -> HandlerResult + Send + Sync + 'static>;
@@ -32,6 +41,13 @@ pub(crate) type ErasedSyncHandler = Arc<dyn Fn(&(dyn Any + Send + Sync)) -> Hand
 pub(crate) enum ErasedHandler {
     Async(ErasedAsyncHandler),
     Sync(ErasedSyncHandler),
+}
+
+impl ErasedHandler {
+    /// Returns `true` if this is a synchronous handler.
+    pub(crate) fn is_sync(&self) -> bool {
+        matches!(self, Self::Sync(_))
+    }
 }
 
 #[derive(Clone)]
@@ -136,6 +152,12 @@ impl EventBusActor {
                         break;
                     };
 
+                    // Eagerly reap completed async tasks before processing the
+                    // message.  Under sustained publish load the `biased`
+                    // select always favours the mailbox, so this ensures dead
+                    // letters and task completions are not starved.
+                    self.reap_finished_async_tasks();
+
                     match msg {
                         BusMessage::Subscribe {
                             event_type,
@@ -216,6 +238,19 @@ impl EventBusActor {
         id
     }
 
+    /// Remove a listener by its subscription ID.
+    ///
+    /// # Complexity
+    ///
+    /// This is **O(n)** in the number of listeners for the event type, where
+    /// `n` is the length of the listener list.  The inner `Vec` is scanned
+    /// linearly via `position()` and the element is removed with
+    /// `swap_remove()` (O(1) removal once the index is found, but changes
+    /// listener ordering).
+    ///
+    /// For typical workloads (tens to low hundreds of listeners per event
+    /// type) this is fast.  If you have thousands of listeners per type and
+    /// frequently unsubscribe, consider profiling.
     fn remove_listener(&mut self, subscription_id: SubscriptionId) -> bool {
         let Some(event_type) = self.listener_index.remove(&subscription_id) else {
             return false;
@@ -272,6 +307,21 @@ impl EventBusActor {
         }
     }
 
+    /// Dispatch an event to all registered listeners for its type.
+    ///
+    /// # Allocation costs per publish
+    ///
+    /// Each call to `publish()` allocates `Arc::new(event)` once (on the
+    /// caller side, before reaching this method).  During dispatch:
+    ///
+    /// - **Async listeners**: each invocation clones the `Arc<Event>` (cheap
+    ///   ref-count bump) and allocates a `Box::pin(Future)` for the type-
+    ///   erased handler future.  This boxing is inherent to the type-erasure
+    ///   design and cannot be avoided without monomorphisation.
+    /// - **Sync listeners**: receive `&dyn Any` — no per-listener allocation.
+    /// - **Listener list snapshot**: the `Arc<Vec<Listener>>` is cloned (O(1)
+    ///   ref-count) so dispatch can iterate without holding `&mut self`.
+    ///   Mutations during dispatch trigger copy-on-write (`Arc::make_mut`).
     async fn dispatch(&mut self, event_type: TypeId, event: EventType, event_name: &'static str) {
         let Some(listeners) = self.listeners.get(&event_type).cloned() else {
             #[cfg(feature = "metrics")]
@@ -322,17 +372,31 @@ impl EventBusActor {
                     let _enter = span.enter();
 
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.sync");
-                    let outcome = Self::execute_sync_listener_inline(handler, &event, event_name, listener_id, failure_policy).await;
-                    if let Some(failure) = outcome {
-                        self.handle_listener_failure(failure);
+
+                    // Sync handlers execute exactly once — no retries.
+                    // On failure, a dead letter is emitted (if enabled).
+                    #[cfg(feature = "metrics")]
+                    let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
+
+                    let result = Self::invoke_sync_handler(handler, &event);
+                    if let Err(err) = result {
+                        self.handle_listener_failure(ListenerFailure {
+                            event_name,
+                            subscription_id: listener_id,
+                            attempts: 1,
+                            error: err.to_string(),
+                            dead_letter: failure_policy.dead_letter,
+                        });
                     }
                 }
             }
         }
     }
 
-    /// Execute a sync listener inline on the actor task with panic isolation
-    /// via `catch_unwind`.
+    /// Invoke a sync handler with `catch_unwind` for panic isolation.
+    ///
+    /// Sync handlers execute exactly once — no retries. On failure, the caller
+    /// creates a [`ListenerFailure`] which flows through the dead-letter pipeline.
     ///
     /// # Safety rationale for `AssertUnwindSafe`
     ///
@@ -342,69 +406,23 @@ impl EventBusActor {
     ///   which can be left in an inconsistent state by a panic.
     /// - No mutable actor state is accessed inside the `catch_unwind` block.
     /// - Panics are converted into `Err` results that flow through the normal
-    ///   retry / dead-letter pipeline.
-    async fn execute_sync_listener_inline(
-        handler: &ErasedSyncHandler,
-        event: &EventType,
-        event_name: &'static str,
-        subscription_id: SubscriptionId,
-        failure_policy: FailurePolicy,
-    ) -> HandlerTaskOutcome {
-        let mut retries_left = failure_policy.max_retries;
-        let mut attempts = 0;
+    ///   dead-letter pipeline.
+    fn invoke_sync_handler(handler: &ErasedSyncHandler, event: &EventType) -> HandlerResult {
+        let handler_ref = handler.as_ref();
+        let event_ref: &(dyn Any + Send + Sync) = event.as_ref();
+        let result = catch_unwind(AssertUnwindSafe(|| handler_ref(event_ref)));
 
-        loop {
-            attempts += 1;
-
-            #[cfg(feature = "metrics")]
-            let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
-
-            let handler_ref = handler.as_ref();
-            let event_ref: &(dyn Any + Send + Sync) = event.as_ref();
-            let result = catch_unwind(AssertUnwindSafe(|| handler_ref(event_ref)));
-
-            let result = match result {
-                Ok(r) => r,
-                Err(panic_payload) => {
-                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                        (*s).to_string()
-                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        "handler panicked".to_string()
-                    };
-                    Err(msg.into())
-                }
-            };
-
-            match result {
-                Ok(()) => return None,
-                Err(err) => {
-                    let error_message = err.to_string();
-                    if retries_left == 0 {
-                        return Some(ListenerFailure {
-                            event_name,
-                            subscription_id,
-                            attempts,
-                            error: error_message,
-                            dead_letter: failure_policy.dead_letter,
-                        });
-                    }
-
-                    retries_left -= 1;
-                    warn!(
-                        event = event_name,
-                        listener_id = subscription_id.as_u64(),
-                        attempts,
-                        retries_left,
-                        error = %error_message,
-                        "handler.retry"
-                    );
-
-                    if let Some(delay) = failure_policy.retry_delay {
-                        tokio::time::sleep(delay).await;
-                    }
-                }
+        match result {
+            Ok(r) => r,
+            Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "handler panicked".to_string()
+                };
+                Err(msg.into())
             }
         }
     }

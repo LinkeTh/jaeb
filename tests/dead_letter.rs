@@ -69,7 +69,7 @@ impl SyncEventHandler<DeadLetter> for FailingDeadLetterHandler {
 
 #[tokio::test]
 async fn failed_handler_emits_dead_letter() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let notify = Arc::new(Notify::new());
     let seen = Arc::new(AtomicUsize::new(0));
 
@@ -95,7 +95,7 @@ async fn failed_handler_emits_dead_letter() {
 
 #[tokio::test]
 async fn dead_letter_contains_correct_metadata() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let notify = Arc::new(Notify::new());
     let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
 
@@ -130,7 +130,7 @@ async fn dead_letter_contains_correct_metadata() {
 
 #[tokio::test]
 async fn async_handler_failure_emits_dead_letter() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let seen = Arc::new(AtomicUsize::new(0));
 
     let _ = bus
@@ -154,7 +154,7 @@ async fn async_handler_failure_emits_dead_letter() {
 
 #[tokio::test]
 async fn dead_letter_suppressed_when_disabled() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let notify = Arc::new(Notify::new());
     let seen = Arc::new(AtomicUsize::new(0));
 
@@ -182,7 +182,7 @@ async fn dead_letter_suppressed_when_disabled() {
 
 #[tokio::test]
 async fn dead_letter_handler_failure_does_not_recurse() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
 
     // Subscribe a dead-letter handler that itself fails.
     let _ = bus

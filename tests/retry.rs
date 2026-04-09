@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult, SyncEventHandler};
+use jaeb::{EventBus, EventBusError, EventHandler, FailurePolicy, HandlerResult, SyncEventHandler};
 
 // ── Event types ──────────────────────────────────────────────────────
 
@@ -23,14 +23,14 @@ impl EventHandler<Job> for FailOnceAsync {
     }
 }
 
-struct FailOnceSync {
+struct AlwaysFailSync {
     attempts: Arc<AtomicUsize>,
 }
 
-impl SyncEventHandler<Job> for FailOnceSync {
+impl SyncEventHandler<Job> for AlwaysFailSync {
     fn handle(&self, _event: &Job) -> HandlerResult {
-        let n = self.attempts.fetch_add(1, Ordering::SeqCst);
-        if n == 0 { Err("first attempt fails".into()) } else { Ok(()) }
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Err("always fails".into())
     }
 }
 
@@ -65,7 +65,7 @@ impl EventHandler<Job> for AlwaysFailAsync {
 
 #[tokio::test]
 async fn retry_policy_retries_async_handler() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     let policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(1));
@@ -88,33 +88,47 @@ async fn retry_policy_retries_async_handler() {
 }
 
 #[tokio::test]
-async fn retry_policy_retries_sync_handler() {
-    let bus = EventBus::new(16);
-    let attempts = Arc::new(AtomicUsize::new(0));
+async fn sync_subscribe_with_retries_is_rejected() {
+    let bus = EventBus::new(16).expect("valid config");
 
-    let policy = FailurePolicy::default().with_max_retries(1).with_retry_delay(Duration::from_millis(1));
+    let policy = FailurePolicy::default().with_max_retries(1);
 
-    let _ = bus
+    let result = bus
         .subscribe_with_policy(
-            FailOnceSync {
-                attempts: Arc::clone(&attempts),
+            AlwaysFailSync {
+                attempts: Arc::new(AtomicUsize::new(0)),
             },
             policy,
         )
-        .await
-        .expect("subscribe");
+        .await;
 
-    bus.publish(Job).await.expect("publish");
-
-    // Sync handlers complete (including retries) before publish returns.
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-
+    assert_eq!(result.unwrap_err(), EventBusError::SyncRetryNotSupported);
     bus.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
+async fn sync_handler_single_attempt_on_failure() {
+    let bus = EventBus::new(16).expect("valid config");
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    // Subscribe with default policy (max_retries: 0) — should succeed.
+    let _ = bus
+        .subscribe(AlwaysFailSync {
+            attempts: Arc::clone(&attempts),
+        })
+        .await
+        .expect("subscribe");
+
+    bus.publish(Job).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    // Sync handler executes exactly once — no retries.
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn retry_multiple_attempts() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Fail the first 3, succeed on the 4th → need max_retries=3.
@@ -140,7 +154,7 @@ async fn retry_multiple_attempts() {
 
 #[tokio::test]
 async fn retry_delay_is_respected() {
-    let bus = EventBus::new(16);
+    let bus = EventBus::new(16).expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     let policy = FailurePolicy::default()

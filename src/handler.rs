@@ -12,11 +12,30 @@ use crate::types::Event;
 /// Trait for async struct-based event handlers that hold their own dependencies.
 ///
 /// Implementors can use `async fn` directly without `async-trait`.
+///
+/// # `Clone` requirement
+///
+/// The event type `E` must implement `Clone` because async handlers may
+/// outlive the dispatch call.  The event is stored behind an `Arc` and each
+/// async invocation clones the inner `E` so it can be moved into the spawned
+/// future.  The `Arc` clone is O(1); the `E::clone()` cost depends on the
+/// event payload.
 pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
     fn handle(&self, event: &E) -> impl Future<Output = HandlerResult> + Send;
 }
 
 /// Trait for synchronous struct-based event handlers.
+///
+/// Sync handlers receive `&E` directly (via downcast from `&dyn Any`), so
+/// there is **no per-invocation allocation** for the event.  The handler
+/// runs inline on the actor task (with panic isolation via `catch_unwind`)
+/// and `publish()` blocks until it returns, preserving strong ordering
+/// guarantees.
+///
+/// **Sync handlers execute exactly once** — retries (`max_retries > 0`)
+/// are not supported and will be rejected at subscribe time with
+/// [`EventBusError::SyncRetryNotSupported`](crate::EventBusError::SyncRetryNotSupported).
+/// On failure, a [`DeadLetter`](crate::DeadLetter) is emitted when enabled.
 pub trait SyncEventHandler<E: Event>: Send + Sync + 'static {
     fn handle(&self, event: &E) -> HandlerResult;
 }
@@ -40,6 +59,13 @@ pub(crate) struct RegisteredHandler {
 ///
 /// The `Mode` type parameter (`AsyncMode` or `SyncMode`) is inferred from the
 /// handler trait, so callers simply write `bus.subscribe(handler)`.
+///
+/// # Allocation at registration time
+///
+/// `into_handler()` wraps the handler in `Arc<H>` and creates one closure
+/// (either `ErasedAsyncHandler` or `ErasedSyncHandler`) that captures the
+/// `Arc`.  This is a **one-time allocation per subscription**, not per
+/// dispatch.
 #[allow(private_interfaces)]
 pub trait IntoHandler<E: Event, Mode> {
     #[doc(hidden)]

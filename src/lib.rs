@@ -12,19 +12,22 @@
 //! An active **Tokio runtime** must be available when constructing an
 //! [`EventBus`] (via [`new`](bus::EventBus::new) or
 //! [`builder().build()`](bus::EventBusBuilder::build)), because the internal
-//! actor task is spawned immediately via [`tokio::spawn`].
+//! actor task is spawned immediately via [`tokio::spawn`]. Both construction
+//! methods return [`Result`] and validate their configuration before spawning.
 //!
 //! # Important semantics
 //!
 //! - **Sync handlers** — executed inline on the actor task (with panic
 //!   isolation via `catch_unwind`) and complete before
-//!   [`EventBus::publish`](bus::EventBus::publish) returns.
+//!   [`EventBus::publish`](bus::EventBus::publish) returns. Sync handlers
+//!   execute exactly once — retries are not supported.
 //! - **Async handlers** — spawned into a [`JoinSet`](tokio::task::JoinSet);
 //!   `publish` may return before they finish.  Async events require `E: Clone`
-//!   because the event is cloned for each handler invocation.
+//!   because the event is cloned for each handler invocation. Retries and
+//!   delays are supported via [`FailurePolicy`].
 //! - **Shutdown** — [`EventBus::shutdown`](bus::EventBus::shutdown) drains
 //!   queued messages, then waits for (or aborts) in-flight async tasks.
-//!   Calling `shutdown` again returns [`EventBusError::ActorStopped`].
+//!   Shutdown is idempotent: subsequent calls return `Ok(())`.
 //! - **Dead letters** — after all retries are exhausted a
 //!   [`DeadLetter`] is published unless disabled.
 //!   A failing dead-letter handler will **not** produce another dead letter
@@ -40,7 +43,7 @@ pub mod subscription;
 pub mod types;
 
 pub use bus::{EventBus, EventBusBuilder};
-pub use error::{EventBusError, HandlerError, HandlerResult};
+pub use error::{ConfigError, EventBusError, HandlerError, HandlerResult};
 pub use handler::{AsyncMode, EventHandler, IntoHandler, SyncEventHandler, SyncMode};
-pub use subscription::Subscription;
+pub use subscription::{Subscription, SubscriptionGuard};
 pub use types::{DeadLetter, Event, FailurePolicy, SubscriptionId};

@@ -10,7 +10,7 @@ use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::config::ConfigRegistry;
 use summer::plugin::{MutableComponentRegistry, Plugin};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::config::Config;
 
@@ -62,14 +62,22 @@ pub mod _private {
 /// summer-rs plugin that registers a [`jaeb::EventBus`] as an application component
 /// and auto-subscribes all `#[event_listener]` functions.
 ///
+/// # Shutdown
+///
+/// The summer `Plugin` trait does not provide a teardown hook, so this plugin
+/// **does not** call [`EventBus::shutdown()`] automatically.  If you need a
+/// graceful drain of in-flight handlers, retrieve the bus from the component
+/// registry and call `shutdown()` manually before the application exits:
+///
+/// ```rust,ignore
+/// let bus: EventBus = app.get_component().unwrap();
+/// bus.shutdown().await.expect("shutdown");
+/// ```
+///
 /// # Panics
 ///
 /// The plugin panics during [`build`](Plugin::build) if:
-/// - The `[jaeb]` configuration section cannot be loaded.
 /// - The resulting `EventBusBuilder` configuration is invalid (e.g. zero buffer size).
-/// - A listener's `Component<T>` dependency is not registered in the application.
-/// - A listener subscription fails (e.g. bus already shut down, which shouldn't
-///   happen during normal startup).
 ///
 /// # Usage
 ///
@@ -103,6 +111,9 @@ pub mod _private {
 /// shutdown_timeout_secs = 10
 /// ```
 ///
+/// If the `[jaeb]` section is missing or cannot be parsed, the plugin falls
+/// back to builder defaults and logs a warning.
+///
 /// Retrieve the bus elsewhere via dependency injection:
 /// ```rust,ignore
 /// use jaeb::EventBus;
@@ -119,7 +130,13 @@ impl Plugin for SummerJaeb {
     }
 
     async fn build(&self, app: &mut AppBuilder) {
-        let config = app.get_config::<Config>().expect("summer-jaeb: failed to load [jaeb] config");
+        let config = match app.get_config::<Config>() {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                tracing::warn!(error = %err, "summer-jaeb: failed to load [jaeb] config, using defaults");
+                Config::default()
+            }
+        };
 
         let mut builder = EventBus::builder();
 
@@ -136,7 +153,15 @@ impl Plugin for SummerJaeb {
             builder = builder.shutdown_timeout(Duration::from_secs(secs));
         }
 
-        let bus = builder.build().expect("summer-jaeb: invalid event bus configuration");
+        let bus = match builder.build() {
+            Ok(bus) => bus,
+            Err(err) => {
+                // A bad configuration (e.g. buffer_size = 0) is a fatal
+                // startup error — there is no sensible fallback.
+                error!(error = %err, "summer-jaeb: invalid event bus configuration");
+                panic!("summer-jaeb: {err}");
+            }
+        };
         app.add_component(bus.clone());
 
         // Auto-register all #[event_listener] functions discovered by inventory

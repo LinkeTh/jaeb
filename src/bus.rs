@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT
 use std::any::TypeId;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
-use tracing::{error, trace};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tracing::{error, trace, warn};
 
 use crate::actor::{BusMessage, EventBusActor};
-use crate::error::EventBusError;
+use crate::error::{ConfigError, EventBusError};
 use crate::handler::{IntoHandler, SyncEventHandler};
 use crate::subscription::Subscription;
 use crate::types::{BusConfig, DeadLetter, Event, FailurePolicy};
@@ -111,10 +113,10 @@ impl EventBusBuilder {
     /// invalid (e.g., zero `buffer_size` or zero `max_concurrent_async`).
     pub fn build(self) -> Result<EventBus, EventBusError> {
         if self.config.buffer_size == 0 {
-            return Err(EventBusError::InvalidConfig("buffer_size must be greater than zero".into()));
+            return Err(ConfigError::ZeroBufferSize.into());
         }
         if self.config.max_concurrent_async == Some(0) {
-            return Err(EventBusError::InvalidConfig("max_concurrent_async must be greater than zero".into()));
+            return Err(ConfigError::ZeroConcurrency.into());
         }
         Ok(EventBus::from_config(self.config))
     }
@@ -124,15 +126,22 @@ impl EventBusBuilder {
 pub struct EventBus {
     tx: mpsc::Sender<BusMessage>,
     default_failure_policy: FailurePolicy,
+    /// Handle to the internal actor task.
+    ///
+    /// Wrapped in `Arc<Mutex<Option<…>>>` so that:
+    /// - `EventBus` can remain `Clone` (the handle is shared).
+    /// - `shutdown` can `take()` the handle to join the actor exactly once.
+    /// - `is_healthy` can peek without consuming the handle.
+    actor_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Tracks whether `shutdown` has been called at least once.
+    shutdown_called: Arc<AtomicBool>,
 }
 
 impl EventBus {
     /// Create an event bus with the given channel buffer size and default
     /// settings.
     ///
-    /// # Panics
-    ///
-    /// Panics if `buffer` is zero.
+    /// Returns [`EventBusError::InvalidConfig`] if `buffer` is zero.
     ///
     /// # Examples
     ///
@@ -140,16 +149,12 @@ impl EventBus {
     /// use jaeb::EventBus;
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(256);
+    /// let bus = EventBus::new(256).expect("valid config");
     /// bus.shutdown().await.unwrap();
     /// # }
     /// ```
-    pub fn new(buffer: usize) -> Self {
-        assert!(buffer > 0, "buffer size must be greater than zero");
-        Self::from_config(BusConfig {
-            buffer_size: buffer,
-            ..BusConfig::default()
-        })
+    pub fn new(buffer: usize) -> Result<Self, EventBusError> {
+        Self::builder().buffer_size(buffer).build()
     }
 
     /// Return a builder for fine-grained configuration.
@@ -161,8 +166,21 @@ impl EventBus {
         let (tx, rx) = mpsc::channel(config.buffer_size);
         let default_failure_policy = config.default_failure_policy;
         let actor = EventBusActor::new(tx.clone(), rx, &config);
-        tokio::spawn(actor.run());
-        Self { tx, default_failure_policy }
+        let actor_handle = tokio::spawn(actor.run());
+        Self {
+            tx,
+            default_failure_policy,
+            actor_handle: Arc::new(Mutex::new(Some(actor_handle))),
+            shutdown_called: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Return a clone of the internal channel sender.
+    ///
+    /// Used by [`SubscriptionGuard`](crate::subscription::SubscriptionGuard)
+    /// to send fire-and-forget unsubscribe messages in its `Drop` impl.
+    pub(crate) fn sender(&self) -> mpsc::Sender<BusMessage> {
+        self.tx.clone()
     }
 
     /// Send a message to the actor and wait for the acknowledgement.
@@ -208,7 +226,7 @@ impl EventBus {
     /// }
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64);
+    /// let bus = EventBus::new(64).expect("valid config");
     /// let _sub = bus.subscribe::<MyEvent, _, _>(Logger).await.unwrap();
     /// bus.publish(MyEvent("hello".into())).await.unwrap();
     /// bus.shutdown().await.unwrap();
@@ -226,22 +244,27 @@ impl EventBus {
     ///
     /// See [`subscribe`](Self::subscribe) for dispatch-mode details.
     ///
+    /// **Note:** Sync handlers do not support retries. Subscribing a sync
+    /// handler with `max_retries > 0` returns
+    /// [`EventBusError::SyncRetryNotSupported`]. The `dead_letter` field is
+    /// still respected for sync handlers.
+    ///
     /// # Examples
     ///
     /// ```
     /// use std::time::Duration;
-    /// use jaeb::{EventBus, FailurePolicy, SyncEventHandler, HandlerResult};
+    /// use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult};
     ///
     /// #[derive(Clone)]
     /// struct Job(u32);
     ///
     /// struct Worker;
-    /// impl SyncEventHandler<Job> for Worker {
-    ///     fn handle(&self, _event: &Job) -> HandlerResult { Ok(()) }
+    /// impl EventHandler<Job> for Worker {
+    ///     async fn handle(&self, _event: &Job) -> HandlerResult { Ok(()) }
     /// }
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64);
+    /// let bus = EventBus::new(64).expect("valid config");
     /// let policy = FailurePolicy::default()
     ///     .with_max_retries(3)
     ///     .with_retry_delay(Duration::from_millis(100));
@@ -259,6 +282,12 @@ impl EventBus {
     {
         trace!("event_bus.subscribe");
         let registered = handler.into_handler();
+
+        // Sync handlers execute exactly once — retries are only supported for
+        // async handlers.
+        if registered.erased.is_sync() && failure_policy.max_retries > 0 {
+            return Err(EventBusError::SyncRetryNotSupported);
+        }
 
         let subscription_id = self
             .send_and_ack(|ack| BusMessage::Subscribe {
@@ -297,7 +326,7 @@ impl EventBus {
     /// struct Ping;
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64);
+    /// let bus = EventBus::new(64).expect("valid config");
     /// // Publishing with no listeners is a no-op.
     /// bus.publish(Ping).await.unwrap();
     /// bus.shutdown().await.unwrap();
@@ -331,7 +360,7 @@ impl EventBus {
     /// struct Tick;
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(1);
+    /// let bus = EventBus::new(1).expect("valid config");
     /// assert!(bus.try_publish(Tick).is_ok());
     /// bus.shutdown().await.unwrap();
     /// # }
@@ -378,10 +407,8 @@ impl EventBus {
     /// After shutdown, all publish/subscribe operations return
     /// [`EventBusError::ActorStopped`].
     ///
-    /// Calling `shutdown` a second time will return
-    /// [`EventBusError::ActorStopped`] because the actor is already gone.
-    /// This makes shutdown effectively idempotent — the first call performs
-    /// the work, and subsequent calls are safe no-ops that return an error.
+    /// Shutdown is **idempotent**: the first call performs the work and
+    /// subsequent calls return `Ok(())` immediately.
     ///
     /// # Examples
     ///
@@ -389,7 +416,10 @@ impl EventBus {
     /// use jaeb::EventBus;
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64);
+    /// let bus = EventBus::new(64).expect("valid config");
+    /// bus.shutdown().await.unwrap();
+    ///
+    /// // Second shutdown is a no-op:
     /// bus.shutdown().await.unwrap();
     ///
     /// // Further operations fail:
@@ -399,6 +429,58 @@ impl EventBus {
     pub async fn shutdown(&self) -> Result<(), EventBusError> {
         trace!("event_bus.shutdown");
 
-        self.send_and_ack(|ack| BusMessage::Shutdown { ack }).await?
+        // Atomically claim the shutdown responsibility. Only the winner
+        // proceeds; all other callers return Ok(()) immediately. This
+        // eliminates the TOCTOU race that existed with a separate
+        // load-then-store pattern.
+        if self
+            .shutdown_called
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let result = self.send_and_ack(|ack| BusMessage::Shutdown { ack }).await?;
+
+        // Join the actor task to ensure it has fully exited and to observe
+        // any panic that may have occurred after the ack was sent.
+        if let Some(handle) = self.actor_handle.lock().await.take()
+            && let Err(join_error) = handle.await
+        {
+            // The actor panicked after sending its ack.  Log the panic but
+            // still return the result the actor already committed to — the
+            // shutdown itself completed.
+            warn!(error = %join_error, "event_bus.actor_panic_during_shutdown");
+        }
+
+        result
+    }
+
+    /// Returns `true` if the internal actor task is still running.
+    ///
+    /// This is a best-effort check: it returns `false` if the actor has
+    /// exited (either via [`shutdown`](Self::shutdown) or an unexpected panic),
+    /// `true` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use jaeb::EventBus;
+    ///
+    /// # #[tokio::main] async fn main() {
+    /// let bus = EventBus::new(64).expect("valid config");
+    /// assert!(bus.is_healthy().await);
+    ///
+    /// bus.shutdown().await.unwrap();
+    /// assert!(!bus.is_healthy().await);
+    /// # }
+    /// ```
+    pub async fn is_healthy(&self) -> bool {
+        let guard = self.actor_handle.lock().await;
+        match guard.as_ref() {
+            Some(handle) => !handle.is_finished(),
+            None => false, // handle was already taken by shutdown
+        }
     }
 }
