@@ -29,7 +29,7 @@ pub struct Config {
     /// Defaults to unlimited.
     pub max_concurrent_async: Option<usize>,
 
-    /// Maximum time in seconds [`EventBus::shutdown`] will wait for in-flight
+    /// Maximum time in seconds [`jaeb::EventBus::shutdown`] will wait for in-flight
     /// async tasks to complete. Defaults to waiting indefinitely.
     pub shutdown_timeout_secs: Option<u64>,
 }
