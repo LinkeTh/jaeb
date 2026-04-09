@@ -5,10 +5,15 @@ use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::{EventBus, EventBusError, HandlerResult, Middleware, MiddlewareDecision, SyncEventHandler, SyncMiddleware};
+use jaeb::{
+    EventBus, EventBusError, HandlerResult, Middleware, MiddlewareDecision, SyncEventHandler, SyncMiddleware, TypedMiddleware, TypedSyncMiddleware,
+};
 
 #[derive(Clone)]
 struct Ping;
+
+#[derive(Clone)]
+struct Pong;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,6 +42,15 @@ impl SyncEventHandler<Ping> for Counter {
     }
 }
 
+struct PongCounter(Arc<AtomicUsize>);
+
+impl SyncEventHandler<Pong> for PongCounter {
+    fn handle(&self, _event: &Pong) -> HandlerResult {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 struct OrderTracker {
     id: &'static str,
     log: Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -44,6 +58,67 @@ struct OrderTracker {
 
 impl SyncMiddleware for OrderTracker {
     fn process(&self, _name: &'static str, _event: &(dyn Any + Send + Sync)) -> MiddlewareDecision {
+        self.log.lock().unwrap().push(self.id);
+        MiddlewareDecision::Continue
+    }
+}
+
+struct AsyncOrderTracker {
+    id: &'static str,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl Middleware for AsyncOrderTracker {
+    async fn process(&self, _name: &'static str, _event: &(dyn Any + Send + Sync)) -> MiddlewareDecision {
+        self.log.lock().unwrap().push(self.id);
+        MiddlewareDecision::Continue
+    }
+}
+
+struct TypedPingCounter(Arc<AtomicUsize>);
+
+impl TypedSyncMiddleware<Ping> for TypedPingCounter {
+    fn process(&self, _event_name: &'static str, _event: &Ping) -> MiddlewareDecision {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        MiddlewareDecision::Continue
+    }
+}
+
+struct TypedSyncReject(&'static str);
+
+impl TypedSyncMiddleware<Ping> for TypedSyncReject {
+    fn process(&self, _event_name: &'static str, _event: &Ping) -> MiddlewareDecision {
+        MiddlewareDecision::Reject(self.0.to_string())
+    }
+}
+
+struct TypedAsyncReject(&'static str);
+
+impl TypedMiddleware<Ping> for TypedAsyncReject {
+    async fn process(&self, _event_name: &'static str, _event: &Ping) -> MiddlewareDecision {
+        MiddlewareDecision::Reject(self.0.to_string())
+    }
+}
+
+struct TypedSyncOrderTracker {
+    id: &'static str,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl TypedSyncMiddleware<Ping> for TypedSyncOrderTracker {
+    fn process(&self, _event_name: &'static str, _event: &Ping) -> MiddlewareDecision {
+        self.log.lock().unwrap().push(self.id);
+        MiddlewareDecision::Continue
+    }
+}
+
+struct TypedAsyncOrderTracker {
+    id: &'static str,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl TypedMiddleware<Ping> for TypedAsyncOrderTracker {
+    async fn process(&self, _event_name: &'static str, _event: &Ping) -> MiddlewareDecision {
         self.log.lock().unwrap().push(self.id);
         MiddlewareDecision::Continue
     }
@@ -215,4 +290,186 @@ async fn async_middleware_rejects() {
     assert!(matches!(err, EventBusError::MiddlewareRejected(ref r) if r == "async rejection"));
 
     bus.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn typed_middleware_runs_for_matching_event_only() {
+    let bus = EventBus::new(64).expect("valid config");
+    let typed_hits = Arc::new(AtomicUsize::new(0));
+    let ping_count = Arc::new(AtomicUsize::new(0));
+    let pong_count = Arc::new(AtomicUsize::new(0));
+
+    let _typed = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedPingCounter(Arc::clone(&typed_hits)))
+        .await
+        .expect("add typed middleware");
+
+    let _ping = bus
+        .subscribe::<Ping, _, _>(Counter(Arc::clone(&ping_count)))
+        .await
+        .expect("subscribe ping");
+    let _pong = bus
+        .subscribe::<Pong, _, _>(PongCounter(Arc::clone(&pong_count)))
+        .await
+        .expect("subscribe pong");
+
+    bus.publish(Ping).await.expect("publish ping");
+    bus.publish(Pong).await.expect("publish pong");
+    bus.shutdown().await.expect("shutdown");
+
+    assert_eq!(typed_hits.load(Ordering::SeqCst), 1, "typed middleware should only run for Ping");
+    assert_eq!(ping_count.load(Ordering::SeqCst), 1, "Ping handler should fire");
+    assert_eq!(pong_count.load(Ordering::SeqCst), 1, "Pong handler should fire");
+}
+
+#[tokio::test]
+async fn typed_sync_middleware_rejects_before_handlers() {
+    let bus = EventBus::new(64).expect("valid config");
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let _typed = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedSyncReject("typed sync reject"))
+        .await
+        .expect("add typed middleware");
+
+    let _sub = bus.subscribe::<Ping, _, _>(Counter(Arc::clone(&count))).await.expect("subscribe");
+
+    let err = bus.publish(Ping).await.unwrap_err();
+    assert!(matches!(err, EventBusError::MiddlewareRejected(ref r) if r == "typed sync reject"));
+
+    bus.shutdown().await.expect("shutdown");
+    assert_eq!(count.load(Ordering::SeqCst), 0, "handler should not fire after typed sync rejection");
+}
+
+#[tokio::test]
+async fn typed_async_middleware_rejects_before_handlers() {
+    let bus = EventBus::new(64).expect("valid config");
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let _typed = bus
+        .add_typed_middleware::<Ping, _>(TypedAsyncReject("typed async reject"))
+        .await
+        .expect("add typed middleware");
+
+    let _sub = bus.subscribe::<Ping, _, _>(Counter(Arc::clone(&count))).await.expect("subscribe");
+
+    let err = bus.publish(Ping).await.unwrap_err();
+    assert!(matches!(err, EventBusError::MiddlewareRejected(ref r) if r == "typed async reject"));
+
+    bus.shutdown().await.expect("shutdown");
+    assert_eq!(count.load(Ordering::SeqCst), 0, "handler should not fire after typed async rejection");
+}
+
+#[tokio::test]
+async fn typed_middleware_runs_after_global_middleware_in_order() {
+    let bus = EventBus::new(64).expect("valid config");
+    let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
+
+    let _global_sync = bus
+        .add_sync_middleware(OrderTracker {
+            id: "global-sync",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add global sync middleware");
+
+    let _global_async = bus
+        .add_middleware(AsyncOrderTracker {
+            id: "global-async",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add global async middleware");
+
+    let _typed_sync = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedSyncOrderTracker {
+            id: "typed-sync",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add typed sync middleware");
+
+    let _typed_async = bus
+        .add_typed_middleware::<Ping, _>(TypedAsyncOrderTracker {
+            id: "typed-async",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add typed async middleware");
+
+    let handler_log = Arc::clone(&log);
+    let _sub = bus
+        .subscribe::<Ping, _, _>(move |_event: &Ping| {
+            handler_log.lock().unwrap().push("handler");
+            Ok(())
+        })
+        .await
+        .expect("subscribe handler");
+
+    bus.publish(Ping).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(entries, vec!["global-sync", "global-async", "typed-sync", "typed-async", "handler"]);
+}
+
+#[tokio::test]
+async fn typed_middleware_ordering_fifo() {
+    let bus = EventBus::new(64).expect("valid config");
+    let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
+
+    let _typed_a = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedSyncOrderTracker {
+            id: "typed-a",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add typed middleware a");
+
+    let _typed_b = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedSyncOrderTracker {
+            id: "typed-b",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add typed middleware b");
+
+    let handler_log = Arc::clone(&log);
+    let _sub = bus
+        .subscribe::<Ping, _, _>(move |_event: &Ping| {
+            handler_log.lock().unwrap().push("handler");
+            Ok(())
+        })
+        .await
+        .expect("subscribe handler");
+
+    bus.publish(Ping).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(entries, vec!["typed-a", "typed-b", "handler"], "typed middlewares should run FIFO");
+}
+
+#[tokio::test]
+async fn typed_middleware_removal() {
+    let bus = EventBus::new(64).expect("valid config");
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let typed_sub = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedSyncReject("typed blocked"))
+        .await
+        .expect("add typed middleware");
+
+    let _sub = bus.subscribe::<Ping, _, _>(Counter(Arc::clone(&count))).await.expect("subscribe");
+
+    let err = bus.publish(Ping).await.unwrap_err();
+    assert!(matches!(err, EventBusError::MiddlewareRejected(ref r) if r == "typed blocked"));
+
+    let removed = typed_sub.unsubscribe().await.expect("unsubscribe typed middleware");
+    assert!(removed, "typed middleware should be removed");
+
+    bus.publish(Ping).await.expect("publish after typed middleware removal");
+    bus.shutdown().await.expect("shutdown");
+
+    assert_eq!(count.load(Ordering::SeqCst), 1, "handler should fire once middleware is removed");
 }

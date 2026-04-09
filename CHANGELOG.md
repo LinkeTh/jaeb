@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-04-09
+
+### Changed
+
+- Refactored internal dispatch from per-handler `dyn Any` downcasts to a typed
+  listener registry keyed by event `TypeId`, preserving the single-actor
+  orchestration model and existing public API behavior.
+
+### Added
+
+- Closure handler support for `EventBus::subscribe*` APIs:
+  - sync closures: `Fn(&E) -> HandlerResult`
+  - async closures: `Fn(E) -> impl Future<Output = HandlerResult>`
+- Typed per-event middleware:
+  - `TypedMiddleware<E>` (async)
+  - `TypedSyncMiddleware<E>` (sync)
+  - new APIs `EventBus::add_typed_middleware` and
+    `EventBus::add_typed_sync_middleware`
+- New integration coverage for closure handlers and typed middleware behavior.
+
 ## [summer-jaeb 0.1.4] - 2026-04-09
 
 ### Added

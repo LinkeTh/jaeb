@@ -6,7 +6,7 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! jaeb = { version = "0.3", features = ["test-utils"] }
+//! jaeb = { version = "0.2", features = ["test-utils"] }
 //! ```
 //!
 //! # Overview

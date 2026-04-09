@@ -16,7 +16,7 @@ default = []
 metrics = ["jaeb/metrics"]
 
 [dependencies]
-jaeb = { version = "0.2.3", path = ".." }
+jaeb = { version = "0.2.4", path = ".." }
 summer-jaeb-macros = { version = "0.1.3", path = "../summer-jaeb-macros" }
 summer = "0.5"
 inventory = "0.3"

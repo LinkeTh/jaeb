@@ -10,10 +10,10 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{error, trace, warn};
 
-use crate::actor::{BusMessage, ErasedMiddleware, EventBusActor};
+use crate::actor::{BusMessage, ErasedMiddleware, EventBusActor, RegisterTypedMiddlewareFn, TypedMiddlewareEntry};
 use crate::error::{ConfigError, EventBusError};
 use crate::handler::{IntoHandler, RegisteredHandler, SyncEventHandler};
-use crate::middleware::{Middleware, SyncMiddleware};
+use crate::middleware::{Middleware, SyncMiddleware, TypedMiddleware, TypedSyncMiddleware};
 use crate::subscription::Subscription;
 use crate::types::{BusConfig, BusStats, DeadLetter, Event, FailurePolicy, IntoFailurePolicy, NoRetryPolicy};
 
@@ -211,6 +211,8 @@ impl EventBus {
     /// handler trait implementation:
     /// - [`EventHandler<E>`](crate::handler::EventHandler) -> async dispatch
     /// - [`SyncEventHandler<E>`](SyncEventHandler) -> sync dispatch
+    /// - `Fn(E) -> impl Future<Output = HandlerResult>` -> async closure dispatch
+    /// - `Fn(&E) -> HandlerResult` -> sync closure dispatch
     ///
     /// # Examples
     ///
@@ -235,6 +237,26 @@ impl EventBus {
     /// bus.shutdown().await.unwrap();
     /// # }
     /// ```
+    ///
+    /// ```
+    /// use jaeb::EventBus;
+    ///
+    /// #[derive(Clone)]
+    /// struct MyEvent;
+    ///
+    /// # #[tokio::main] async fn main() {
+    /// let bus = EventBus::new(64).expect("valid config");
+    /// let _sync = bus.subscribe::<MyEvent, _, _>(|_event: &MyEvent| Ok(())).await.unwrap();
+    /// let _async = bus
+    ///     .subscribe::<MyEvent, _, _>(|event: MyEvent| async move {
+    ///         let _ = event;
+    ///         Ok(())
+    ///     })
+    ///     .await
+    ///     .unwrap();
+    /// bus.shutdown().await.unwrap();
+    /// # }
+    /// ```
     pub async fn subscribe<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -244,7 +266,7 @@ impl EventBus {
         let mut policy = self.default_failure_policy;
         // Sync handlers execute exactly once — silently clamp the default
         // policy so users don't need to worry about the distinction.
-        if registered.erased.is_sync() {
+        if registered.is_sync {
             policy.max_retries = 0;
             policy.retry_strategy = None;
         }
@@ -312,7 +334,7 @@ impl EventBus {
             .send_and_ack(|ack| BusMessage::Subscribe {
                 event_type: TypeId::of::<E>(),
                 event_type_name: std::any::type_name::<E>(),
-                handler: registered.erased,
+                register: registered.register,
                 failure_policy,
                 listener_name: registered.name,
                 once,
@@ -336,9 +358,10 @@ impl EventBus {
 
     /// Subscribe a handler that fires exactly once and then auto-unsubscribes.
     ///
-    /// Once-off listeners are removed from the registry *before* their first
-    /// invocation, so a concurrent publish cannot double-fire them.  Retries
-    /// are not supported (the failure policy is forced to `max_retries = 0`).
+    /// Once-off listeners are removed from the registry in the same dispatch
+    /// cycle after their first invocation. Because dispatch is serialized by the
+    /// single actor task, they cannot double-fire. Retries are not supported
+    /// (the failure policy is forced to `max_retries = 0`).
     ///
     /// # Examples
     ///
@@ -374,8 +397,9 @@ impl EventBus {
 
     /// Subscribe a once-off handler with a custom [`NoRetryPolicy`].
     ///
-    /// Once-off handlers are removed before invocation, so retries are not
-    /// applicable. The policy controls only the `dead_letter` flag.
+    /// Once-off handlers are removed in the same dispatch cycle as their first
+    /// invocation, so retries are not applicable. The policy controls only the
+    /// `dead_letter` flag.
     pub async fn subscribe_once_with_policy<E, H, M>(&self, handler: H, failure_policy: NoRetryPolicy) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -444,6 +468,65 @@ impl EventBus {
         }));
 
         let subscription_id = self.send_and_ack(|ack| BusMessage::AddMiddleware { middleware: erased, ack }).await?;
+        Ok(Subscription::new(subscription_id, self.clone()))
+    }
+
+    /// Register an async typed middleware for a specific event type `E`.
+    ///
+    /// Typed middleware runs after global middleware and before handler
+    /// dispatch for matching events.
+    pub async fn add_typed_middleware<E, M>(&self, middleware: M) -> Result<Subscription, EventBusError>
+    where
+        E: Event,
+        M: TypedMiddleware<E>,
+    {
+        trace!("event_bus.add_typed_middleware {:?}", std::any::type_name::<E>());
+        let mw = Arc::new(middleware);
+        let register: RegisterTypedMiddlewareFn = Box::new(move |registry, subscription_id| {
+            let mw = Arc::clone(&mw);
+            let erased = TypedMiddlewareEntry::Async(Arc::new(move |event_name: &'static str, event: Arc<E>| {
+                let mw = Arc::clone(&mw);
+                Box::pin(async move { mw.process(event_name, event.as_ref()).await }) as Pin<Box<dyn Future<Output = _> + Send>>
+            }));
+            registry.add_typed_middleware::<E>(subscription_id, erased);
+        });
+
+        let subscription_id = self
+            .send_and_ack(|ack| BusMessage::AddTypedMiddleware {
+                event_type: TypeId::of::<E>(),
+                event_type_name: std::any::type_name::<E>(),
+                register,
+                ack,
+            })
+            .await?;
+        Ok(Subscription::new(subscription_id, self.clone()))
+    }
+
+    /// Register a sync typed middleware for a specific event type `E`.
+    ///
+    /// Typed middleware runs after global middleware and before handler
+    /// dispatch for matching events.
+    pub async fn add_typed_sync_middleware<E, M>(&self, middleware: M) -> Result<Subscription, EventBusError>
+    where
+        E: Event,
+        M: TypedSyncMiddleware<E>,
+    {
+        trace!("event_bus.add_typed_sync_middleware {:?}", std::any::type_name::<E>());
+        let mw = Arc::new(middleware);
+        let register: RegisterTypedMiddlewareFn = Box::new(move |registry, subscription_id| {
+            let mw = Arc::clone(&mw);
+            let erased = TypedMiddlewareEntry::Sync(Arc::new(move |event_name: &'static str, event: &E| mw.process(event_name, event)));
+            registry.add_typed_middleware::<E>(subscription_id, erased);
+        });
+
+        let subscription_id = self
+            .send_and_ack(|ack| BusMessage::AddTypedMiddleware {
+                event_type: TypeId::of::<E>(),
+                event_type_name: std::any::type_name::<E>(),
+                register,
+                ack,
+            })
+            .await?;
         Ok(Subscription::new(subscription_id, self.clone()))
     }
     ///

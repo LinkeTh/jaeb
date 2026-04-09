@@ -15,6 +15,8 @@
 use std::any::Any;
 use std::future::Future;
 
+use crate::types::Event;
+
 /// Decision returned by a middleware after inspecting an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MiddlewareDecision {
@@ -42,4 +44,20 @@ pub trait Middleware: Send + Sync + 'static {
 pub trait SyncMiddleware: Send + Sync + 'static {
     /// Inspect the event and decide whether to continue or reject.
     fn process(&self, event_name: &'static str, event: &(dyn Any + Send + Sync)) -> MiddlewareDecision;
+}
+
+/// Async middleware scoped to a specific event type `E`.
+///
+/// This middleware runs only when publishing events of type `E`.
+pub trait TypedMiddleware<E: Event>: Send + Sync + 'static {
+    /// Inspect a typed event and decide whether to continue or reject.
+    fn process<'a>(&'a self, event_name: &'static str, event: &'a E) -> impl Future<Output = MiddlewareDecision> + Send + 'a;
+}
+
+/// Sync middleware scoped to a specific event type `E`.
+///
+/// This middleware runs only when publishing events of type `E`.
+pub trait TypedSyncMiddleware<E: Event>: Send + Sync + 'static {
+    /// Inspect a typed event and decide whether to continue or reject.
+    fn process(&self, event_name: &'static str, event: &E) -> MiddlewareDecision;
 }

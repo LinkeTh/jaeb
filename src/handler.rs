@@ -1,90 +1,38 @@
 // SPDX-License-Identifier: MIT
-use std::any::Any;
 use std::future::Future;
 use std::sync::Arc;
 
-use tracing::warn;
-
-use crate::actor::{ErasedAsyncHandler, ErasedHandler, ErasedSyncHandler, EventType};
+use crate::actor::{ListenerMeta, ListenerRegistry, RegisterFn, TypedAsyncHandlerFn, TypedHandler, TypedSyncHandlerFn};
 use crate::error::HandlerResult;
 use crate::types::Event;
 
-/// Trait for async struct-based event handlers that hold their own dependencies.
-///
-/// Implementors can use `async fn` directly without `async-trait`.
-///
-/// # `Clone` requirement
-///
-/// The event type `E` must implement `Clone` because async handlers may
-/// outlive the dispatch call.  The event is stored behind an `Arc` and each
-/// async invocation clones the inner `E` so it can be moved into the spawned
-/// future.  The `Arc` clone is O(1); the `E::clone()` cost depends on the
-/// event payload.
 pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
     fn handle(&self, event: &E) -> impl Future<Output = HandlerResult> + Send;
 
-    /// Optional human-readable name for this handler.
-    ///
-    /// When provided, the name is included in tracing spans, dead-letter
-    /// records, and metrics labels. Defaults to `None`.
     fn name(&self) -> Option<&'static str> {
         None
     }
 }
 
-/// Trait for synchronous struct-based event handlers.
-///
-/// Sync handlers receive `&E` directly (via downcast from `&dyn Any`), so
-/// there is **no per-invocation allocation** for the event.  The handler
-/// runs inline on the actor task (with panic isolation via `catch_unwind`)
-/// and `publish()` blocks until it returns, preserving strong ordering
-/// guarantees.
-///
-/// **Sync handlers execute exactly once** — retries are not supported.
-/// [`subscribe_with_policy`](crate::EventBus::subscribe_with_policy) enforces
-/// this at compile time by requiring [`NoRetryPolicy`](crate::NoRetryPolicy)
-/// for sync handlers. On failure, a [`DeadLetter`](crate::DeadLetter) is
-/// emitted when enabled.
 pub trait SyncEventHandler<E: Event>: Send + Sync + 'static {
     fn handle(&self, event: &E) -> HandlerResult;
 
-    /// Optional human-readable name for this handler.
-    ///
-    /// When provided, the name is included in tracing spans, dead-letter
-    /// records, and metrics labels. Defaults to `None`.
     fn name(&self) -> Option<&'static str> {
         None
     }
 }
 
-/// Marker type selecting the asynchronous dispatch path.
 pub struct AsyncMode;
-
-/// Marker type selecting the synchronous dispatch path.
 pub struct SyncMode;
+pub struct AsyncFnMode;
+pub struct SyncFnMode;
 
-/// A type-erased handler produced by [`IntoHandler`].
 pub(crate) struct RegisteredHandler {
-    pub erased: ErasedHandler,
-    /// Human-readable name extracted from the handler trait.
+    pub register: RegisterFn,
     pub name: Option<&'static str>,
+    pub is_sync: bool,
 }
 
-/// Trait that converts a concrete handler into an erased handler with its dispatch mode.
-///
-/// This trait is implemented automatically for any type that implements
-/// [`EventHandler<E>`] (async) or [`SyncEventHandler<E>`] (sync).
-/// You do not need to implement it manually.
-///
-/// The `Mode` type parameter (`AsyncMode` or `SyncMode`) is inferred from the
-/// handler trait, so callers simply write `bus.subscribe(handler)`.
-///
-/// # Allocation at registration time
-///
-/// `into_handler()` wraps the handler in `Arc<H>` and creates one closure
-/// (either `ErasedAsyncHandler` or `ErasedSyncHandler`) that captures the
-/// `Arc`.  This is a **one-time allocation per subscription**, not per
-/// dispatch.
 #[allow(private_interfaces)]
 pub trait IntoHandler<E: Event, Mode> {
     #[doc(hidden)]
@@ -100,19 +48,19 @@ where
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let erased: ErasedAsyncHandler = Arc::new(move |any: EventType| {
-            let handler = Arc::clone(&handler);
-            if let Some(event) = any.as_ref().downcast_ref::<E>() {
-                let event = event.clone();
-                Box::pin(async move { handler.handle(&event).await }) as _
-            } else {
-                warn!(expected = std::any::type_name::<E>(), "handler.downcast_failed");
-                Box::pin(async { Err("internal error: event type downcast failed".into()) }) as _
-            }
+        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
+            let typed_fn: TypedAsyncHandlerFn<E> = Arc::new(move |event: Arc<E>| {
+                let handler = Arc::clone(&handler);
+                let event = (*event).clone();
+                Box::pin(async move { handler.handle(&event).await })
+            });
+            registry.add_typed_listener::<E>(meta, TypedHandler::Async(typed_fn));
         });
+
         RegisteredHandler {
-            erased: ErasedHandler::Async(erased),
+            register,
             name,
+            is_sync: false,
         }
     }
 }
@@ -126,17 +74,62 @@ where
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let erased: ErasedSyncHandler = Arc::new(move |any: &(dyn Any + Send + Sync)| {
-            if let Some(event) = any.downcast_ref::<E>() {
-                handler.handle(event)
-            } else {
-                warn!(expected = std::any::type_name::<E>(), "handler.downcast_failed");
-                Err("internal error: event type downcast failed".into())
-            }
+        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
+            let typed_fn: TypedSyncHandlerFn<E> = Arc::new(move |event: &E| handler.handle(event));
+            registry.add_typed_listener::<E>(meta, TypedHandler::Sync(typed_fn));
         });
+
         RegisteredHandler {
-            erased: ErasedHandler::Sync(erased),
+            register,
             name,
+            is_sync: true,
+        }
+    }
+}
+
+#[allow(private_interfaces)]
+impl<E, F> IntoHandler<E, SyncFnMode> for F
+where
+    E: Event,
+    F: Fn(&E) -> HandlerResult + Send + Sync + 'static,
+{
+    fn into_handler(self) -> RegisteredHandler {
+        let handler = Arc::new(self);
+        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
+            let typed_fn: TypedSyncHandlerFn<E> = Arc::new(move |event: &E| (handler)(event));
+            registry.add_typed_listener::<E>(meta, TypedHandler::Sync(typed_fn));
+        });
+
+        RegisteredHandler {
+            register,
+            name: None,
+            is_sync: true,
+        }
+    }
+}
+
+#[allow(private_interfaces)]
+impl<E, F, Fut> IntoHandler<E, AsyncFnMode> for F
+where
+    E: Event + Clone,
+    F: Fn(E) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = HandlerResult> + Send + 'static,
+{
+    fn into_handler(self) -> RegisteredHandler {
+        let handler = Arc::new(self);
+        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
+            let typed_fn: TypedAsyncHandlerFn<E> = Arc::new(move |event: Arc<E>| {
+                let handler = Arc::clone(&handler);
+                let event = (*event).clone();
+                Box::pin(async move { (handler)(event).await })
+            });
+            registry.add_typed_listener::<E>(meta, TypedHandler::Async(typed_fn));
+        });
+
+        RegisteredHandler {
+            register,
+            name: None,
+            is_sync: false,
         }
     }
 }

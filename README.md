@@ -25,7 +25,7 @@ JAEB provides:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.3" }
+jaeb = { version = "0.2.4" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -33,7 +33,7 @@ To enable metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.3", features = ["metrics"] }
+jaeb = { version = "0.2.4", features = ["metrics"] }
 ```
 
 ## Quick Start
@@ -123,7 +123,7 @@ async fn main() -> Result<(), EventBusError> {
 - `try_publish(event) -> Result<(), EventBusError>` -- non-blocking, returns `ChannelFull` when queue is full
 - `unsubscribe(subscription_id) -> Result<bool, EventBusError>`
 - `shutdown() -> Result<(), EventBusError>` -- idempotent, drains queue + in-flight tasks
-- `is_healthy() -> bool` -- **async**, checks if the internal actor is still running
+- `async fn is_healthy() -> bool` -- checks if the internal actor is still running
 
 `EventBus` is `Clone` -- all clones share the same underlying actor.
 
@@ -152,7 +152,7 @@ to prevent the automatic unsubscribe.
 - `FailurePolicy { max_retries, retry_strategy, dead_letter }` -- for async handlers
 - `NoRetryPolicy { dead_letter }` -- for sync handlers (or async handlers that don't need retries)
 - `IntoFailurePolicy<M>` -- sealed trait enforcing compile-time policy/handler compatibility
-- `DeadLetter { event_name, subscription_id, attempts, error }`
+- `DeadLetter { event_name, subscription_id, attempts, error, event, failed_at, listener_name }`
 - `SubscriptionId` -- opaque handler ID (wraps `u64`)
 
 ## Feature Flags

@@ -47,8 +47,8 @@ pub mod types;
 
 pub use bus::{EventBus, EventBusBuilder};
 pub use error::{ConfigError, EventBusError, HandlerError, HandlerResult};
-pub use handler::{AsyncMode, EventHandler, IntoHandler, SyncEventHandler, SyncMode};
-pub use middleware::{Middleware, MiddlewareDecision, SyncMiddleware};
+pub use handler::{AsyncFnMode, AsyncMode, EventHandler, IntoHandler, SyncEventHandler, SyncFnMode, SyncMode};
+pub use middleware::{Middleware, MiddlewareDecision, SyncMiddleware, TypedMiddleware, TypedSyncMiddleware};
 pub use subscription::{Subscription, SubscriptionGuard};
 #[cfg(feature = "test-utils")]
 pub use test_utils::{TestBus, TestBusBuilder};

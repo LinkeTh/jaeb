@@ -187,8 +187,10 @@ mod sealed {
 ///
 /// This trait is **sealed** — it cannot be implemented outside this crate.
 ///
-/// The marker type `M` ([`AsyncMode`](crate::handler::AsyncMode) /
-/// [`SyncMode`](crate::handler::SyncMode)) is inferred from the handler via
+/// The marker type `M` ([`AsyncMode`](crate::handler::AsyncMode),
+/// [`SyncMode`](crate::handler::SyncMode),
+/// [`AsyncFnMode`](crate::handler::AsyncFnMode), or
+/// [`SyncFnMode`](crate::handler::SyncFnMode)) is inferred from the handler via
 /// [`IntoHandler<E, M>`](crate::handler::IntoHandler), so callers never need
 /// to specify it explicitly. The type system enforces:
 ///
@@ -207,13 +209,31 @@ impl IntoFailurePolicy<crate::handler::AsyncMode> for FailurePolicy {
     }
 }
 
+impl IntoFailurePolicy<crate::handler::AsyncFnMode> for FailurePolicy {
+    fn into_failure_policy(self) -> FailurePolicy {
+        self
+    }
+}
+
 impl IntoFailurePolicy<crate::handler::AsyncMode> for NoRetryPolicy {
     fn into_failure_policy(self) -> FailurePolicy {
         self.into()
     }
 }
 
+impl IntoFailurePolicy<crate::handler::AsyncFnMode> for NoRetryPolicy {
+    fn into_failure_policy(self) -> FailurePolicy {
+        self.into()
+    }
+}
+
 impl IntoFailurePolicy<crate::handler::SyncMode> for NoRetryPolicy {
+    fn into_failure_policy(self) -> FailurePolicy {
+        self.into()
+    }
+}
+
+impl IntoFailurePolicy<crate::handler::SyncFnMode> for NoRetryPolicy {
     fn into_failure_policy(self) -> FailurePolicy {
         self.into()
     }
