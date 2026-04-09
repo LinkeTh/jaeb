@@ -128,7 +128,7 @@ impl Plugin for SummerJaeb {
             builder = builder.shutdown_timeout(Duration::from_secs(secs));
         }
 
-        let bus = builder.build();
+        let bus = builder.build().expect("summer-jaeb: invalid event bus configuration");
         app.add_component(bus.clone());
 
         // Auto-register all #[event_listener] functions discovered by inventory

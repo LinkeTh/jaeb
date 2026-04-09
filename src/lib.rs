@@ -6,6 +6,21 @@
 //! It supports synchronous and asynchronous listeners, explicit dependency
 //! injection via handler structs, unsubscribe handles, retry/dead-letter
 //! failure policies, and graceful shutdown.
+//!
+//! # Important semantics
+//!
+//! - **Sync handlers** — dispatched via `tokio::spawn` and awaited before
+//!   [`EventBus::publish`](bus::EventBus::publish) returns.
+//! - **Async handlers** — spawned into a [`JoinSet`](tokio::task::JoinSet);
+//!   `publish` may return before they finish.  Async events require `E: Clone`
+//!   because the event is cloned for each handler invocation.
+//! - **Shutdown** — [`EventBus::shutdown`](bus::EventBus::shutdown) drains
+//!   queued messages, then waits for (or aborts) in-flight async tasks.
+//!   Calling `shutdown` again returns [`EventBusError::ActorStopped`].
+//! - **Dead letters** — after all retries are exhausted a
+//!   [`DeadLetter`] is published unless disabled.
+//!   A failing dead-letter handler will **not** produce another dead letter
+//!   (recursion is guarded).
 
 mod actor;
 pub mod bus;

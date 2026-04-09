@@ -28,7 +28,8 @@ use crate::types::{BusConfig, DeadLetter, Event, FailurePolicy};
 ///     .default_failure_policy(
 ///         FailurePolicy::default().with_max_retries(2),
 ///     )
-///     .build();
+///     .build()
+///     .expect("valid config");
 ///
 /// bus.shutdown().await.unwrap();
 /// # }
@@ -45,6 +46,8 @@ impl EventBusBuilder {
     }
 
     /// Set the internal channel buffer size.
+    ///
+    /// Must be greater than zero.
     ///
     /// Defaults to `256`.
     pub fn buffer_size(mut self, size: usize) -> Self {
@@ -67,6 +70,9 @@ impl EventBusBuilder {
 
     /// Set the maximum number of async handler tasks that may execute
     /// concurrently.
+    ///
+    /// Must be greater than zero. A value of zero would permanently block all
+    /// async handlers.
     ///
     /// When the limit is reached, new async tasks will wait for a permit
     /// before starting execution. Sync handlers are not affected.
@@ -95,8 +101,17 @@ impl EventBusBuilder {
     }
 
     /// Build and start the [`EventBus`].
-    pub fn build(self) -> EventBus {
-        EventBus::from_config(self.config)
+    ///
+    /// Returns [`EventBusError::InvalidConfig`] if the configuration is
+    /// invalid (e.g., zero `buffer_size` or zero `max_concurrent_async`).
+    pub fn build(self) -> Result<EventBus, EventBusError> {
+        if self.config.buffer_size == 0 {
+            return Err(EventBusError::InvalidConfig("buffer_size must be greater than zero".into()));
+        }
+        if self.config.max_concurrent_async == Some(0) {
+            return Err(EventBusError::InvalidConfig("max_concurrent_async must be greater than zero".into()));
+        }
+        Ok(EventBus::from_config(self.config))
     }
 }
 
@@ -110,6 +125,10 @@ impl EventBus {
     /// Create an event bus with the given channel buffer size and default
     /// settings.
     ///
+    /// # Panics
+    ///
+    /// Panics if `buffer` is zero.
+    ///
     /// # Examples
     ///
     /// ```
@@ -121,6 +140,7 @@ impl EventBus {
     /// # }
     /// ```
     pub fn new(buffer: usize) -> Self {
+        assert!(buffer > 0, "buffer size must be greater than zero");
         Self::from_config(BusConfig {
             buffer_size: buffer,
             ..BusConfig::default()
@@ -138,6 +158,25 @@ impl EventBus {
         let actor = EventBusActor::new(tx.clone(), rx, &config);
         tokio::spawn(actor.run());
         Self { tx, default_failure_policy }
+    }
+
+    /// Send a message to the actor and wait for the acknowledgement.
+    ///
+    /// The `make_msg` closure receives a oneshot sender that the actor will
+    /// use to reply. Both the send and the ack-wait map failures to
+    /// [`EventBusError::ActorStopped`].
+    async fn send_and_ack<T>(&self, make_msg: impl FnOnce(oneshot::Sender<T>) -> BusMessage) -> Result<T, EventBusError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let msg = make_msg(ack_tx);
+        let operation = msg.operation_name();
+        self.tx.send(msg).await.map_err(|e| {
+            error!(operation, error = %e, "event_bus.send_failed");
+            EventBusError::ActorStopped
+        })?;
+        ack_rx.await.map_err(|_| {
+            error!(operation, "event_bus.ack_wait_failed");
+            EventBusError::ActorStopped
+        })
     }
 
     /// Subscribe a handler for events of type `E`.
@@ -216,25 +255,15 @@ impl EventBus {
         trace!("event_bus.subscribe");
         let registered = handler.into_handler();
 
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx
-            .send(BusMessage::Subscribe {
+        let subscription_id = self
+            .send_and_ack(|ack| BusMessage::Subscribe {
                 event_type: TypeId::of::<E>(),
                 handler: registered.erased,
                 mode: registered.mode,
                 failure_policy,
-                ack: ack_tx,
+                ack,
             })
-            .await
-            .map_err(|e| {
-                error!(operation = "subscribe", error = %e, "event_bus.send_failed");
-                EventBusError::ActorStopped
-            })?;
-
-        let subscription_id = ack_rx.await.map_err(|_| {
-            error!(operation = "subscribe", "event_bus.ack_wait_failed");
-            EventBusError::ActorStopped
-        })?;
+            .await?;
 
         Ok(Subscription::new(subscription_id, self.clone()))
     }
@@ -276,24 +305,13 @@ impl EventBus {
     {
         trace!("event_bus.publish");
 
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx
-            .send(BusMessage::Publish {
-                event_type: TypeId::of::<E>(),
-                event: Box::new(event),
-                event_name: std::any::type_name::<E>(),
-                ack: Some(ack_tx),
-            })
-            .await
-            .map_err(|e| {
-                error!(operation = "publish", error = %e, "event_bus.send_failed");
-                EventBusError::ActorStopped
-            })?;
-
-        ack_rx.await.map_err(|_| {
-            error!(operation = "publish", "event_bus.ack_wait_failed");
-            EventBusError::ActorStopped
+        self.send_and_ack(|ack| BusMessage::Publish {
+            event_type: TypeId::of::<E>(),
+            event: Box::new(event),
+            event_name: std::any::type_name::<E>(),
+            ack: Some(ack),
         })
+        .await
     }
 
     /// Try to publish without waiting or blocking.
@@ -335,22 +353,8 @@ impl EventBus {
     pub async fn unsubscribe(&self, subscription_id: crate::types::SubscriptionId) -> Result<bool, EventBusError> {
         trace!(subscription_id = subscription_id.as_u64(), "event_bus.unsubscribe");
 
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx
-            .send(BusMessage::Unsubscribe {
-                subscription_id,
-                ack: ack_tx,
-            })
+        self.send_and_ack(|ack| BusMessage::Unsubscribe { subscription_id, ack })
             .await
-            .map_err(|e| {
-                error!(operation = "unsubscribe", error = %e, "event_bus.send_failed");
-                EventBusError::ActorStopped
-            })?;
-
-        ack_rx.await.map_err(|_| {
-            error!(operation = "unsubscribe", "event_bus.ack_wait_failed");
-            EventBusError::ActorStopped
-        })
     }
 
     /// Gracefully stop the actor and wait for queued publish messages plus
@@ -362,6 +366,11 @@ impl EventBus {
     ///
     /// After shutdown, all publish/subscribe operations return
     /// [`EventBusError::ActorStopped`].
+    ///
+    /// Calling `shutdown` a second time will return
+    /// [`EventBusError::ActorStopped`] because the actor is already gone.
+    /// This makes shutdown effectively idempotent — the first call performs
+    /// the work, and subsequent calls are safe no-ops that return an error.
     ///
     /// # Examples
     ///
@@ -379,15 +388,6 @@ impl EventBus {
     pub async fn shutdown(&self) -> Result<(), EventBusError> {
         trace!("event_bus.shutdown");
 
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx.send(BusMessage::Shutdown { ack: ack_tx }).await.map_err(|e| {
-            error!(operation = "shutdown", error = %e, "event_bus.send_failed");
-            EventBusError::ActorStopped
-        })?;
-
-        ack_rx.await.map_err(|_| {
-            error!(operation = "shutdown", "event_bus.ack_wait_failed");
-            EventBusError::ActorStopped
-        })?
+        self.send_and_ack(|ack| BusMessage::Shutdown { ack }).await?
     }
 }

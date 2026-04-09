@@ -122,7 +122,11 @@ async fn shutdown_waits_for_inflight_async_handlers() {
 
 #[tokio::test]
 async fn shutdown_returns_timeout_when_tasks_aborted() {
-    let bus = EventBus::builder().buffer_size(16).shutdown_timeout(Duration::from_millis(50)).build();
+    let bus = EventBus::builder()
+        .buffer_size(16)
+        .shutdown_timeout(Duration::from_millis(50))
+        .build()
+        .expect("valid config");
 
     let done = Arc::new(AtomicUsize::new(0));
 
@@ -144,7 +148,11 @@ async fn shutdown_returns_timeout_when_tasks_aborted() {
 
 #[tokio::test]
 async fn shutdown_succeeds_when_tasks_finish_before_deadline() {
-    let bus = EventBus::builder().buffer_size(16).shutdown_timeout(Duration::from_secs(5)).build();
+    let bus = EventBus::builder()
+        .buffer_size(16)
+        .shutdown_timeout(Duration::from_secs(5))
+        .build()
+        .expect("valid config");
 
     let done = Arc::new(AtomicUsize::new(0));
 

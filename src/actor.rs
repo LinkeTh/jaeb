@@ -74,6 +74,17 @@ pub(crate) enum BusMessage {
     },
 }
 
+impl BusMessage {
+    pub(crate) fn operation_name(&self) -> &'static str {
+        match self {
+            Self::Subscribe { .. } => "subscribe",
+            Self::Unsubscribe { .. } => "unsubscribe",
+            Self::Publish { .. } => "publish",
+            Self::Shutdown { .. } => "shutdown",
+        }
+    }
+}
+
 pub(crate) struct EventBusActor {
     tx: mpsc::Sender<BusMessage>,
     rx: mpsc::Receiver<BusMessage>,
@@ -263,8 +274,13 @@ impl EventBusActor {
                     if let Some(ref sem) = self.async_semaphore {
                         let permit = Arc::clone(sem);
                         self.async_tasks.spawn(async move {
-                            let _permit = permit.acquire().await.expect("semaphore closed");
-                            execution.await
+                            match permit.acquire().await {
+                                Ok(_permit) => execution.await,
+                                Err(_) => {
+                                    warn!(event = event_name, listener_id = listener_id.as_u64(), "handler.semaphore_closed");
+                                    None
+                                }
+                            }
                         });
                     } else {
                         self.async_tasks.spawn(execution);
@@ -390,6 +406,9 @@ impl EventBusActor {
                         listener_id = failure.subscription_id.as_u64(),
                         "dead_letter.drop.channel_full"
                     );
+
+                    #[cfg(feature = "metrics")]
+                    counter!("eventbus.dead_letter.drop", "reason" => "channel_full", "event" => failure.event_name).increment(1);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     warn!(
@@ -397,6 +416,9 @@ impl EventBusActor {
                         listener_id = failure.subscription_id.as_u64(),
                         "dead_letter.drop.actor_stopped"
                     );
+
+                    #[cfg(feature = "metrics")]
+                    counter!("eventbus.dead_letter.drop", "reason" => "actor_stopped", "event" => failure.event_name).increment(1);
                 }
             }
         }
