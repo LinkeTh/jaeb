@@ -9,7 +9,7 @@ repository = "https://github.com/LinkeTh/jaeb"
 readme = "README.md"
 keywords = ["event-bus", "actor", "tokio", "summer", "pubsub"]
 categories = ["asynchronous", "concurrency", "web-programming"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [features]
 default = []

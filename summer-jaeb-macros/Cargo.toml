@@ -7,7 +7,7 @@ description = "Proc macros for summer-jaeb event listener auto-registration"
 license = "MIT"
 repository = "https://github.com/LinkeTh/jaeb"
 readme = "README.md"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [lib]
 proc-macro = true
