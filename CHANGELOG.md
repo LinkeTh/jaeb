@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-04-09
+
+### Breaking Changes
+
+- **`DeadLetter` struct has new fields.** `event: Arc<dyn Any + Send + Sync>`
+  holds the original event payload, `failed_at: SystemTime` records when the
+  failure occurred, and `listener_name: Option<&'static str>` identifies the
+  handler that failed. Code that constructs or pattern-matches `DeadLetter`
+  must be updated.
+- **`EventBus::publish()` now returns middleware rejections.** The return type
+  is unchanged (`Result<(), EventBusError>`) but a new
+  `EventBusError::MiddlewareRejected(String)` variant may be returned when a
+  middleware rejects the event.
+- **`subscribe_with_policy` now requires `IntoFailurePolicy<M>` instead of
+  `FailurePolicy`.** Passing a `FailurePolicy` (with retries) to a sync handler
+  is now a compile error. Use `NoRetryPolicy` for sync handlers.
+- **Removed `EventBusError::SyncRetryNotSupported`.** This runtime check is no
+  longer needed because the type system prevents the invalid combination at
+  compile time.
+- **Removed `retry_delay_ms`. Use `retry_strategy = "fixed", retry_base_ms = N` instead.
+
+### Added
+
+- **Richer dead-letter context.** `DeadLetter` now carries the original event
+  payload (`event`), a failure timestamp (`failed_at`), and the listener name
+  (`listener_name`). Consumers can downcast `event` back to the original type.
+- **Named subscriptions.** `EventHandler` and `SyncEventHandler` gain an
+  optional `fn name(&self) -> Option<&'static str>` default method. The name
+  is threaded through to `DeadLetter`, tracing spans, and introspection.
+- **Introspection API.** `EventBus::stats()` returns a `BusStats` snapshot
+  with total subscription count, per-event-type listener info (including
+  names), registered event types, in-flight async task count, queue capacity,
+  and shutdown status. New types: `BusStats`, `ListenerInfo`.
+- **Once-off subscriptions.** `EventBus::subscribe_once()` and
+  `subscribe_once_with_policy()` register handlers that fire exactly once and
+  are then auto-removed. Retries are forced to zero. The `Subscription`
+  handle's `unsubscribe()` returns `false` after auto-removal.
+- **Middleware / interceptors.** `EventBus::add_middleware()` and
+  `add_sync_middleware()` register cross-cutting, untyped middleware that runs
+  before handler dispatch. Middleware returns `MiddlewareDecision::Continue` or
+  `Reject(reason)`. On rejection, `publish()` returns
+  `EventBusError::MiddlewareRejected`. Middlewares execute in FIFO order and
+  can be removed via the returned `Subscription`. New traits: `Middleware`,
+  `SyncMiddleware`. New type: `MiddlewareDecision`.
+- **Test utilities.** Feature-gated `test-utils` module with `TestBus` — a
+  wrapper around `EventBus` with per-type event capture buffers. Methods:
+  `capture::<E>()`, `published::<E>()`, `assert_count::<E>(n)`,
+  `assert_empty::<E>()`. Also includes `TestBusBuilder`.
+- **`IntoFailurePolicy<M>` sealed trait.** Leverages existing `AsyncMode` /
+  `SyncMode` marker types to enforce at compile time that sync handlers cannot
+  be given retry policies.
+- **`NoRetryPolicy` supports both sync and async handlers.** `NoRetryPolicy`
+  implements `IntoFailurePolicy<AsyncMode>` as well, so it can be used with
+  async handlers when retries are not desired.
+
+### Changed (summer-jaeb-macros 0.1.3)
+
+- `#[event_listener]` on sync handlers now generates `::jaeb::NoRetryPolicy`
+  chains instead of `::jaeb::FailurePolicy`.
+- Removed `retry_delay_ms` from all error messages and documentation.
+
+### Added (summer-jaeb-macros 0.1.3)
+
+- **Named subscriptions in `#[event_listener]`.** Macro-generated handlers now
+  override `fn name()` automatically. By default the function name is used;
+  `name = "custom"` overrides it; `name = ""` opts out (returns `None`).
+- Attribute-parsing unit tests (13 tests covering name, retry, strategy, and
+  error cases).
+
+### Added (summer-jaeb 0.1.3)
+
+- trybuild compile-fail test suite (12 tests covering all macro error paths).
+- Config unit tests for deserialization and defaults.
+- `serde_json` dev-dependency for config tests.
+
 ## [0.2.2] - 2026-04-09
 
 ### Fixed

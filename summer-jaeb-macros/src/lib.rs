@@ -56,8 +56,23 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 /// # Failure policy attributes
 ///
 /// ```rust,ignore
-/// #[event_listener(retries = 3, retry_delay_ms = 100, dead_letter = true)]
+/// // Fixed delay
+/// #[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]
 /// async fn flaky_handler(event: &SomeEvent) -> HandlerResult {
+///     // ...
+///     Ok(())
+/// }
+///
+/// // Exponential back-off
+/// #[event_listener(retries = 5, retry_strategy = "exponential", retry_base_ms = 50, retry_max_ms = 5000)]
+/// async fn backoff_handler(event: &SomeEvent) -> HandlerResult {
+///     // ...
+///     Ok(())
+/// }
+///
+/// // Exponential back-off with jitter
+/// #[event_listener(retries = 5, retry_strategy = "exponential_jitter", retry_base_ms = 50, retry_max_ms = 5000)]
+/// async fn jitter_handler(event: &SomeEvent) -> HandlerResult {
 ///     // ...
 ///     Ok(())
 /// }
@@ -72,6 +87,25 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 /// #[event_listener]
 /// fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
 ///     eprintln!("dead letter: {:?}", event);
+///     Ok(())
+/// }
+/// ```
+///
+/// # Listener naming
+///
+/// By default the function name is used as the listener name (visible in traces,
+/// dead-letter records, and `BusStats`). Override with `name = "..."` or opt
+/// out with `name = ""`:
+///
+/// ```rust,ignore
+/// #[event_listener(name = "order-processor")]
+/// async fn handle_order(event: &OrderEvent) -> HandlerResult {
+///     Ok(())
+/// }
+///
+/// // Opt out — name() returns None
+/// #[event_listener(name = "")]
+/// async fn anonymous(event: &OrderEvent) -> HandlerResult {
 ///     Ok(())
 /// }
 /// ```
@@ -149,24 +183,64 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
     if is_dead_letter && attrs.has_failure_policy() {
         return Err(syn::Error::new_spanned(
             &func.sig,
-            "failure policy attributes (retries, retry_delay_ms, dead_letter) are not supported on DeadLetter listeners",
+            "failure policy attributes (retries, retry_strategy, \
+             retry_base_ms, retry_max_ms, dead_letter) are not supported on DeadLetter listeners",
         ));
     }
 
-    // Warn about likely mistakes in failure policy configuration
-    if attrs.retry_delay_ms.is_some() && attrs.retries.is_none() {
+    // ── Retry attribute validation ───────────────────────────────────────
+
+    // `retry_base_ms` / `retry_max_ms` are only valid with explicit `retry_strategy`.
+    if (attrs.retry_base_ms.is_some() || attrs.retry_max_ms.is_some()) && attrs.retry_strategy.is_none() {
         return Err(syn::Error::new_spanned(
             &func.sig,
-            "`retry_delay_ms` has no effect without `retries`; add `retries = N` or remove `retry_delay_ms`",
+            "`retry_base_ms` and `retry_max_ms` require `retry_strategy`; \
+             add `retry_strategy = \"exponential\"` (or `\"exponential_jitter\"` / `\"fixed\"`)",
+        ));
+    }
+
+    // Exponential strategies require both `retry_base_ms` and `retry_max_ms`.
+    if let Some(ref strategy) = attrs.retry_strategy {
+        match strategy.as_str() {
+            "exponential" | "exponential_jitter" => {
+                if attrs.retry_base_ms.is_none() || attrs.retry_max_ms.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig,
+                        format!(
+                            "`retry_strategy = \"{strategy}\"` requires both \
+                             `retry_base_ms` and `retry_max_ms`"
+                        ),
+                    ));
+                }
+            }
+            "fixed" => {
+                if attrs.retry_base_ms.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig,
+                        "`retry_strategy = \"fixed\"` requires `retry_base_ms`",
+                    ));
+                }
+            }
+            _ => {} // unreachable, validated in parsing
+        }
+    }
+
+    // Any retry strategy attributes without `retries` are useless.
+    if attrs.has_retry_strategy_attrs() && attrs.retries.is_none() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "retry strategy attributes have no effect without `retries`; \
+             add `retries = N` or remove retry-related attributes",
         ));
     }
 
     // Retry attributes are only supported on async handlers — sync handlers
     // execute exactly once.
-    if !is_async && (attrs.retries.is_some() || attrs.retry_delay_ms.is_some()) {
+    if !is_async && (attrs.retries.is_some() || attrs.has_retry_strategy_attrs()) {
         return Err(syn::Error::new_spanned(
             &func.sig,
-            "`retries` and `retry_delay_ms` are only supported on async handlers — sync handlers execute exactly once (failures produce dead letters when enabled)",
+            "`retries` and retry strategy attributes are only supported on async handlers \
+             — sync handlers execute exactly once (failures produce dead letters when enabled)",
         ));
     }
 
@@ -174,14 +248,25 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
     let state_params = parse_state_params(&func.sig.inputs)?;
     let has_state = !state_params.is_empty();
 
-    // Build the generated code
-    let handler_trait_impl = if is_async {
-        gen_async_handler_impl(event_ty, fn_name, &state_params)
-    } else {
-        gen_sync_handler_impl(event_ty, fn_name, &state_params)
+    // ── Listener name resolution ─────────────────────────────────────────
+    //
+    //  - Default (no `name` attr): use the function name
+    //  - `name = "custom"`:        use the custom name
+    //  - `name = ""`:              opt out of naming (None)
+    let listener_name: Option<&str> = match &attrs.name {
+        Some(n) if n.is_empty() => None,
+        Some(n) => Some(n.as_str()),
+        None => Some(fn_name_str.as_str()),
     };
 
-    let subscribe_call = gen_subscribe_call(event_ty, is_dead_letter, &attrs, &fn_name_str, has_state);
+    // Build the generated code
+    let handler_trait_impl = if is_async {
+        gen_async_handler_impl(event_ty, fn_name, &state_params, listener_name)
+    } else {
+        gen_sync_handler_impl(event_ty, fn_name, &state_params, listener_name)
+    };
+
+    let subscribe_call = gen_subscribe_call(event_ty, is_dead_letter, &attrs, &fn_name_str, has_state, is_async);
 
     let (handler_struct, registrar_struct, inventory_submit) = if has_state {
         gen_stateful_structs(&state_params, &fn_name_str, &subscribe_call)

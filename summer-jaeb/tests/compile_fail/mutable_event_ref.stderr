@@ -1,0 +1,13 @@
+error: event parameter must be a reference: `event: &EventType`
+  --> tests/compile_fail/mutable_event_ref.rs:11:26
+   |
+11 | async fn on_event(event: &mut MyEvent) -> HandlerResult {
+   |                          ^^^^^^^^^^^^
+
+warning: unused import: `jaeb::HandlerResult`
+ --> tests/compile_fail/mutable_event_ref.rs:4:5
+  |
+4 | use jaeb::HandlerResult;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

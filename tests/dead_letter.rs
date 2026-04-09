@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use jaeb::{DeadLetter, EventBus, EventHandler, FailurePolicy, HandlerResult, SyncEventHandler};
+use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, NoRetryPolicy, SyncEventHandler};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
 // ── Event types ──────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
-struct Alert(#[allow(dead_code)] String);
+#[derive(Clone, Debug, PartialEq)]
+struct Alert(String);
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
@@ -167,7 +167,7 @@ async fn dead_letter_suppressed_when_disabled() {
         .expect("subscribe dead letters");
 
     // Subscribe a handler with dead_letter = false.
-    let policy = FailurePolicy::default().with_dead_letter(false);
+    let policy = NoRetryPolicy::default().with_dead_letter(false);
     let _ = bus.subscribe_with_policy(AlwaysFailSync, policy).await.expect("subscribe");
 
     bus.publish(Alert("suppressed".into())).await.expect("publish");
@@ -201,4 +201,102 @@ async fn dead_letter_handler_failure_does_not_recurse() {
         .await
         .expect("shutdown timed out — possible infinite recursion")
         .expect("shutdown");
+}
+
+#[tokio::test]
+async fn dead_letter_contains_original_event() {
+    let bus = EventBus::new(16).expect("valid config");
+    let notify = Arc::new(Notify::new());
+    let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
+
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCollector {
+            letters: Arc::clone(&letters),
+            notify: Arc::clone(&notify),
+        })
+        .await
+        .expect("subscribe dead letters");
+
+    let _ = bus.subscribe(AlwaysFailSync).await.expect("subscribe");
+
+    bus.publish(Alert("payload-check".into())).await.expect("publish");
+
+    tokio::time::timeout(Duration::from_secs(1), notify.notified())
+        .await
+        .expect("timed out waiting for dead letter");
+
+    let guard = letters.lock().unwrap();
+    assert_eq!(guard.len(), 1);
+
+    let dl = &guard[0];
+    let original = dl.event.downcast_ref::<Alert>().expect("should downcast to Alert");
+    assert_eq!(original.0, "payload-check");
+}
+
+#[tokio::test]
+async fn dead_letter_has_timestamp() {
+    let before = SystemTime::now();
+
+    let bus = EventBus::new(16).expect("valid config");
+    let notify = Arc::new(Notify::new());
+    let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
+
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCollector {
+            letters: Arc::clone(&letters),
+            notify: Arc::clone(&notify),
+        })
+        .await
+        .expect("subscribe dead letters");
+
+    let _ = bus.subscribe(AlwaysFailSync).await.expect("subscribe");
+
+    bus.publish(Alert("timestamp-check".into())).await.expect("publish");
+
+    tokio::time::timeout(Duration::from_secs(1), notify.notified())
+        .await
+        .expect("timed out waiting for dead letter");
+
+    let after = SystemTime::now();
+
+    let guard = letters.lock().unwrap();
+    assert_eq!(guard.len(), 1);
+
+    let dl = &guard[0];
+    assert!(
+        dl.failed_at >= before && dl.failed_at <= after,
+        "failed_at ({:?}) should be between before ({:?}) and after ({:?})",
+        dl.failed_at,
+        before,
+        after
+    );
+}
+
+#[tokio::test]
+async fn async_dead_letter_contains_original_event() {
+    let bus = EventBus::new(16).expect("valid config");
+    let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
+
+    let _ = bus
+        .subscribe_dead_letters(DeadLetterCollector {
+            letters: Arc::clone(&letters),
+            notify: Arc::new(Notify::new()),
+        })
+        .await
+        .expect("subscribe dead letters");
+
+    let _ = bus.subscribe(AlwaysFailAsync).await.expect("subscribe");
+
+    bus.publish(Alert("async-payload".into())).await.expect("publish");
+
+    // Shutdown drains in-flight async tasks and delivers dead letters directly.
+    bus.shutdown().await.expect("shutdown");
+
+    let guard = letters.lock().unwrap();
+    assert_eq!(guard.len(), 1);
+
+    let dl = &guard[0];
+    let original = dl.event.downcast_ref::<Alert>().expect("should downcast to Alert");
+    assert_eq!(original.0, "async-payload");
+    assert!(dl.failed_at <= SystemTime::now(), "failed_at should be in the past");
 }

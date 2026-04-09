@@ -4,7 +4,7 @@
 //
 // Features showcased:
 //   - Stateful listener with `Component<DbPool>` state injection
-//   - Failure policy attributes (`retries`, `retry_delay_ms`, `dead_letter`)
+//   - Failure policy attributes (`retries`, `retry_strategy`, `retry_base_ms`, `dead_letter`)
 //   - Dead-letter listener (auto-detected `DeadLetter` event type)
 //   - Async and sync listeners
 //
@@ -81,7 +81,7 @@ impl Plugin for DbPoolPlugin {
 /// Async listener with state injection: reacts to a new order being placed.
 /// The `Component<DbPool>` parameter is automatically resolved from summer's
 /// component registry at listener registration time.
-#[event_listener(retries = 2, retry_delay_ms = 500, dead_letter = true)]
+#[event_listener(retries = 2, retry_strategy = "fixed", retry_base_ms = 500, dead_letter = true)]
 async fn on_order_placed(event: &OrderPlacedEvent, Component(db): Component<DbPool>) -> HandlerResult {
     db.log_order(event.order_id);
     info!(order_id = event.order_id, "order placed — confirmation email sent");

@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple actor based event bus"
@@ -30,6 +30,7 @@ tracing = { version = "0.1", features = ["std", "log"] }
 [features]
 default = []
 metrics = ["dep:metrics"]
+test-utils = []
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["async_tokio"] }

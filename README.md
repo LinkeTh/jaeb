@@ -12,7 +12,7 @@ JAEB provides:
 - automatic dispatch-mode selection based on handler trait
 - explicit listener unsubscription via `Subscription` handles or RAII `SubscriptionGuard`
 - dependency injection via handler structs
-- retry policies with configurable delay for async handlers
+- retry policies with configurable strategy for async handlers
 - dead-letter stream for terminal failures
 - explicit `Result`-based error handling (no panics in the public API)
 - graceful shutdown with queue draining and in-flight task completion
@@ -25,7 +25,7 @@ JAEB provides:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.2" }
+jaeb = { version = "0.2.3" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -33,7 +33,7 @@ To enable metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.2", features = ["metrics"] }
+jaeb = { version = "0.2.3", features = ["metrics"] }
 ```
 
 ## Quick Start
@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use jaeb::{
     DeadLetter, EventBus, EventBusError, EventHandler, FailurePolicy,
-    HandlerResult, SyncEventHandler,
+    HandlerResult, RetryStrategy, SyncEventHandler,
 };
 
 #[derive(Clone)]
@@ -87,7 +87,7 @@ async fn main() -> Result<(), EventBusError> {
 
     let retry_policy = FailurePolicy::default()
         .with_max_retries(2)
-        .with_retry_delay(Duration::from_millis(50));
+        .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)));
 
     // Async handler -- dispatch mode inferred from EventHandler impl
     let checkout_sub = bus
@@ -116,7 +116,8 @@ async fn main() -> Result<(), EventBusError> {
 - `EventBus::new(buffer) -> Result<EventBus, EventBusError>` -- create a new bus with the given channel capacity
 - `EventBus::builder()` -- builder for fine-grained configuration (buffer size, timeouts, concurrency limits)
 - `subscribe(handler) -> Result<Subscription, EventBusError>` -- dispatch mode inferred from trait
-- `subscribe_with_policy(handler, FailurePolicy) -> Result<Subscription, EventBusError>`
+- `subscribe_with_policy(handler, policy) -> Result<Subscription, EventBusError>` -- policy type is compile-time checked (`FailurePolicy` for async,
+  `NoRetryPolicy` for sync)
 - `subscribe_dead_letters(handler) -> Result<Subscription, EventBusError>`
 - `publish(event) -> Result<(), EventBusError>`
 - `try_publish(event) -> Result<(), EventBusError>` -- non-blocking, returns `ChannelFull` when queue is full
@@ -148,7 +149,9 @@ to prevent the automatic unsubscribe.
 
 - `Event` -- blanket trait implemented for all `T: Send + Sync + 'static`
 - `HandlerResult = Result<(), Box<dyn Error + Send + Sync>>`
-- `FailurePolicy { max_retries, retry_delay, dead_letter }`
+- `FailurePolicy { max_retries, retry_strategy, dead_letter }` -- for async handlers
+- `NoRetryPolicy { dead_letter }` -- for sync handlers (or async handlers that don't need retries)
+- `IntoFailurePolicy<M>` -- sealed trait enforcing compile-time policy/handler compatibility
 - `DeadLetter { event_name, subscription_id, attempts, error }`
 - `SubscriptionId` -- opaque handler ID (wraps `u64`)
 
@@ -180,7 +183,8 @@ JAEB uses the `tracing` crate throughout. Key spans and events:
 - `publish` waits for dispatch and sync listeners to finish.
 - `publish` does **not** wait for async listeners to finish.
 - async handler failures can be retried based on `FailurePolicy`.
-- sync handlers execute exactly once -- retries are not supported (`SyncRetryNotSupported`).
+- sync handlers execute exactly once -- retries are not supported; passing a `FailurePolicy` with retries to a sync handler is a compile error via
+  `IntoFailurePolicy<M>`.
 - after retries are exhausted (async) or on first failure (sync), dead-letter events are emitted when `dead_letter: true`.
 - dead-letter handlers themselves cannot trigger further dead letters (recursion guard).
 - `shutdown` drains queued publish messages and waits for in-flight async listeners.
@@ -191,8 +195,8 @@ JAEB uses the `tracing` crate throughout. Key spans and events:
 - `EventBusError::ActorStopped` -- the actor has shut down or the channel is closed
 - `EventBusError::ChannelFull` -- the internal queue is full (`try_publish` only)
 - `EventBusError::InvalidConfig(ConfigError)` -- invalid builder/constructor configuration (zero buffer size, zero concurrency)
+- `EventBusError::MiddlewareRejected(String)` -- a middleware rejected the event before it reached any listener
 - `EventBusError::ShutdownTimeout` -- the configured `shutdown_timeout` expired and in-flight async tasks were forcibly aborted
-- `EventBusError::SyncRetryNotSupported` -- a sync handler was subscribed with `max_retries > 0` (retries are async-only)
 
 ## Examples
 

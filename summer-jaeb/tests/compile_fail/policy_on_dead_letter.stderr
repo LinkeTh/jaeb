@@ -1,0 +1,13 @@
+error: failure policy attributes (retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter) are not supported on DeadLetter listeners
+ --> tests/compile_fail/policy_on_dead_letter.rs:8:1
+  |
+8 | fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeadLetter` and `HandlerResult`
+ --> tests/compile_fail/policy_on_dead_letter.rs:4:12
+  |
+4 | use jaeb::{DeadLetter, HandlerResult};
+  |            ^^^^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

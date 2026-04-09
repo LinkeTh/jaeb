@@ -17,7 +17,8 @@ use tracing::{Instrument, debug, error, trace, warn};
 use metrics::counter;
 
 use crate::error::HandlerResult;
-use crate::types::{BusConfig, DeadLetter, FailurePolicy, SubscriptionId};
+use crate::middleware::MiddlewareDecision;
+use crate::types::{BusConfig, BusStats, DeadLetter, FailurePolicy, ListenerInfo, SubscriptionId};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::TimerGuard;
@@ -50,11 +51,27 @@ impl ErasedHandler {
     }
 }
 
+/// Type-erased middleware stored inside the actor.
+pub(crate) type ErasedAsyncMiddleware =
+    Arc<dyn Fn(&'static str, EventType) -> Pin<Box<dyn Future<Output = MiddlewareDecision> + Send>> + Send + Sync>;
+pub(crate) type ErasedSyncMiddleware = Arc<dyn Fn(&'static str, &(dyn Any + Send + Sync)) -> MiddlewareDecision + Send + Sync>;
+
+#[derive(Clone)]
+pub(crate) enum ErasedMiddleware {
+    Async(ErasedAsyncMiddleware),
+    Sync(ErasedSyncMiddleware),
+}
+
 #[derive(Clone)]
 pub(crate) struct Listener {
     pub id: SubscriptionId,
     pub handler: ErasedHandler,
     pub failure_policy: FailurePolicy,
+    /// Human-readable name provided by the handler trait.
+    pub name: Option<&'static str>,
+    /// When `true`, the listener is removed from the registry before its first
+    /// invocation and will never fire again.
+    pub once: bool,
 }
 
 #[derive(Debug)]
@@ -64,6 +81,10 @@ struct ListenerFailure {
     attempts: usize,
     error: String,
     dead_letter: bool,
+    /// The original event payload, threaded through for inclusion in dead letters.
+    event: EventType,
+    /// Human-readable listener name, if provided.
+    listener_name: Option<&'static str>,
 }
 
 type HandlerTaskOutcome = Option<ListenerFailure>;
@@ -71,8 +92,11 @@ type HandlerTaskOutcome = Option<ListenerFailure>;
 pub(crate) enum BusMessage {
     Subscribe {
         event_type: TypeId,
+        event_type_name: &'static str,
         handler: ErasedHandler,
         failure_policy: FailurePolicy,
+        listener_name: Option<&'static str>,
+        once: bool,
         ack: oneshot::Sender<SubscriptionId>,
     },
     Unsubscribe {
@@ -83,7 +107,14 @@ pub(crate) enum BusMessage {
         event_type: TypeId,
         event: EventType,
         event_name: &'static str,
-        ack: Option<oneshot::Sender<()>>,
+        ack: Option<oneshot::Sender<Result<(), crate::error::EventBusError>>>,
+    },
+    AddMiddleware {
+        middleware: ErasedMiddleware,
+        ack: oneshot::Sender<SubscriptionId>,
+    },
+    Stats {
+        ack: oneshot::Sender<BusStats>,
     },
     Shutdown {
         ack: oneshot::Sender<Result<(), crate::error::EventBusError>>,
@@ -96,6 +127,8 @@ impl BusMessage {
             Self::Subscribe { .. } => "subscribe",
             Self::Unsubscribe { .. } => "unsubscribe",
             Self::Publish { .. } => "publish",
+            Self::AddMiddleware { .. } => "add_middleware",
+            Self::Stats { .. } => "stats",
             Self::Shutdown { .. } => "shutdown",
         }
     }
@@ -114,11 +147,17 @@ pub(crate) struct EventBusActor {
     /// reference counting.
     listeners: HashMap<TypeId, Arc<Vec<Listener>>>,
     listener_index: HashMap<SubscriptionId, TypeId>,
+    /// Maps `TypeId` → human-readable type name for introspection.
+    event_type_names: HashMap<TypeId, &'static str>,
     next_subscription_id: u64,
     async_tasks: JoinSet<HandlerTaskOutcome>,
     handler_timeout: Option<Duration>,
     async_semaphore: Option<Arc<Semaphore>>,
     shutdown_timeout: Option<Duration>,
+    /// Stored for reporting in `BusStats`.
+    buffer_size: usize,
+    /// Registered middlewares in FIFO order. Keyed by SubscriptionId for removal.
+    middlewares: Vec<(SubscriptionId, ErasedMiddleware)>,
 }
 
 impl EventBusActor {
@@ -129,11 +168,14 @@ impl EventBusActor {
             rx,
             listeners: HashMap::new(),
             listener_index: HashMap::new(),
+            event_type_names: HashMap::new(),
             next_subscription_id: 1,
             async_tasks: JoinSet::new(),
             handler_timeout: config.handler_timeout,
             async_semaphore,
             shutdown_timeout: config.shutdown_timeout,
+            buffer_size: config.buffer_size,
+            middlewares: Vec::new(),
         }
     }
 
@@ -161,8 +203,11 @@ impl EventBusActor {
                     match msg {
                         BusMessage::Subscribe {
                             event_type,
+                            event_type_name,
                             handler,
                             failure_policy,
+                            listener_name,
+                            once,
                             ack,
                         } => {
                             let id = self.next_subscription_id();
@@ -171,15 +216,18 @@ impl EventBusActor {
                                 id,
                                 handler,
                                 failure_policy,
+                                name: listener_name,
+                                once,
                             });
                             self.listener_index.insert(id, event_type);
+                            self.event_type_names.entry(event_type).or_insert(event_type_name);
 
                             if let Err(_e) = ack.send(id) {
                                 warn!("subscribe.ack_receiver_dropped");
                             }
                         }
                         BusMessage::Unsubscribe { subscription_id, ack } => {
-                            let removed = self.remove_listener(subscription_id);
+                            let removed = self.remove_listener(subscription_id) || self.remove_middleware(subscription_id);
                             if let Err(_e) = ack.send(removed) {
                                 warn!(subscription_id = subscription_id.as_u64(), "unsubscribe.ack_receiver_dropped");
                             }
@@ -190,11 +238,24 @@ impl EventBusActor {
                             event_name,
                             ack,
                         } => {
-                            self.dispatch(event_type, event, event_name).await;
+                            let result = self.dispatch(event_type, event, event_name).await;
                             if let Some(ack) = ack
-                                && let Err(_e) = ack.send(())
+                                && let Err(_e) = ack.send(result)
                             {
                                 warn!(event = event_name, "publish.ack_receiver_dropped");
+                            }
+                        }
+                        BusMessage::AddMiddleware { middleware, ack } => {
+                            let id = self.next_subscription_id();
+                            self.middlewares.push((id, middleware));
+                            if let Err(_e) = ack.send(id) {
+                                warn!("add_middleware.ack_receiver_dropped");
+                            }
+                        }
+                        BusMessage::Stats { ack } => {
+                            let stats = self.collect_stats(false);
+                            if let Err(_e) = ack.send(stats) {
+                                warn!("stats.ack_receiver_dropped");
                             }
                         }
                         BusMessage::Shutdown { ack } => {
@@ -275,6 +336,45 @@ impl EventBusActor {
         removed
     }
 
+    /// Remove a middleware by its subscription ID. Returns `true` if found.
+    fn remove_middleware(&mut self, subscription_id: SubscriptionId) -> bool {
+        let len_before = self.middlewares.len();
+        self.middlewares.retain(|(id, _)| *id != subscription_id);
+        self.middlewares.len() < len_before
+    }
+
+    /// Build a point-in-time snapshot of the bus state.
+    fn collect_stats(&self, shutdown_called: bool) -> BusStats {
+        let mut total_subscriptions = 0;
+        let mut subscriptions_by_event = HashMap::new();
+        let mut registered_event_types = Vec::new();
+
+        for (type_id, listener_list) in &self.listeners {
+            let event_name = self.event_type_names.get(type_id).copied().unwrap_or("unknown");
+            let infos: Vec<ListenerInfo> = listener_list
+                .iter()
+                .map(|l| ListenerInfo {
+                    subscription_id: l.id,
+                    name: l.name,
+                })
+                .collect();
+            total_subscriptions += infos.len();
+            registered_event_types.push(event_name);
+            subscriptions_by_event.insert(event_name, infos);
+        }
+
+        registered_event_types.sort_unstable();
+
+        BusStats {
+            total_subscriptions,
+            subscriptions_by_event,
+            registered_event_types,
+            queue_capacity: self.buffer_size,
+            in_flight_async: self.async_tasks.len(),
+            shutdown_called,
+        }
+    }
+
     async fn drain_queued_messages(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
@@ -282,7 +382,7 @@ impl EventBusActor {
                     drop(ack);
                 }
                 BusMessage::Unsubscribe { subscription_id, ack } => {
-                    let removed = self.remove_listener(subscription_id);
+                    let removed = self.remove_listener(subscription_id) || self.remove_middleware(subscription_id);
                     let _ = ack.send(removed);
                 }
                 BusMessage::Publish {
@@ -291,15 +391,24 @@ impl EventBusActor {
                     event_name,
                     ack,
                 } => {
-                    self.dispatch(event_type, event, event_name).await;
+                    let result = self.dispatch(event_type, event, event_name).await;
                     if let Some(ack) = ack
-                        && let Err(_e) = ack.send(())
+                        && let Err(_e) = ack.send(result)
                     {
                         warn!(event = event_name, "publish.ack_receiver_dropped");
                     }
                 }
+                BusMessage::AddMiddleware { ack, .. } => {
+                    // During shutdown drain, drop middleware registrations.
+                    drop(ack);
+                }
                 BusMessage::Shutdown { ack } => {
                     let _ = ack.send(Ok(()));
+                }
+                BusMessage::Stats { ack } => {
+                    // During shutdown drain, report shutdown_called = true.
+                    let stats = self.collect_stats(true);
+                    let _ = ack.send(stats);
                 }
             }
 
@@ -308,6 +417,13 @@ impl EventBusActor {
     }
 
     /// Dispatch an event to all registered listeners for its type.
+    ///
+    /// # Middleware pipeline
+    ///
+    /// Before dispatching to listeners, the middleware pipeline runs in FIFO
+    /// order.  The first middleware to return [`MiddlewareDecision::Reject`]
+    /// short-circuits: no further middlewares execute and no listeners fire.
+    /// [`Err(EventBusError::MiddlewareRejected)`] is returned to the caller.
     ///
     /// # Allocation costs per publish
     ///
@@ -322,17 +438,49 @@ impl EventBusActor {
     /// - **Listener list snapshot**: the `Arc<Vec<Listener>>` is cloned (O(1)
     ///   ref-count) so dispatch can iterate without holding `&mut self`.
     ///   Mutations during dispatch trigger copy-on-write (`Arc::make_mut`).
-    async fn dispatch(&mut self, event_type: TypeId, event: EventType, event_name: &'static str) {
+    async fn dispatch(&mut self, event_type: TypeId, event: EventType, event_name: &'static str) -> Result<(), crate::error::EventBusError> {
+        // --- Middleware pipeline ---
+        // Run middlewares in FIFO order. On first Reject, bail out.
+        if !self.middlewares.is_empty() {
+            for (_id, mw) in &self.middlewares {
+                let decision = match mw {
+                    ErasedMiddleware::Async(f) => f(event_name, Arc::clone(&event)).await,
+                    ErasedMiddleware::Sync(f) => f(event_name, event.as_ref()),
+                };
+                if let MiddlewareDecision::Reject(reason) = decision {
+                    debug!(event = event_name, reason = %reason, "publish.middleware_rejected");
+                    return Err(crate::error::EventBusError::MiddlewareRejected(reason));
+                }
+            }
+        }
+
         let Some(listeners) = self.listeners.get(&event_type).cloned() else {
             #[cfg(feature = "metrics")]
             counter!("eventbus.publish", "event" => event_name).increment(1);
 
             debug!(event = event_name, listeners = 0, "publish.dispatch");
-            return;
+            return Ok(());
         };
 
         #[cfg(feature = "metrics")]
         counter!("eventbus.publish", "event" => event_name).increment(1);
+
+        // Remove once-off listeners from the registry *before* invoking them.
+        // This guarantees that a concurrent publish cannot double-fire a
+        // once-listener. The snapshot we iterate still contains them.
+        let has_once = listeners.iter().any(|l| l.once);
+        if has_once && let Some(list) = self.listeners.get_mut(&event_type) {
+            let vec = Arc::make_mut(list);
+            for listener in listeners.iter() {
+                if listener.once {
+                    self.listener_index.remove(&listener.id);
+                }
+            }
+            vec.retain(|l| !l.once);
+            if vec.is_empty() {
+                self.listeners.remove(&event_type);
+            }
+        }
 
         let listeners_count = listeners.len();
         debug!(event = event_name, listeners = listeners_count, "publish.dispatch");
@@ -342,14 +490,22 @@ impl EventBusActor {
         for listener in listeners.iter() {
             let listener_id = listener.id;
             let failure_policy = listener.failure_policy;
+            let listener_name = listener.name;
 
             match listener.handler {
                 ErasedHandler::Async(ref handler) => {
                     let handler = Arc::clone(handler);
                     let event = Arc::clone(&event);
-                    let span = tracing::trace_span!("eventbus.handler", event = event_name, mode = "async", listener_id = listener_id.as_u64());
+                    let span = tracing::trace_span!(
+                        "eventbus.handler",
+                        event = event_name,
+                        mode = "async",
+                        listener_id = listener_id.as_u64(),
+                        listener_name = listener_name.unwrap_or("unnamed"),
+                    );
                     let execution =
-                        Self::execute_async_listener(handler, event, event_name, listener_id, failure_policy, handler_timeout).instrument(span);
+                        Self::execute_async_listener(handler, event, event_name, listener_id, listener_name, failure_policy, handler_timeout)
+                            .instrument(span);
 
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.async");
                     if let Some(ref sem) = self.async_semaphore {
@@ -368,7 +524,13 @@ impl EventBusActor {
                     }
                 }
                 ErasedHandler::Sync(ref handler) => {
-                    let span = tracing::trace_span!("eventbus.handler", event = event_name, mode = "sync", listener_id = listener_id.as_u64());
+                    let span = tracing::trace_span!(
+                        "eventbus.handler",
+                        event = event_name,
+                        mode = "sync",
+                        listener_id = listener_id.as_u64(),
+                        listener_name = listener_name.unwrap_or("unnamed"),
+                    );
                     let _enter = span.enter();
 
                     debug!(event = event_name, listener_id = listener_id.as_u64(), "publish.sync");
@@ -386,11 +548,14 @@ impl EventBusActor {
                             attempts: 1,
                             error: err.to_string(),
                             dead_letter: failure_policy.dead_letter,
+                            event: Arc::clone(&event),
+                            listener_name,
                         });
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Invoke a sync handler with `catch_unwind` for panic isolation.
@@ -412,19 +577,16 @@ impl EventBusActor {
         let event_ref: &(dyn Any + Send + Sync) = event.as_ref();
         let result = catch_unwind(AssertUnwindSafe(|| handler_ref(event_ref)));
 
-        match result {
-            Ok(r) => r,
-            Err(panic_payload) => {
-                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "handler panicked".to_string()
-                };
-                Err(msg.into())
-            }
-        }
+        result.unwrap_or_else(|panic_payload| {
+            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "handler panicked".to_string()
+            };
+            Err(msg.into())
+        })
     }
 
     async fn execute_async_listener(
@@ -432,6 +594,7 @@ impl EventBusActor {
         event: EventType,
         event_name: &'static str,
         subscription_id: SubscriptionId,
+        listener_name: Option<&'static str>,
         failure_policy: FailurePolicy,
         handler_timeout: Option<Duration>,
     ) -> HandlerTaskOutcome {
@@ -463,10 +626,13 @@ impl EventBusActor {
                             attempts,
                             error: error_message,
                             dead_letter: failure_policy.dead_letter,
+                            event: Arc::clone(&event),
+                            listener_name,
                         });
                     }
 
                     retries_left -= 1;
+                    let retry_attempt = failure_policy.max_retries - retries_left - 1;
                     warn!(
                         event = event_name,
                         listener_id = subscription_id.as_u64(),
@@ -476,7 +642,8 @@ impl EventBusActor {
                         "handler.retry"
                     );
 
-                    if let Some(delay) = failure_policy.retry_delay {
+                    if let Some(ref strategy) = failure_policy.retry_strategy {
+                        let delay = strategy.delay_for_attempt(retry_attempt);
                         tokio::time::sleep(delay).await;
                     }
                 }
@@ -506,6 +673,9 @@ impl EventBusActor {
                 subscription_id: failure.subscription_id,
                 attempts: failure.attempts,
                 error: failure.error.clone(),
+                event: failure.event.clone(),
+                failed_at: std::time::SystemTime::now(),
+                listener_name: failure.listener_name,
             })
         } else {
             None
@@ -555,7 +725,7 @@ impl EventBusActor {
     async fn handle_listener_failure_direct(&mut self, failure: ListenerFailure) {
         if let Some(dead_letter) = self.log_failure(&failure) {
             let dead_letter_type = std::any::type_name::<DeadLetter>();
-            self.dispatch(TypeId::of::<DeadLetter>(), Arc::new(dead_letter), dead_letter_type).await;
+            let _ = self.dispatch(TypeId::of::<DeadLetter>(), Arc::new(dead_letter), dead_letter_type).await;
         }
     }
 
@@ -588,6 +758,8 @@ impl EventBusActor {
                     attempts: 1,
                     error: join_error.to_string(),
                     dead_letter: true,
+                    event: Arc::new(()),
+                    listener_name: None,
                 };
                 self.handle_listener_failure(failure);
             }
@@ -642,6 +814,8 @@ impl EventBusActor {
                     attempts: 1,
                     error: join_error.to_string(),
                     dead_letter: true,
+                    event: Arc::new(()),
+                    listener_name: None,
                 };
                 self.handle_listener_failure_direct(failure).await;
             }

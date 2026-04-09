@@ -10,28 +10,42 @@ use crate::attrs::{ListenerAttrs, StateParam};
 // ── Handler trait implementations ────────────────────────────────────────────
 
 /// Generate `impl EventHandler<E> for Handler { ... }` (async).
-pub(crate) fn gen_async_handler_impl(event_ty: &Type, fn_name: &Ident, state_params: &[StateParam]) -> TokenStream2 {
+pub(crate) fn gen_async_handler_impl(event_ty: &Type, fn_name: &Ident, state_params: &[StateParam], listener_name: Option<&str>) -> TokenStream2 {
     let call_args = gen_handler_call_args(state_params);
+    let name_method = gen_name_method(listener_name);
 
     quote! {
         impl ::jaeb::EventHandler<#event_ty> for Handler {
             async fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
                 #fn_name(event, #call_args).await
             }
+            #name_method
         }
     }
 }
 
 /// Generate `impl SyncEventHandler<E> for Handler { ... }` (sync).
-pub(crate) fn gen_sync_handler_impl(event_ty: &Type, fn_name: &Ident, state_params: &[StateParam]) -> TokenStream2 {
+pub(crate) fn gen_sync_handler_impl(event_ty: &Type, fn_name: &Ident, state_params: &[StateParam], listener_name: Option<&str>) -> TokenStream2 {
     let call_args = gen_handler_call_args(state_params);
+    let name_method = gen_name_method(listener_name);
 
     quote! {
         impl ::jaeb::SyncEventHandler<#event_ty> for Handler {
             fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
                 #fn_name(event, #call_args)
             }
+            #name_method
         }
+    }
+}
+
+/// Generate the `fn name()` override for handler trait impls.
+fn gen_name_method(listener_name: Option<&str>) -> TokenStream2 {
+    match listener_name {
+        Some(n) => quote! {
+            fn name(&self) -> Option<&'static str> { Some(#n) }
+        },
+        None => quote! {},
     }
 }
 
@@ -52,7 +66,14 @@ fn gen_handler_call_args(state_params: &[StateParam]) -> TokenStream2 {
 // ── Subscribe call generation ────────────────────────────────────────────────
 
 /// Generate the subscribe call for the registrar's `register` method.
-pub(crate) fn gen_subscribe_call(event_ty: &Type, is_dead_letter: bool, attrs: &ListenerAttrs, fn_name_str: &str, has_state: bool) -> TokenStream2 {
+pub(crate) fn gen_subscribe_call(
+    event_ty: &Type,
+    is_dead_letter: bool,
+    attrs: &ListenerAttrs,
+    fn_name_str: &str,
+    has_state: bool,
+    is_async: bool,
+) -> TokenStream2 {
     let handler_expr = if has_state {
         // State resolved at register-time, construct Handler with fields
         quote! { handler }
@@ -70,7 +91,7 @@ pub(crate) fn gen_subscribe_call(event_ty: &Type, is_dead_letter: bool, attrs: &
                 .expect(#subscribe_msg);
         }
     } else if attrs.has_failure_policy() {
-        let policy = gen_failure_policy(attrs);
+        let policy = gen_failure_policy(attrs, is_async);
         quote! {
             let _sub = bus.subscribe_with_policy::<#event_ty, _, _>(#handler_expr, #policy)
                 .await
@@ -85,15 +106,61 @@ pub(crate) fn gen_subscribe_call(event_ty: &Type, is_dead_letter: bool, attrs: &
     }
 }
 
-fn gen_failure_policy(attrs: &ListenerAttrs) -> TokenStream2 {
-    let mut chain = quote! { ::jaeb::FailurePolicy::default() };
+fn gen_failure_policy(attrs: &ListenerAttrs, is_async: bool) -> TokenStream2 {
+    // For async handlers, use FailurePolicy (supports retries).
+    // For sync handlers, use NoRetryPolicy (compile-time safety — no retries allowed).
+    let mut chain = if is_async {
+        quote! { ::jaeb::FailurePolicy::default() }
+    } else {
+        quote! { ::jaeb::NoRetryPolicy::default() }
+    };
 
+    // Retry-related attrs are only valid for async handlers (enforced by validation
+    // in lib.rs), so these branches only fire when is_async == true.
     if let Some(r) = attrs.retries {
         chain = quote! { #chain.with_max_retries(#r) };
     }
-    if let Some(ms) = attrs.retry_delay_ms {
-        chain = quote! { #chain.with_retry_delay(::core::time::Duration::from_millis(#ms)) };
+
+    // Determine which retry strategy to generate.
+    //
+    // `retry_strategy = "..."` with `retry_base_ms` / `retry_max_ms`.
+    //
+    // Mutual-exclusion is enforced by validation in lib.rs before we get here.
+    if let Some(ref strategy) = attrs.retry_strategy {
+        let base_ms = attrs.retry_base_ms.unwrap_or(0);
+        let max_ms = attrs.retry_max_ms.unwrap_or(0);
+
+        match strategy.as_str() {
+            "fixed" => {
+                // `retry_strategy = "fixed"` uses retry_base_ms as the fixed delay
+                chain = quote! {
+                    #chain.with_retry_strategy(::jaeb::RetryStrategy::Fixed(
+                        ::core::time::Duration::from_millis(#base_ms),
+                    ))
+                };
+            }
+            "exponential" => {
+                chain = quote! {
+                    #chain.with_retry_strategy(::jaeb::RetryStrategy::Exponential {
+                        base: ::core::time::Duration::from_millis(#base_ms),
+                        max: ::core::time::Duration::from_millis(#max_ms),
+                    })
+                };
+            }
+            "exponential_jitter" => {
+                chain = quote! {
+                    #chain.with_retry_strategy(::jaeb::RetryStrategy::ExponentialWithJitter {
+                        base: ::core::time::Duration::from_millis(#base_ms),
+                        max: ::core::time::Duration::from_millis(#max_ms),
+                    })
+                };
+            }
+            _ => {
+                // Unreachable: validated during parsing in attrs.rs
+            }
+        }
     }
+
     if let Some(dl) = attrs.dead_letter {
         chain = quote! { #chain.with_dead_letter(#dl) };
     }

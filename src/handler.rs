@@ -22,6 +22,14 @@ use crate::types::Event;
 /// event payload.
 pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
     fn handle(&self, event: &E) -> impl Future<Output = HandlerResult> + Send;
+
+    /// Optional human-readable name for this handler.
+    ///
+    /// When provided, the name is included in tracing spans, dead-letter
+    /// records, and metrics labels. Defaults to `None`.
+    fn name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Trait for synchronous struct-based event handlers.
@@ -32,12 +40,21 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
 /// and `publish()` blocks until it returns, preserving strong ordering
 /// guarantees.
 ///
-/// **Sync handlers execute exactly once** — retries (`max_retries > 0`)
-/// are not supported and will be rejected at subscribe time with
-/// [`EventBusError::SyncRetryNotSupported`](crate::EventBusError::SyncRetryNotSupported).
-/// On failure, a [`DeadLetter`](crate::DeadLetter) is emitted when enabled.
+/// **Sync handlers execute exactly once** — retries are not supported.
+/// [`subscribe_with_policy`](crate::EventBus::subscribe_with_policy) enforces
+/// this at compile time by requiring [`NoRetryPolicy`](crate::NoRetryPolicy)
+/// for sync handlers. On failure, a [`DeadLetter`](crate::DeadLetter) is
+/// emitted when enabled.
 pub trait SyncEventHandler<E: Event>: Send + Sync + 'static {
     fn handle(&self, event: &E) -> HandlerResult;
+
+    /// Optional human-readable name for this handler.
+    ///
+    /// When provided, the name is included in tracing spans, dead-letter
+    /// records, and metrics labels. Defaults to `None`.
+    fn name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Marker type selecting the asynchronous dispatch path.
@@ -49,6 +66,8 @@ pub struct SyncMode;
 /// A type-erased handler produced by [`IntoHandler`].
 pub(crate) struct RegisteredHandler {
     pub erased: ErasedHandler,
+    /// Human-readable name extracted from the handler trait.
+    pub name: Option<&'static str>,
 }
 
 /// Trait that converts a concrete handler into an erased handler with its dispatch mode.
@@ -79,6 +98,7 @@ where
     H: EventHandler<E>,
 {
     fn into_handler(self) -> RegisteredHandler {
+        let name = self.name();
         let handler = Arc::new(self);
         let erased: ErasedAsyncHandler = Arc::new(move |any: EventType| {
             let handler = Arc::clone(&handler);
@@ -92,6 +112,7 @@ where
         });
         RegisteredHandler {
             erased: ErasedHandler::Async(erased),
+            name,
         }
     }
 }
@@ -103,6 +124,7 @@ where
     H: SyncEventHandler<E>,
 {
     fn into_handler(self) -> RegisteredHandler {
+        let name = self.name();
         let handler = Arc::new(self);
         let erased: ErasedSyncHandler = Arc::new(move |any: &(dyn Any + Send + Sync)| {
             if let Some(event) = any.downcast_ref::<E>() {
@@ -114,6 +136,7 @@ where
         });
         RegisteredHandler {
             erased: ErasedHandler::Sync(erased),
+            name,
         }
     }
 }

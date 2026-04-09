@@ -27,8 +27,39 @@ async fn on_event(event: &MyEvent) -> HandlerResult {
     Ok(())
 }
 
-#[event_listener(retries = 3, retry_delay_ms = 100, dead_letter = true)]
-fn on_event_sync(event: &MyEvent) -> HandlerResult {
+// Custom listener name (appears in traces, dead letters, and stats)
+#[event_listener(name = "order-processor")]
+async fn on_event_named(event: &MyEvent) -> HandlerResult {
+    Ok(())
+}
+
+// Opt out of automatic naming (defaults to function name when omitted)
+#[event_listener(name = "")]
+async fn on_event_unnamed(event: &MyEvent) -> HandlerResult {
+    Ok(())
+}
+
+// Fixed delay
+#[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]
+async fn on_event_with_retries(event: &MyEvent) -> HandlerResult {
+    Ok(())
+}
+
+// Explicit retry strategy — exponential back-off
+#[event_listener(retries = 5, retry_strategy = "exponential", retry_base_ms = 50, retry_max_ms = 5000)]
+async fn on_event_exp(event: &MyEvent) -> HandlerResult {
+    Ok(())
+}
+
+// Exponential back-off with jitter
+#[event_listener(retries = 5, retry_strategy = "exponential_jitter", retry_base_ms = 50, retry_max_ms = 5000)]
+async fn on_event_jitter(event: &MyEvent) -> HandlerResult {
+    Ok(())
+}
+
+// Explicit fixed strategy
+#[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100)]
+async fn on_event_fixed(event: &MyEvent) -> HandlerResult {
     Ok(())
 }
 ```
@@ -44,6 +75,11 @@ State extraction parameters must use:
 - return type must be explicit (`-> HandlerResult`)
 - `DeadLetter` listeners must be synchronous
 - failure-policy attributes are rejected for `DeadLetter` listeners
+- `retry_base_ms` / `retry_max_ms` require `retry_strategy`
+- `retry_strategy = "exponential"` and `"exponential_jitter"` require both `retry_base_ms` and `retry_max_ms`
+- `retry_strategy = "fixed"` requires `retry_base_ms`
+- all retry attributes require `retries = N`
+- retry attributes are only supported on async handlers
 
 ## Intended usage
 

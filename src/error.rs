@@ -31,13 +31,8 @@ pub enum EventBusError {
     ShutdownTimeout,
     /// The builder configuration is invalid.
     InvalidConfig(ConfigError),
-    /// A sync handler was subscribed with `max_retries > 0`.
-    ///
-    /// Sync handlers execute exactly once — retries are only supported for
-    /// async handlers.  Use [`FailurePolicy::default()`](crate::FailurePolicy)
-    /// (which has `max_retries: 0`) or set `max_retries` to `0` explicitly.
-    /// The `dead_letter` field is still respected for sync handlers.
-    SyncRetryNotSupported,
+    /// A middleware rejected the event before it reached any listener.
+    MiddlewareRejected(String),
 }
 
 impl fmt::Display for EventBusError {
@@ -47,7 +42,7 @@ impl fmt::Display for EventBusError {
             Self::ChannelFull => write!(f, "event bus channel is full"),
             Self::ShutdownTimeout => write!(f, "shutdown timed out waiting for in-flight tasks"),
             Self::InvalidConfig(err) => write!(f, "invalid event bus configuration: {err}"),
-            Self::SyncRetryNotSupported => write!(f, "retries are not supported for sync handlers (max_retries must be 0)"),
+            Self::MiddlewareRejected(reason) => write!(f, "middleware rejected event: {reason}"),
         }
     }
 }
@@ -56,7 +51,7 @@ impl std::error::Error for EventBusError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidConfig(err) => Some(err),
-            Self::ActorStopped | Self::ChannelFull | Self::ShutdownTimeout | Self::SyncRetryNotSupported => None,
+            Self::ActorStopped | Self::ChannelFull | Self::ShutdownTimeout | Self::MiddlewareRejected(_) => None,
         }
     }
 }
