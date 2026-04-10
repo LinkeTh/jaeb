@@ -20,14 +20,14 @@ It provides:
 
 ```toml
 [dependencies]
-summer-jaeb = "0.1"
+summer-jaeb = "0.2"
 ```
 
 Optional metrics support:
 
 ```toml
 [dependencies]
-summer-jaeb = { version = "0.1", features = ["metrics"] }
+summer-jaeb = { version = "0.2", features = ["metrics"] }
 ```
 
 ## Usage
