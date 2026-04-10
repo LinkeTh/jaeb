@@ -4,8 +4,8 @@
 //! and dispatch lanes rather than general event bus semantics.
 
 use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Barrier;
 use tokio::time::Instant;

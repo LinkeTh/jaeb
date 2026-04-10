@@ -3,8 +3,8 @@
 //! Each handler fails a few times before succeeding, demonstrating the
 //! configured retry behaviour.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy};

@@ -1,13 +1,13 @@
 use std::any::{Any, TypeId};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{error, trace, warn};
 
@@ -15,8 +15,8 @@ use crate::error::{ConfigError, EventBusError};
 use crate::handler::{IntoHandler, RegisteredHandler, SyncEventHandler};
 use crate::middleware::{Middleware, SyncMiddleware, TypedMiddleware, TypedSyncMiddleware};
 use crate::registry::{
-    dead_letter_from_failure, dispatch_with_snapshot, AsyncTaskTracker, ControlNotification, DispatchContext, ErasedMiddleware, MutableRegistry,
-    RegistrySnapshot, TypedMiddlewareEntry, TypedMiddlewareSlot,
+    AsyncTaskTracker, ControlNotification, DispatchContext, ErasedMiddleware, MutableRegistry, RegistrySnapshot, TypedMiddlewareEntry,
+    TypedMiddlewareSlot, dead_letter_from_failure, dispatch_with_snapshot,
 };
 use crate::subscription::Subscription;
 use crate::types::{BusConfig, BusStats, DeadLetter, Event, FailurePolicy, IntoFailurePolicy, NoRetryPolicy, SubscriptionId};

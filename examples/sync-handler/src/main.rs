@@ -3,8 +3,8 @@
 //! Sync handlers run inline during `publish` in a serialized FIFO lane
 //! per event type.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jaeb::{EventBus, HandlerResult, SyncEventHandler};
 

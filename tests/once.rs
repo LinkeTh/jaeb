@@ -1,7 +1,7 @@
 //! Tests for once-off (fire-once) subscriptions.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jaeb::NoRetryPolicy;
 use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, SyncEventHandler};

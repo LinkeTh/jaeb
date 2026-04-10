@@ -1,8 +1,8 @@
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use jaeb::{EventBus, EventHandler, HandlerResult, Middleware, MiddlewareDecision, SyncEventHandler};
 
 // ---------------------------------------------------------------------------

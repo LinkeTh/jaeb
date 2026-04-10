@@ -20,17 +20,17 @@
 use jaeb::{DeadLetter, EventBus, HandlerResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use summer::App;
 use summer::app::AppBuilder;
 use summer::async_trait;
 use summer::auto_config;
 use summer::extractor::Component;
 use summer::plugin::{MutableComponentRegistry, Plugin};
-use summer::App;
-use summer_jaeb::{event_listener, SummerJaeb};
+use summer_jaeb::{SummerJaeb, event_listener};
 use summer_web::axum::Json;
 use summer_web::extractor::Component as WebComponent;
 use summer_web::extractor::Path;
-use summer_web::{post_api, WebConfigurator, WebPlugin};
+use summer_web::{WebConfigurator, WebPlugin, post_api};
 use tracing::{info, warn};
 
 // ── Events ───────────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy, SyncEventHandler};

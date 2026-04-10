@@ -14,7 +14,7 @@ mod validate;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, FnArg, ItemFn, ReturnType};
+use syn::{FnArg, ItemFn, ReturnType, parse_macro_input};
 
 use attrs::ListenerAttrs;
 use codegen::{gen_async_handler_impl, gen_stateful_structs, gen_stateless_structs, gen_subscribe_call, gen_sync_handler_impl};

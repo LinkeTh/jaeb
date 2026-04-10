@@ -1,8 +1,8 @@
 //! Panic safety: a handler that panics does not crash the bus.
 //! Other handlers continue to operate normally.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jaeb::{EventBus, HandlerResult, SyncEventHandler};
 

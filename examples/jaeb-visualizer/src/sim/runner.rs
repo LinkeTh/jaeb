@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::config::types::*;
-use crate::metrics::collector::{run_collector, run_sampler};
 use crate::metrics::VisualizationState;
+use crate::metrics::collector::{run_collector, run_sampler};
 use crate::sim::events::SimEvent;
 use crate::sim::handlers::*;
 use crate::sim::publisher::run_publish_loop;

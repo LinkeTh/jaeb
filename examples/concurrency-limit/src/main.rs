@@ -3,8 +3,8 @@
 //! Without this cap every published event spawns an async task immediately.
 //! With the cap, excess tasks queue behind a semaphore.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use jaeb::{EventBus, EventHandler, HandlerResult};

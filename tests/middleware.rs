@@ -1,8 +1,8 @@
 //! Tests for the middleware / interceptor pipeline.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jaeb::{
     EventBus, EventBusError, HandlerResult, Middleware, MiddlewareDecision, SyncEventHandler, SyncMiddleware, TypedMiddleware, TypedSyncMiddleware,

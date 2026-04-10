@@ -1,7 +1,7 @@
 //! `subscribe_once`: the handler fires exactly once and auto-removes itself.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use jaeb::{EventBus, EventHandler, HandlerResult};
 
