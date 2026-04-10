@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"
@@ -19,6 +19,19 @@ members = [
     ".",
     "examples/jaeb-demo",
     "examples/summer-jaeb-demo",
+    "examples/basic-pubsub",
+    "examples/sync-handler",
+    "examples/closure-handlers",
+    "examples/subscription-lifecycle",
+    "examples/fire-once",
+    "examples/retry-strategies",
+    "examples/dead-letters",
+    "examples/panic-safety",
+    "examples/middleware",
+    "examples/backpressure",
+    "examples/graceful-shutdown",
+    "examples/concurrency-limit",
+    "examples/introspection",
     "summer-jaeb-macros",
     "summer-jaeb",
 ]

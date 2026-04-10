@@ -19,12 +19,14 @@ JAEB provides:
 - idempotent shutdown
 - optional Prometheus-compatible metrics via the `metrics` crate
 - structured tracing with per-handler spans
+- [summer-rs](https://crates.io/crates/summer) integration via [summer-jaeb](./summer-jaeb) and `#[event_listener]` macro
+  support [summer-jaeb-macros](./summer-jaeb-macros)
 
 ## Installation
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.0" }
+jaeb = { version = "0.3.1" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -32,7 +34,7 @@ To enable metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.0", features = ["metrics"] }
+jaeb = { version = "0.3.1", features = ["metrics"] }
 ```
 
 ## Quick Start
