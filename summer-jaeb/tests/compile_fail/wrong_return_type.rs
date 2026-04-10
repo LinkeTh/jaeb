@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Wrong return type should fail.
 
 use summer_jaeb::event_listener;

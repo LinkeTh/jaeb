@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Failure policy on dead letter listener should fail.
 
 use jaeb::{DeadLetter, HandlerResult};

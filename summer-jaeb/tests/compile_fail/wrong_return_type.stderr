@@ -1,5 +1,5 @@
 error: #[event_listener] function must return `HandlerResult`
-  --> tests/compile_fail/wrong_return_type.rs:10:39
-   |
-10 | async fn on_event(event: &MyEvent) -> Result<(), String> {
-   |                                       ^^^^^^^^^^^^^^^^^^
+ --> tests/compile_fail/wrong_return_type.rs:9:39
+  |
+9 | async fn on_event(event: &MyEvent) -> Result<(), String> {
+  |                                       ^^^^^^^^^^^^^^^^^^

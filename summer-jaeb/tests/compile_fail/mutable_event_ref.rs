@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Mutable event reference should fail.
 
 use jaeb::HandlerResult;

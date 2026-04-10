@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
@@ -61,12 +60,14 @@ impl RetryStrategy {
             RetryStrategy::Fixed(d) => d,
             RetryStrategy::Exponential { base, max } => {
                 let factor = 1u64.checked_shl(attempt as u32).unwrap_or(u64::MAX);
-                let delay = base.saturating_mul(factor as u32);
+                let factor = u32::try_from(factor).unwrap_or(u32::MAX);
+                let delay = base.saturating_mul(factor);
                 if delay > max { max } else { delay }
             }
             RetryStrategy::ExponentialWithJitter { base, max } => {
                 let factor = 1u64.checked_shl(attempt as u32).unwrap_or(u64::MAX);
-                let delay = base.saturating_mul(factor as u32);
+                let factor = u32::try_from(factor).unwrap_or(u32::MAX);
+                let delay = base.saturating_mul(factor);
                 let capped = if delay > max { max } else { delay };
                 // Simple jitter: pick a random fraction of the capped delay.
                 // We use a lightweight approach without pulling in the `rand` crate.
@@ -303,7 +304,7 @@ pub struct BusStats {
     pub shutdown_called: bool,
 }
 
-/// Internal configuration for the event bus actor.
+/// Internal configuration for the event bus runtime.
 #[derive(Debug, Clone)]
 pub(crate) struct BusConfig {
     pub buffer_size: usize,

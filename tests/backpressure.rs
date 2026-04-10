@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use jaeb::{EventBus, EventBusError, EventHandler, HandlerResult};
 
@@ -28,6 +27,9 @@ impl EventHandler<Msg> for SlowHandler {
 #[tokio::test]
 async fn try_publish_reports_channel_full() {
     let bus = EventBus::new(1).expect("valid config");
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let _ = bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
 
     bus.try_publish(Msg).expect("first try_publish should succeed");
 
@@ -38,18 +40,16 @@ async fn try_publish_reports_channel_full() {
 }
 
 #[tokio::test]
-async fn try_publish_after_shutdown_returns_actor_stopped() {
+async fn try_publish_after_shutdown_returns_stopped() {
     let bus = EventBus::new(16).expect("valid config");
     bus.shutdown().await.expect("shutdown");
 
     let err = bus.try_publish(Msg).expect_err("try_publish after shutdown");
-    assert_eq!(err, EventBusError::ActorStopped);
+    assert_eq!(err, EventBusError::Stopped);
 }
 
-/// Fill the channel buffer with `try_publish`, then verify that `publish`
-/// (the blocking variant) eventually succeeds once the actor drains the
-/// queue.  This tests the interaction between backpressure and the actor
-/// loop under a small buffer.
+/// Fill dispatch permits with `try_publish`, then verify that `publish`
+/// (the blocking variant) eventually succeeds once in-flight work completes.
 #[tokio::test]
 async fn publish_succeeds_after_channel_drains() {
     let bus = EventBus::new(2).expect("valid config");
@@ -57,17 +57,17 @@ async fn publish_succeeds_after_channel_drains() {
 
     let _ = bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
 
-    // Fill the buffer. try_publish is non-blocking and succeeds as long as
-    // there is capacity.
+    // Fill dispatch permits. try_publish is non-blocking and succeeds as long
+    // as immediate capacity is available.
     bus.try_publish(Msg).expect("try_publish 1");
     bus.try_publish(Msg).expect("try_publish 2");
 
-    // Buffer should be full now.
+    // Permits should be exhausted now.
     assert_eq!(bus.try_publish(Msg).unwrap_err(), EventBusError::ChannelFull);
 
-    // The blocking `publish` should succeed once the actor processes a
-    // message and frees a slot. Use a timeout to avoid hanging if something
-    // goes wrong.
+    // The blocking `publish` should succeed once one in-flight dispatch
+    // completes and frees capacity. Use a timeout to avoid hanging if
+    // something goes wrong.
     tokio::time::timeout(std::time::Duration::from_secs(5), bus.publish(Msg))
         .await
         .expect("publish should not time out")

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 use jaeb::{EventBus, EventBusError};
 
 // ── Builder validation tests ─────────────────────────────────────────

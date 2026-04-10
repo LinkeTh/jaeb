@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
 

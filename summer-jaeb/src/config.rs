@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 use schemars::JsonSchema;
 use serde::Deserialize;
 use summer::config::Configurable;

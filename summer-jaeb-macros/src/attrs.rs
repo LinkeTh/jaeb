@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Parsing of `#[event_listener(...)]` attribute arguments and state parameters.
 
 use syn::parse::{Parse, ParseStream};

@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/jaeb/badge.svg)](https://docs.rs/jaeb)
 [![license](https://img.shields.io/crates/l/jaeb.svg)](https://github.com/LinkeTh/jaeb/blob/main/LICENSE)
 
-In-process, actor-based event bus for Tokio applications.
+In-process, snapshot-driven event bus for Tokio applications.
 
 JAEB provides:
 
@@ -14,18 +14,17 @@ JAEB provides:
 - dependency injection via handler structs
 - retry policies with configurable strategy for async handlers
 - dead-letter stream for terminal failures
-- explicit `Result`-based error handling (no panics in the public API)
-- graceful shutdown with queue draining and in-flight task completion
-- idempotent shutdown (safe to call multiple times)
+- explicit `Result`-based error handling
+- graceful shutdown with in-flight task completion
+- idempotent shutdown
 - optional Prometheus-compatible metrics via the `metrics` crate
 - structured tracing with per-handler spans
-- `#![forbid(unsafe_code)]`
 
 ## Installation
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.4" }
+jaeb = { version = "0.3.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -33,7 +32,7 @@ To enable metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.2.4", features = ["metrics"] }
+jaeb = { version = "0.3.0", features = ["metrics"] }
 ```
 
 ## Quick Start
@@ -120,12 +119,12 @@ async fn main() -> Result<(), EventBusError> {
   `NoRetryPolicy` for sync)
 - `subscribe_dead_letters(handler) -> Result<Subscription, EventBusError>`
 - `publish(event) -> Result<(), EventBusError>`
-- `try_publish(event) -> Result<(), EventBusError>` -- non-blocking, returns `ChannelFull` when queue is full
+- `try_publish(event) -> Result<(), EventBusError>` -- non-blocking, returns `ChannelFull` when immediate dispatch capacity is unavailable
 - `unsubscribe(subscription_id) -> Result<bool, EventBusError>`
-- `shutdown() -> Result<(), EventBusError>` -- idempotent, drains queue + in-flight tasks
-- `async fn is_healthy() -> bool` -- checks if the internal actor is still running
+- `shutdown() -> Result<(), EventBusError>` -- idempotent, drains in-flight tasks
+- `async fn is_healthy() -> bool` -- checks if the internal control loop is still running
 
-`EventBus` is `Clone` -- all clones share the same underlying actor.
+`EventBus` is `Clone` -- all clones share the same underlying runtime state.
 
 ### Handler Traits
 
@@ -176,7 +175,21 @@ JAEB uses the `tracing` crate throughout. Key spans and events:
 - `eventbus.handler` span -- per-handler execution with `event`, `mode`, and `listener_id` fields
 - `handler.retry` (warn) -- logged on each retry attempt
 - `handler.failed` (error) -- logged when retries are exhausted
-- `handler.join_error` (error) -- logged when a spawned task panics
+- async handler panics are surfaced as task failures and follow retry/dead-letter policy
+
+## Architecture
+
+JAEB uses a split control/data architecture:
+
+- A **snapshot registry** (`ArcSwap<RegistrySnapshot>`) stores listeners and
+  middleware in immutable per-type slots for low-overhead publish-path reads.
+- A lightweight **control loop** handles async failure notifications,
+  dead-letter routing, and shutdown coordination.
+
+Dispatch uses two lanes per event type:
+
+- **sync lane**: serialized by a per-type gate (FIFO for sync dispatch)
+- **async lane**: spawned in background and not blocked by sync backlog
 
 ## Semantics
 
@@ -187,13 +200,13 @@ JAEB uses the `tracing` crate throughout. Key spans and events:
   `IntoFailurePolicy<M>`.
 - after retries are exhausted (async) or on first failure (sync), dead-letter events are emitted when `dead_letter: true`.
 - dead-letter handlers themselves cannot trigger further dead letters (recursion guard).
-- `shutdown` drains queued publish messages and waits for in-flight async listeners.
-- after shutdown, all operations return `EventBusError::ActorStopped`.
+- `shutdown` waits for in-flight async listeners (with optional timeout).
+- after shutdown, all operations return `EventBusError::Stopped`.
 
 ## Error Variants
 
-- `EventBusError::ActorStopped` -- the actor has shut down or the channel is closed
-- `EventBusError::ChannelFull` -- the internal queue is full (`try_publish` only)
+- `EventBusError::Stopped` -- shutdown has started or the bus is stopped
+- `EventBusError::ChannelFull` -- publish saturation limit reached (`try_publish` only)
 - `EventBusError::InvalidConfig(ConfigError)` -- invalid builder/constructor configuration (zero buffer size, zero concurrency)
 - `EventBusError::MiddlewareRejected(String)` -- a middleware rejected the event before it reached any listener
 - `EventBusError::ShutdownTimeout` -- the configured `shutdown_timeout` expired and in-flight async tasks were forcibly aborted
@@ -223,7 +236,7 @@ RUST_LOG=info,jaeb=trace cargo run
 
 ## License
 
-jaeb is distributed under the [MIT License](LICENSE).
+jaeb is distributed under the [MIT License](https://github.com/LinkeTh/jaeb/blob/main/LICENSE).
 
 Copyright (c) 2025-2026 Linke Thomas
 

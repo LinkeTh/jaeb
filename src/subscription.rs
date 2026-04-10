@@ -1,10 +1,7 @@
-// SPDX-License-Identifier: MIT
 use std::fmt;
 
-use tokio::sync::{mpsc, oneshot};
-use tracing::{trace, warn};
+use tracing::trace;
 
-use crate::actor::BusMessage;
 use crate::bus::EventBus;
 use crate::error::EventBusError;
 use crate::types::SubscriptionId;
@@ -64,7 +61,7 @@ impl Subscription {
     /// # }
     /// ```
     pub fn into_guard(self) -> SubscriptionGuard {
-        SubscriptionGuard::new(self.id, self.bus.sender())
+        SubscriptionGuard::new(self.id, self.bus)
     }
 }
 
@@ -91,13 +88,13 @@ pub struct SubscriptionGuard {
 
 struct GuardInner {
     subscription_id: SubscriptionId,
-    tx: mpsc::Sender<BusMessage>,
+    bus: EventBus,
 }
 
 impl SubscriptionGuard {
-    fn new(subscription_id: SubscriptionId, tx: mpsc::Sender<BusMessage>) -> Self {
+    fn new(subscription_id: SubscriptionId, bus: EventBus) -> Self {
         Self {
-            inner: Some(GuardInner { subscription_id, tx }),
+            inner: Some(GuardInner { subscription_id, bus }),
         }
     }
 
@@ -119,23 +116,15 @@ impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
             trace!(subscription_id = inner.subscription_id.as_u64(), "subscription_guard.drop.unsubscribe");
-            // Fire-and-forget: create a oneshot whose receiver is immediately
-            // dropped. The actor will process the Unsubscribe and attempt to
-            // send the ack, which will harmlessly fail.
-            let (ack_tx, _ack_rx) = oneshot::channel();
-            let msg = BusMessage::Unsubscribe {
-                subscription_id: inner.subscription_id,
-                ack: ack_tx,
-            };
-            // Best-effort: if the channel is full or closed, the listener just
-            // stays registered (same as dropping a plain Subscription).
-            if let Err(e) = inner.tx.try_send(msg) {
-                warn!(
-                    subscription_id = inner.subscription_id.as_u64(),
-                    error = %e,
-                    "subscription_guard.drop.unsubscribe_failed: listener will remain registered"
-                );
+            if inner.bus.try_unsubscribe_best_effort(inner.subscription_id) {
+                return;
             }
+
+            let bus = inner.bus;
+            let subscription_id = inner.subscription_id;
+            tokio::spawn(async move {
+                let _ = bus.unsubscribe(subscription_id).await;
+            });
         }
     }
 }

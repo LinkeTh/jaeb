@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 use std::fmt;
 
 pub type HandlerError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -26,7 +25,7 @@ impl std::error::Error for ConfigError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventBusError {
-    ActorStopped,
+    Stopped,
     ChannelFull,
     ShutdownTimeout,
     /// The builder configuration is invalid.
@@ -38,7 +37,7 @@ pub enum EventBusError {
 impl fmt::Display for EventBusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ActorStopped => write!(f, "event bus actor has stopped"),
+            Self::Stopped => write!(f, "event bus is stopped"),
             Self::ChannelFull => write!(f, "event bus channel is full"),
             Self::ShutdownTimeout => write!(f, "shutdown timed out waiting for in-flight tasks"),
             Self::InvalidConfig(err) => write!(f, "invalid event bus configuration: {err}"),
@@ -51,7 +50,7 @@ impl std::error::Error for EventBusError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidConfig(err) => Some(err),
-            Self::ActorStopped | Self::ChannelFull | Self::ShutdownTimeout | Self::MiddlewareRejected(_) => None,
+            Self::Stopped | Self::ChannelFull | Self::ShutdownTimeout | Self::MiddlewareRejected(_) => None,
         }
     }
 }

@@ -1,13 +1,13 @@
 error: `retry_base_ms` and `retry_max_ms` require `retry_strategy`; add `retry_strategy = "exponential"` (or `"exponential_jitter"` / `"fixed"`)
-  --> tests/compile_fail/base_ms_without_strategy.rs:11:1
+  --> tests/compile_fail/base_ms_without_strategy.rs:10:1
    |
-11 | async fn on_event(event: &MyEvent) -> HandlerResult {
+10 | async fn on_event(event: &MyEvent) -> HandlerResult {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unused import: `jaeb::HandlerResult`
- --> tests/compile_fail/base_ms_without_strategy.rs:4:5
+ --> tests/compile_fail/base_ms_without_strategy.rs:3:5
   |
-4 | use jaeb::HandlerResult;
+3 | use jaeb::HandlerResult;
   |     ^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

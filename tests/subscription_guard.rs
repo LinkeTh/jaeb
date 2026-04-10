@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use jaeb::{EventBus, HandlerResult, SyncEventHandler};
 
@@ -40,7 +39,7 @@ async fn guard_drop_unsubscribes() {
     }
     // Guard dropped — listener should be unsubscribed.
 
-    // Give the actor a chance to process the fire-and-forget unsubscribe.
+    // Give the runtime a chance to process the fire-and-forget unsubscribe.
     tokio::task::yield_now().await;
 
     bus.publish(Ping).await.expect("publish after guard drop");
@@ -92,7 +91,7 @@ async fn guard_drop_after_shutdown_is_safe() {
     bus.shutdown().await.expect("shutdown");
 
     // The guard drop sends a fire-and-forget unsubscribe, which should be
-    // silently discarded since the channel is closed.
+    // silently discarded since the bus is stopped.
     drop(guard);
 }
 

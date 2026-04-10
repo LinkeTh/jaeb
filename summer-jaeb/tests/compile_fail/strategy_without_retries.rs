@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! `retry_strategy` without `retries` should fail.
 
 use jaeb::HandlerResult;

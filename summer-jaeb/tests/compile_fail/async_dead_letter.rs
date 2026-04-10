@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Async dead letter listener should fail.
 
 use jaeb::{DeadLetter, HandlerResult};

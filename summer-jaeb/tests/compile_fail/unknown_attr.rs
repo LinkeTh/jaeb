@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Unknown attribute should fail.
 
 use jaeb::HandlerResult;

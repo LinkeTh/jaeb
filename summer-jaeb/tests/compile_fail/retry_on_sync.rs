@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Retry on sync handler should fail.
 
 use jaeb::HandlerResult;

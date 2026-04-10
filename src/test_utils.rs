@@ -1,12 +1,10 @@
-// SPDX-License-Identifier: MIT
-
 //! Test utilities for asserting on events published through an [`EventBus`].
 //!
 //! Enable the `test-utils` feature to use this module:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! jaeb = { version = "0.2", features = ["test-utils"] }
+//! jaeb = { version = "0.3", features = ["test-utils"] }
 //! ```
 //!
 //! # Overview

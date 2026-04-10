@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Code generation for handler trait impls, subscribe calls, and inventory registration.
 
 use proc_macro2::TokenStream as TokenStream2;

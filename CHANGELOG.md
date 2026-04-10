@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-10
+
+### Changed
+
+- Renamed `EventBusError::ActorStopped` to `EventBusError::Stopped` to use
+  architecture-neutral terminology.
+- **Major dispatch architecture redesign for latency.** Replaced the
+  actor->worker dispatch roundtrip with direct publish-path dispatch over an
+  `ArcSwap` snapshot registry (`src/registry.rs`).
+- **Dual-lane per-type dispatch.** Sync handlers remain serialized (FIFO), while
+  async handlers are spawned on a separate lane so same-type async work is no
+  longer stalled by slow sync handlers.
+- **Backpressure semantics updated.** `try_publish` now returns
+  `EventBusError::ChannelFull` when immediate dispatch capacity/permits are not
+  available, rather than actor-mailbox fullness.
+- **Control loop simplified.** Control flow now focuses on failure/dead-letter
+  notifications and shutdown orchestration.
+- Removed internal `actor.rs` + `worker.rs` dispatch machinery and replaced
+  with snapshot-driven dispatch internals.
+
+### Removed
+
+- Internal `actor.rs` and `worker.rs` dispatch model in favor of snapshot
+  dispatch internals.
+
 ## [0.2.4] - 2026-04-09
 
 ### Changed
@@ -16,13 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Closure handler support for `EventBus::subscribe*` APIs:
-  - sync closures: `Fn(&E) -> HandlerResult`
-  - async closures: `Fn(E) -> impl Future<Output = HandlerResult>`
+    - sync closures: `Fn(&E) -> HandlerResult`
+    - async closures: `Fn(E) -> impl Future<Output = HandlerResult>`
 - Typed per-event middleware:
-  - `TypedMiddleware<E>` (async)
-  - `TypedSyncMiddleware<E>` (sync)
-  - new APIs `EventBus::add_typed_middleware` and
-    `EventBus::add_typed_sync_middleware`
+    - `TypedMiddleware<E>` (async)
+    - `TypedSyncMiddleware<E>` (sync)
+    - new APIs `EventBus::add_typed_middleware` and
+      `EventBus::add_typed_sync_middleware`
 - New integration coverage for closure handlers and typed middleware behavior.
 
 ## [summer-jaeb 0.1.4] - 2026-04-09

@@ -1,47 +1,34 @@
-// SPDX-License-Identifier: MIT
 use std::any::{Any, TypeId};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, mpsc, oneshot};
+use arc_swap::ArcSwap;
+use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{error, trace, warn};
 
-use crate::actor::{BusMessage, ErasedMiddleware, EventBusActor, RegisterTypedMiddlewareFn, TypedMiddlewareEntry};
 use crate::error::{ConfigError, EventBusError};
 use crate::handler::{IntoHandler, RegisteredHandler, SyncEventHandler};
 use crate::middleware::{Middleware, SyncMiddleware, TypedMiddleware, TypedSyncMiddleware};
+use crate::registry::{
+    dead_letter_from_failure, dispatch_with_snapshot, AsyncTaskTracker, ControlNotification, DispatchContext, ErasedMiddleware, MutableRegistry,
+    RegistrySnapshot, TypedMiddlewareEntry, TypedMiddlewareSlot,
+};
 use crate::subscription::Subscription;
-use crate::types::{BusConfig, BusStats, DeadLetter, Event, FailurePolicy, IntoFailurePolicy, NoRetryPolicy};
+use crate::types::{BusConfig, BusStats, DeadLetter, Event, FailurePolicy, IntoFailurePolicy, NoRetryPolicy, SubscriptionId};
 
-/// Builder for configuring and constructing an [`EventBus`].
-///
-/// # Examples
-///
-/// ```
-/// use std::time::Duration;
-/// use jaeb::{EventBus, FailurePolicy};
-///
-/// # #[tokio::main] async fn main() {
-/// let bus = EventBus::builder()
-///     .buffer_size(512)
-///     .handler_timeout(Duration::from_secs(5))
-///     .max_concurrent_async(100)
-///     .shutdown_timeout(Duration::from_secs(10))
-///     .default_failure_policy(
-///         FailurePolicy::default().with_max_retries(2),
-///     )
-///     .build()
-///     .expect("valid config");
-///
-/// bus.shutdown().await.unwrap();
-/// # }
-/// ```
 pub struct EventBusBuilder {
     config: BusConfig,
+}
+
+impl std::fmt::Debug for EventBusBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBusBuilder").field("config", &self.config).finish()
+    }
 }
 
 impl EventBusBuilder {
@@ -51,69 +38,31 @@ impl EventBusBuilder {
         }
     }
 
-    /// Set the internal channel buffer size.
-    ///
-    /// Must be greater than zero.
-    ///
-    /// Defaults to `256`.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.config.buffer_size = size;
         self
     }
 
-    /// Set the maximum time a single handler invocation may run before being
-    /// treated as a failure.
-    ///
-    /// When a handler exceeds this timeout, the attempt is treated as an error
-    /// and is eligible for retry or dead-lettering according to the listener's
-    /// [`FailurePolicy`].
-    ///
-    /// **Note:** This timeout only applies to **async** handlers. Sync handlers
-    /// execute inline on the actor task and complete immediately from Tokio's
-    /// perspective, so the timeout has no practical effect on them.
-    ///
-    /// By default there is no timeout.
     pub fn handler_timeout(mut self, timeout: Duration) -> Self {
         self.config.handler_timeout = Some(timeout);
         self
     }
 
-    /// Set the maximum number of async handler tasks that may execute
-    /// concurrently.
-    ///
-    /// Must be greater than zero. A value of zero would permanently block all
-    /// async handlers.
-    ///
-    /// When the limit is reached, new async tasks will wait for a permit
-    /// before starting execution. Sync handlers are not affected.
-    ///
-    /// By default there is no limit.
     pub fn max_concurrent_async(mut self, max: usize) -> Self {
         self.config.max_concurrent_async = Some(max);
         self
     }
 
-    /// Set the default [`FailurePolicy`] applied to subscriptions that do not
-    /// specify one explicitly.
     pub fn default_failure_policy(mut self, policy: FailurePolicy) -> Self {
         self.config.default_failure_policy = policy;
         self
     }
 
-    /// Set the maximum time [`EventBus::shutdown`] will wait for in-flight
-    /// async tasks to complete.
-    ///
-    /// After this timeout, remaining tasks are aborted. By default, shutdown
-    /// waits indefinitely.
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.config.shutdown_timeout = Some(timeout);
         self
     }
 
-    /// Build and start the [`EventBus`].
-    ///
-    /// Returns [`EventBusError::InvalidConfig`] if the configuration is
-    /// invalid (e.g., zero `buffer_size` or zero `max_concurrent_async`).
     pub fn build(self) -> Result<EventBus, EventBusError> {
         if self.config.buffer_size == 0 {
             return Err(ConfigError::ZeroBufferSize.into());
@@ -125,147 +74,123 @@ impl EventBusBuilder {
     }
 }
 
+struct Inner {
+    snapshot: ArcSwap<RegistrySnapshot>,
+    registry: Mutex<MutableRegistry>,
+    default_failure_policy: FailurePolicy,
+    tracker: Arc<AsyncTaskTracker>,
+    publish_permits: Arc<Semaphore>,
+    shutdown_timeout: Option<Duration>,
+    handler_timeout: Option<Duration>,
+    buffer_size: usize,
+    shutdown_called: AtomicBool,
+    next_subscription_id: AtomicU64,
+    notify_tx: mpsc::UnboundedSender<ControlNotification>,
+    control_handle: StdMutex<Option<JoinHandle<()>>>,
+}
+
+impl Inner {
+    fn full_dispatch_context(&self) -> DispatchContext {
+        DispatchContext {
+            tracker: Arc::clone(&self.tracker),
+            notify_tx: self.notify_tx.clone(),
+            handler_timeout: self.handler_timeout,
+            spawn_async_handlers: true,
+        }
+    }
+
+    fn sync_only_dispatch_context(&self) -> DispatchContext {
+        DispatchContext {
+            tracker: Arc::clone(&self.tracker),
+            notify_tx: self.notify_tx.clone(),
+            handler_timeout: self.handler_timeout,
+            spawn_async_handlers: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct EventBus {
-    tx: mpsc::Sender<BusMessage>,
-    default_failure_policy: FailurePolicy,
-    /// Handle to the internal actor task.
-    ///
-    /// Wrapped in `Arc<Mutex<Option<…>>>` so that:
-    /// - `EventBus` can remain `Clone` (the handle is shared).
-    /// - `shutdown` can `take()` the handle to join the actor exactly once.
-    /// - `is_healthy` can peek without consuming the handle.
-    actor_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-    /// Tracks whether `shutdown` has been called at least once.
-    shutdown_called: Arc<AtomicBool>,
+    inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for EventBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventBus")
+            .field("default_failure_policy", &self.inner.default_failure_policy)
+            .field("shutdown_called", &self.inner.shutdown_called.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 impl EventBus {
-    /// Create an event bus with the given channel buffer size and default
-    /// settings.
-    ///
-    /// Returns [`EventBusError::InvalidConfig`] if `buffer` is zero.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::EventBus;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(256).expect("valid config");
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub fn new(buffer: usize) -> Result<Self, EventBusError> {
         Self::builder().buffer_size(buffer).build()
     }
 
-    /// Return a builder for fine-grained configuration.
     pub fn builder() -> EventBusBuilder {
         EventBusBuilder::new()
     }
 
     fn from_config(config: BusConfig) -> Self {
-        let (tx, rx) = mpsc::channel(config.buffer_size);
-        let default_failure_policy = config.default_failure_policy;
-        let actor = EventBusActor::new(tx.clone(), rx, &config);
-        let actor_handle = tokio::spawn(actor.run());
-        Self {
-            tx,
-            default_failure_policy,
-            actor_handle: Arc::new(Mutex::new(Some(actor_handle))),
-            shutdown_called: Arc::new(AtomicBool::new(false)),
+        let (notify_tx, notify_rx) = mpsc::unbounded_channel();
+        let tracker = Arc::new(AsyncTaskTracker::default());
+        let inner = Arc::new(Inner {
+            snapshot: ArcSwap::from_pointee(RegistrySnapshot::default()),
+            registry: Mutex::new(MutableRegistry::new(config.max_concurrent_async)),
+            default_failure_policy: config.default_failure_policy,
+            tracker,
+            publish_permits: Arc::new(Semaphore::new(config.buffer_size)),
+            shutdown_timeout: config.shutdown_timeout,
+            handler_timeout: config.handler_timeout,
+            buffer_size: config.buffer_size,
+            shutdown_called: AtomicBool::new(false),
+            next_subscription_id: AtomicU64::new(1),
+            notify_tx,
+            control_handle: StdMutex::new(None),
+        });
+
+        let control_handle = tokio::spawn(control_loop(Arc::downgrade(&inner), notify_rx));
+        *inner.control_handle.lock().expect("control_handle lock poisoned") = Some(control_handle);
+
+        Self { inner }
+    }
+
+    fn next_subscription_id(&self) -> SubscriptionId {
+        let id = self
+            .inner
+            .next_subscription_id
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_add(1));
+        match id {
+            Ok(id) => SubscriptionId(id),
+            Err(_) => panic!("subscription ID overflow: exceeded u64::MAX subscriptions"),
         }
     }
 
-    /// Return a clone of the internal channel sender.
-    ///
-    /// Used by [`SubscriptionGuard`](crate::subscription::SubscriptionGuard)
-    /// to send fire-and-forget unsubscribe messages in its `Drop` impl.
-    pub(crate) fn sender(&self) -> mpsc::Sender<BusMessage> {
-        self.tx.clone()
+    async fn refresh_snapshot_locked(&self, registry: &MutableRegistry) {
+        self.inner.snapshot.store(Arc::new(registry.snapshot()));
     }
 
-    /// Send a message to the actor and wait for the acknowledgement.
-    ///
-    /// The `make_msg` closure receives a oneshot sender that the actor will
-    /// use to reply. Both the send and the ack-wait map failures to
-    /// [`EventBusError::ActorStopped`].
-    async fn send_and_ack<T>(&self, make_msg: impl FnOnce(oneshot::Sender<T>) -> BusMessage) -> Result<T, EventBusError> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        let msg = make_msg(ack_tx);
-        let operation = msg.operation_name();
-        self.tx.send(msg).await.map_err(|e| {
-            error!(operation, error = %e, "event_bus.send_failed");
-            EventBusError::ActorStopped
-        })?;
-        ack_rx.await.map_err(|_| {
-            error!(operation, "event_bus.ack_wait_failed");
-            EventBusError::ActorStopped
-        })
+    pub(crate) fn try_unsubscribe_best_effort(&self, subscription_id: SubscriptionId) -> bool {
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return false;
+        }
+        if let Ok(mut registry) = self.inner.registry.try_lock()
+            && registry.remove_subscription(subscription_id)
+        {
+            self.inner.snapshot.store(Arc::new(registry.snapshot()));
+            return true;
+        }
+        false
     }
 
-    /// Subscribe a handler for events of type `E`.
-    ///
-    /// The dispatch mode (async vs sync) is determined automatically by the
-    /// handler trait implementation:
-    /// - [`EventHandler<E>`](crate::handler::EventHandler) -> async dispatch
-    /// - [`SyncEventHandler<E>`](SyncEventHandler) -> sync dispatch
-    /// - `Fn(E) -> impl Future<Output = HandlerResult>` -> async closure dispatch
-    /// - `Fn(&E) -> HandlerResult` -> sync closure dispatch
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::{EventBus, SyncEventHandler, HandlerResult};
-    ///
-    /// #[derive(Clone)]
-    /// struct MyEvent(String);
-    ///
-    /// struct Logger;
-    /// impl SyncEventHandler<MyEvent> for Logger {
-    ///     fn handle(&self, event: &MyEvent) -> HandlerResult {
-    ///         println!("got: {}", event.0);
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// let _sub = bus.subscribe::<MyEvent, _, _>(Logger).await.unwrap();
-    /// bus.publish(MyEvent("hello".into())).await.unwrap();
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
-    ///
-    /// ```
-    /// use jaeb::EventBus;
-    ///
-    /// #[derive(Clone)]
-    /// struct MyEvent;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// let _sync = bus.subscribe::<MyEvent, _, _>(|_event: &MyEvent| Ok(())).await.unwrap();
-    /// let _async = bus
-    ///     .subscribe::<MyEvent, _, _>(|event: MyEvent| async move {
-    ///         let _ = event;
-    ///         Ok(())
-    ///     })
-    ///     .await
-    ///     .unwrap();
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub async fn subscribe<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
         let registered = handler.into_handler();
-        let mut policy = self.default_failure_policy;
-        // Sync handlers execute exactly once — silently clamp the default
-        // policy so users don't need to worry about the distinction.
+        let mut policy = self.inner.default_failure_policy;
         if registered.is_sync {
             policy.max_retries = 0;
             policy.retry_strategy = None;
@@ -273,42 +198,6 @@ impl EventBus {
         self.subscribe_internal::<E>(registered, policy, false).await
     }
 
-    /// Subscribe a handler with a custom failure policy.
-    ///
-    /// See [`subscribe`](Self::subscribe) for dispatch-mode details.
-    ///
-    /// The policy type is enforced at compile time via [`IntoFailurePolicy<M>`]:
-    /// - **Async handlers** accept [`FailurePolicy`] (full retry support) or
-    ///   [`NoRetryPolicy`] (dead-letter only).
-    /// - **Sync handlers** accept only [`NoRetryPolicy`]. Passing a
-    ///   [`FailurePolicy`] is a compile error.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::Duration;
-    /// use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult};
-    ///
-    /// #[derive(Clone)]
-    /// struct Job(u32);
-    ///
-    /// struct Worker;
-    /// impl EventHandler<Job> for Worker {
-    ///     async fn handle(&self, _event: &Job) -> HandlerResult { Ok(()) }
-    /// }
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// let policy = FailurePolicy::default()
-    ///     .with_max_retries(3)
-    ///     .with_retry_strategy(jaeb::RetryStrategy::Fixed(Duration::from_millis(100)));
-    /// let _sub = bus
-    ///     .subscribe_with_policy::<Job, _, _>(Worker, policy)
-    ///     .await
-    ///     .unwrap();
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub async fn subscribe_with_policy<E, H, M>(&self, handler: H, policy: impl IntoFailurePolicy<M>) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -318,35 +207,27 @@ impl EventBus {
         self.subscribe_internal::<E>(registered, policy.into_failure_policy(), false).await
     }
 
-    /// Internal subscribe implementation shared by all public subscribe methods.
-    ///
-    /// Accepts an already-erased handler and a raw [`FailurePolicy`]. Callers
-    /// are responsible for policy validation (via trait bounds or clamping).
     async fn subscribe_internal<E: Event>(
         &self,
         registered: RegisteredHandler,
         failure_policy: FailurePolicy,
         once: bool,
     ) -> Result<Subscription, EventBusError> {
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
+
         trace!("event_bus.subscribe {:?}", &registered.name);
+        let id = self.next_subscription_id();
+        let listener = (registered.register)(id, failure_policy, once);
 
-        let subscription_id = self
-            .send_and_ack(|ack| BusMessage::Subscribe {
-                event_type: TypeId::of::<E>(),
-                event_type_name: std::any::type_name::<E>(),
-                register: registered.register,
-                failure_policy,
-                listener_name: registered.name,
-                once,
-                ack,
-            })
-            .await?;
+        let mut registry = self.inner.registry.lock().await;
+        registry.add_listener(TypeId::of::<E>(), std::any::type_name::<E>(), listener);
+        self.refresh_snapshot_locked(&registry).await;
 
-        Ok(Subscription::new(subscription_id, self.clone()))
+        Ok(Subscription::new(id, self.clone()))
     }
 
-    /// Convenience: subscribe a sync dead-letter handler with `dead_letter: false`
-    /// to prevent infinite recursion.
     pub async fn subscribe_dead_letters<H>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         H: SyncEventHandler<DeadLetter>,
@@ -356,300 +237,198 @@ impl EventBus {
             .await
     }
 
-    /// Subscribe a handler that fires exactly once and then auto-unsubscribes.
-    ///
-    /// Once-off listeners are removed from the registry in the same dispatch
-    /// cycle after their first invocation. Because dispatch is serialized by the
-    /// single actor task, they cannot double-fire. Retries are not supported
-    /// (the failure policy is forced to `max_retries = 0`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::{EventBus, SyncEventHandler, HandlerResult};
-    ///
-    /// #[derive(Clone)]
-    /// struct Init;
-    ///
-    /// struct OnceHandler;
-    /// impl SyncEventHandler<Init> for OnceHandler {
-    ///     fn handle(&self, _event: &Init) -> HandlerResult { Ok(()) }
-    /// }
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// let _sub = bus.subscribe_once::<Init, _, _>(OnceHandler).await.unwrap();
-    /// bus.publish(Init).await.unwrap();
-    /// // OnceHandler is now automatically removed — further publishes won't reach it.
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub async fn subscribe_once<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
         let policy = NoRetryPolicy {
-            dead_letter: self.default_failure_policy.dead_letter,
+            dead_letter: self.inner.default_failure_policy.dead_letter,
         };
         self.subscribe_once_with_policy(handler, policy).await
     }
 
-    /// Subscribe a once-off handler with a custom [`NoRetryPolicy`].
-    ///
-    /// Once-off handlers are removed in the same dispatch cycle as their first
-    /// invocation, so retries are not applicable. The policy controls only the
-    /// `dead_letter` flag.
     pub async fn subscribe_once_with_policy<E, H, M>(&self, handler: H, failure_policy: NoRetryPolicy) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
-        trace!("event_bus.subscribe_once");
         let registered = handler.into_handler();
         self.subscribe_internal::<E>(registered, failure_policy.into(), true).await
     }
 
-    /// Register an async middleware that runs before every event dispatch.
-    ///
-    /// Middlewares execute in FIFO (registration) order.  The first one to
-    /// return [`crate::MiddlewareDecision::Reject`] short-circuits the pipeline —
-    /// no listeners fire and [`EventBus::publish`] returns
-    /// [`EventBusError::MiddlewareRejected`].
-    ///
-    /// Returns a [`Subscription`] that can be used to remove the middleware
-    /// later.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::{EventBus, EventBusError, Middleware, MiddlewareDecision};
-    /// use std::any::Any;
-    ///
-    /// #[derive(Clone)]
-    /// struct Secret;
-    ///
-    /// struct RejectAll;
-    /// impl Middleware for RejectAll {
-    ///     async fn process(&self, _name: &'static str, _event: &(dyn Any + Send + Sync)) -> MiddlewareDecision {
-    ///         MiddlewareDecision::Reject("blocked".into())
-    ///     }
-    /// }
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// let _mw = bus.add_middleware(RejectAll).await.unwrap();
-    /// let err = bus.publish(Secret).await.unwrap_err();
-    /// assert!(matches!(err, EventBusError::MiddlewareRejected(_)));
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub async fn add_middleware<M: Middleware>(&self, middleware: M) -> Result<Subscription, EventBusError> {
-        trace!("event_bus.add_middleware");
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
         let mw = Arc::new(middleware);
-        let erased = ErasedMiddleware::Async(Arc::new(move |event_name: &'static str, event: Arc<dyn Any + Send + Sync>| {
+        let erased = ErasedMiddleware::Async(Arc::new(move |event_name: &'static str, event| {
             let mw = Arc::clone(&mw);
             Box::pin(async move { mw.process(event_name, event.as_ref()).await }) as Pin<Box<dyn Future<Output = _> + Send>>
         }));
 
-        let subscription_id = self.send_and_ack(|ack| BusMessage::AddMiddleware { middleware: erased, ack }).await?;
-        Ok(Subscription::new(subscription_id, self.clone()))
+        let id = self.next_subscription_id();
+        let mut registry = self.inner.registry.lock().await;
+        registry.add_global_middleware(id, erased);
+        self.refresh_snapshot_locked(&registry).await;
+        Ok(Subscription::new(id, self.clone()))
     }
 
-    /// Register a sync middleware that runs before every event dispatch.
-    ///
-    /// See [`add_middleware`](Self::add_middleware) for ordering and rejection
-    /// semantics.
     pub async fn add_sync_middleware<M: SyncMiddleware>(&self, middleware: M) -> Result<Subscription, EventBusError> {
-        trace!("event_bus.add_sync_middleware");
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
         let mw = Arc::new(middleware);
         let erased = ErasedMiddleware::Sync(Arc::new(move |event_name: &'static str, event: &(dyn Any + Send + Sync)| {
             mw.process(event_name, event)
         }));
 
-        let subscription_id = self.send_and_ack(|ack| BusMessage::AddMiddleware { middleware: erased, ack }).await?;
-        Ok(Subscription::new(subscription_id, self.clone()))
+        let id = self.next_subscription_id();
+        let mut registry = self.inner.registry.lock().await;
+        registry.add_global_middleware(id, erased);
+        self.refresh_snapshot_locked(&registry).await;
+        Ok(Subscription::new(id, self.clone()))
     }
 
-    /// Register an async typed middleware for a specific event type `E`.
-    ///
-    /// Typed middleware runs after global middleware and before handler
-    /// dispatch for matching events.
     pub async fn add_typed_middleware<E, M>(&self, middleware: M) -> Result<Subscription, EventBusError>
     where
         E: Event,
         M: TypedMiddleware<E>,
     {
-        trace!("event_bus.add_typed_middleware {:?}", std::any::type_name::<E>());
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
         let mw = Arc::new(middleware);
-        let register: RegisterTypedMiddlewareFn = Box::new(move |registry, subscription_id| {
-            let mw = Arc::clone(&mw);
-            let erased = TypedMiddlewareEntry::Async(Arc::new(move |event_name: &'static str, event: Arc<E>| {
+        let slot = TypedMiddlewareSlot {
+            id: self.next_subscription_id(),
+            middleware: TypedMiddlewareEntry::Async(Arc::new(move |event_name, event| {
                 let mw = Arc::clone(&mw);
-                Box::pin(async move { mw.process(event_name, event.as_ref()).await }) as Pin<Box<dyn Future<Output = _> + Send>>
-            }));
-            registry.add_typed_middleware::<E>(subscription_id, erased);
-        });
+                let event = event.downcast::<E>();
+                Box::pin(async move {
+                    match event {
+                        Ok(event) => mw.process(event_name, event.as_ref()).await,
+                        Err(_) => crate::middleware::MiddlewareDecision::Reject("event type mismatch".to_string()),
+                    }
+                })
+            })),
+        };
 
-        let subscription_id = self
-            .send_and_ack(|ack| BusMessage::AddTypedMiddleware {
-                event_type: TypeId::of::<E>(),
-                event_type_name: std::any::type_name::<E>(),
-                register,
-                ack,
-            })
-            .await?;
-        Ok(Subscription::new(subscription_id, self.clone()))
+        let mut registry = self.inner.registry.lock().await;
+        registry.add_typed_middleware(TypeId::of::<E>(), std::any::type_name::<E>(), slot.clone());
+        self.refresh_snapshot_locked(&registry).await;
+        Ok(Subscription::new(slot.id, self.clone()))
     }
 
-    /// Register a sync typed middleware for a specific event type `E`.
-    ///
-    /// Typed middleware runs after global middleware and before handler
-    /// dispatch for matching events.
     pub async fn add_typed_sync_middleware<E, M>(&self, middleware: M) -> Result<Subscription, EventBusError>
     where
         E: Event,
         M: TypedSyncMiddleware<E>,
     {
-        trace!("event_bus.add_typed_sync_middleware {:?}", std::any::type_name::<E>());
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
         let mw = Arc::new(middleware);
-        let register: RegisterTypedMiddlewareFn = Box::new(move |registry, subscription_id| {
-            let mw = Arc::clone(&mw);
-            let erased = TypedMiddlewareEntry::Sync(Arc::new(move |event_name: &'static str, event: &E| mw.process(event_name, event)));
-            registry.add_typed_middleware::<E>(subscription_id, erased);
-        });
+        let slot = TypedMiddlewareSlot {
+            id: self.next_subscription_id(),
+            middleware: TypedMiddlewareEntry::Sync(Arc::new(move |event_name, event| {
+                let Some(event) = event.downcast_ref::<E>() else {
+                    return crate::middleware::MiddlewareDecision::Reject("event type mismatch".to_string());
+                };
+                mw.process(event_name, event)
+            })),
+        };
 
-        let subscription_id = self
-            .send_and_ack(|ack| BusMessage::AddTypedMiddleware {
-                event_type: TypeId::of::<E>(),
-                event_type_name: std::any::type_name::<E>(),
-                register,
-                ack,
-            })
-            .await?;
-        Ok(Subscription::new(subscription_id, self.clone()))
+        let mut registry = self.inner.registry.lock().await;
+        registry.add_typed_middleware(TypeId::of::<E>(), std::any::type_name::<E>(), slot.clone());
+        self.refresh_snapshot_locked(&registry).await;
+        Ok(Subscription::new(slot.id, self.clone()))
     }
-    ///
-    /// This waits for synchronous listeners to complete, but may return before
-    /// asynchronous listeners finish.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::EventBus;
-    ///
-    /// #[derive(Clone)]
-    /// struct Ping;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// // Publishing with no listeners is a no-op.
-    /// bus.publish(Ping).await.unwrap();
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
+
+    async fn publish_erased(
+        &self,
+        event_type: TypeId,
+        event: Arc<dyn Any + Send + Sync>,
+        event_name: &'static str,
+        dispatch_ctx: &DispatchContext,
+    ) -> Result<(), EventBusError> {
+        let snapshot = self.inner.snapshot.load_full();
+        let once_removed = dispatch_with_snapshot(&snapshot, event_type, event, event_name, dispatch_ctx).await?;
+
+        if !once_removed.is_empty() {
+            let mut registry = self.inner.registry.lock().await;
+            for subscription_id in once_removed {
+                registry.remove_once(subscription_id);
+            }
+            self.refresh_snapshot_locked(&registry).await;
+        }
+
+        Ok(())
+    }
+
     pub async fn publish<E>(&self, event: E) -> Result<(), EventBusError>
     where
         E: Event + Clone,
     {
-        trace!("event_bus.publish {:?}", std::any::type_name::<E>());
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
 
-        self.send_and_ack(|ack| BusMessage::Publish {
-            event_type: TypeId::of::<E>(),
-            event: Arc::new(event),
-            event_name: std::any::type_name::<E>(),
-            ack: Some(ack),
-        })
-        .await?
+        let snapshot = self.inner.snapshot.load();
+        if !snapshot.by_type.contains_key(&TypeId::of::<E>()) && snapshot.global_middlewares.is_empty() {
+            return Ok(());
+        }
+
+        let _permit = self.inner.publish_permits.acquire().await.map_err(|_| EventBusError::Stopped)?;
+        let dispatch_ctx = self.inner.full_dispatch_context();
+        self.publish_erased(TypeId::of::<E>(), Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
+            .await
     }
 
-    /// Try to publish without waiting or blocking.
-    ///
-    /// Returns [`EventBusError::ChannelFull`] when the internal queue is full.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::{EventBus, EventBusError};
-    ///
-    /// #[derive(Clone)]
-    /// struct Tick;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(1).expect("valid config");
-    /// assert!(bus.try_publish(Tick).is_ok());
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub fn try_publish<E>(&self, event: E) -> Result<(), EventBusError>
     where
         E: Event + Clone,
     {
-        trace!("event_bus.try_publish");
-
-        match self.tx.try_send(BusMessage::Publish {
-            event_type: TypeId::of::<E>(),
-            event: Arc::new(event),
-            event_name: std::any::type_name::<E>(),
-            ack: None,
-        }) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(EventBusError::ChannelFull),
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(EventBusError::ActorStopped),
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
         }
+
+        let snapshot = self.inner.snapshot.load();
+        if !snapshot.by_type.contains_key(&TypeId::of::<E>()) && snapshot.global_middlewares.is_empty() {
+            return Ok(());
+        }
+
+        let Ok(permit) = Arc::clone(&self.inner.publish_permits).try_acquire_owned() else {
+            return Err(EventBusError::ChannelFull);
+        };
+        let bus = self.clone();
+        tokio::spawn(async move {
+            let _keep = permit;
+            let dispatch_ctx = bus.inner.full_dispatch_context();
+            if let Err(err) = bus
+                .publish_erased(TypeId::of::<E>(), Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
+                .await
+            {
+                error!(error = %err, "event_bus.try_publish.dispatch_failed");
+            }
+        });
+        Ok(())
     }
 
-    /// Remove a previously registered listener by its [`SubscriptionId`](crate::types::SubscriptionId).
-    ///
-    /// Returns `Ok(true)` if the listener was found and removed, `Ok(false)` if
-    /// no listener with that ID exists (e.g. already unsubscribed), or
-    /// `Err(EventBusError::ActorStopped)` if the bus has shut down.
-    ///
-    /// Prefer using [`Subscription::unsubscribe`](Subscription::unsubscribe)
-    /// when you have the subscription handle.
-    pub async fn unsubscribe(&self, subscription_id: crate::types::SubscriptionId) -> Result<bool, EventBusError> {
-        trace!(subscription_id = subscription_id.as_u64(), "event_bus.unsubscribe");
-
-        self.send_and_ack(|ack| BusMessage::Unsubscribe { subscription_id, ack }).await
+    pub async fn unsubscribe(&self, subscription_id: SubscriptionId) -> Result<bool, EventBusError> {
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
+        let mut registry = self.inner.registry.lock().await;
+        let removed = registry.remove_subscription(subscription_id);
+        if removed {
+            self.refresh_snapshot_locked(&registry).await;
+        }
+        Ok(removed)
     }
 
-    /// Gracefully stop the actor and wait for queued publish messages plus
-    /// in-flight async handlers.
-    ///
-    /// If a `shutdown_timeout` was configured via the builder, remaining tasks
-    /// are aborted after the deadline and [`EventBusError::ShutdownTimeout`] is
-    /// returned.
-    ///
-    /// After shutdown, all publish/subscribe operations return
-    /// [`EventBusError::ActorStopped`].
-    ///
-    /// Shutdown is **idempotent**: the first call performs the work and
-    /// subsequent calls return `Ok(())` immediately.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::EventBus;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// bus.shutdown().await.unwrap();
-    ///
-    /// // Second shutdown is a no-op:
-    /// bus.shutdown().await.unwrap();
-    ///
-    /// // Further operations fail:
-    /// assert!(bus.publish("late").await.is_err());
-    /// # }
-    /// ```
     pub async fn shutdown(&self) -> Result<(), EventBusError> {
-        trace!("event_bus.shutdown");
-
-        // Atomically claim the shutdown responsibility. Only the winner
-        // proceeds; all other callers return Ok(()) immediately. This
-        // eliminates the TOCTOU race that existed with a separate
-        // load-then-store pattern.
         if self
+            .inner
             .shutdown_called
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -657,78 +436,67 @@ impl EventBus {
             return Ok(());
         }
 
-        let result = self.send_and_ack(|ack| BusMessage::Shutdown { ack }).await?;
+        self.inner.publish_permits.close();
 
-        // Join the actor task to ensure it has fully exited and to observe
-        // any panic that may have occurred after the ack was sent.
-        if let Some(handle) = self.actor_handle.lock().await.take()
-            && let Err(join_error) = handle.await
-        {
-            // The actor panicked after sending its ack.  Log the panic but
-            // still return the result the actor already committed to — the
-            // shutdown itself completed.
-            warn!(error = %join_error, "event_bus.actor_panic_during_shutdown");
+        let timed_out = self.inner.tracker.shutdown(self.inner.shutdown_timeout).await;
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let _ = self.inner.notify_tx.send(ControlNotification::Flush(ack_tx));
+        let _ = ack_rx.await;
+
+        let handle = { self.inner.control_handle.lock().expect("control_handle lock poisoned").take() };
+        if let Some(handle) = handle {
+            handle.abort();
+            let _ = handle.await;
         }
 
-        result
+        if timed_out { Err(EventBusError::ShutdownTimeout) } else { Ok(()) }
     }
 
-    /// Returns `true` if the internal actor task is still running.
-    ///
-    /// This is a best-effort check: it returns `false` if the actor has
-    /// exited (either via [`shutdown`](Self::shutdown) or an unexpected panic),
-    /// `true` otherwise.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::EventBus;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    /// assert!(bus.is_healthy().await);
-    ///
-    /// bus.shutdown().await.unwrap();
-    /// assert!(!bus.is_healthy().await);
-    /// # }
-    /// ```
     pub async fn is_healthy(&self) -> bool {
-        let guard = self.actor_handle.lock().await;
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return false;
+        }
+        let guard = self.inner.control_handle.lock().expect("control_handle lock poisoned");
         match guard.as_ref() {
             Some(handle) => !handle.is_finished(),
-            None => false, // handle was already taken by shutdown
+            None => false,
         }
     }
 
-    /// Return a point-in-time snapshot of the bus internal state.
-    ///
-    /// The snapshot includes active subscription counts, registered event
-    /// types, in-flight async tasks, and whether shutdown has been called.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use jaeb::EventBus;
-    ///
-    /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
-    ///
-    /// let stats = bus.stats().await.unwrap();
-    /// assert_eq!(stats.total_subscriptions, 0);
-    /// assert_eq!(stats.queue_capacity, 64);
-    /// assert!(!stats.shutdown_called);
-    ///
-    /// bus.shutdown().await.unwrap();
-    /// # }
-    /// ```
     pub async fn stats(&self) -> Result<BusStats, EventBusError> {
-        trace!("event_bus.stats");
-
-        let shutdown_called = self.shutdown_called.load(Ordering::Acquire);
-        let mut stats = self.send_and_ack(|ack| BusMessage::Stats { ack }).await?;
-        // The shutdown_called flag lives on the EventBus side (AtomicBool),
-        // so we merge it into the actor's snapshot here.
-        stats.shutdown_called = shutdown_called;
-        Ok(stats)
+        if self.inner.shutdown_called.load(Ordering::Acquire) {
+            return Err(EventBusError::Stopped);
+        }
+        let registry = self.inner.registry.lock().await;
+        Ok(registry.stats(
+            self.inner.tracker.in_flight(),
+            self.inner.buffer_size,
+            self.inner.shutdown_called.load(Ordering::Acquire),
+        ))
     }
+}
+
+async fn control_loop(inner: std::sync::Weak<Inner>, mut notify_rx: mpsc::UnboundedReceiver<ControlNotification>) {
+    while let Some(notification) = notify_rx.recv().await {
+        let Some(inner) = inner.upgrade() else {
+            break;
+        };
+        match notification {
+            ControlNotification::Failure(failure) => {
+                if let Some(dead_letter) = dead_letter_from_failure(&failure) {
+                    let bus = EventBus { inner };
+                    let dead_letter_type = std::any::type_name::<DeadLetter>();
+                    let dispatch_ctx = bus.inner.sync_only_dispatch_context();
+                    let _ = bus
+                        .publish_erased(TypeId::of::<DeadLetter>(), Arc::new(dead_letter), dead_letter_type, &dispatch_ctx)
+                        .await;
+                }
+            }
+            ControlNotification::Flush(ack) => {
+                let _ = ack.send(());
+            }
+        }
+    }
+    warn!("event_bus.control_loop.stopped");
 }

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! `#[event_listener]` on a method should fail.
 
 use jaeb::HandlerResult;

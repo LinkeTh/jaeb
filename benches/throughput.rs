@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
+use std::any::Any;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-use criterion::{Criterion, criterion_group, criterion_main};
-use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
+use criterion::{criterion_group, criterion_main, Criterion};
+use jaeb::{EventBus, EventHandler, HandlerResult, Middleware, MiddlewareDecision, SyncEventHandler};
 
 // ---------------------------------------------------------------------------
 // Events
@@ -170,6 +170,201 @@ fn bench_contention(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Baseline: raw tokio mpsc (for comparison with jaeb overhead)
+// ---------------------------------------------------------------------------
+
+/// Baseline: raw tokio mpsc channel send + recv for comparison.
+fn bench_baseline_mpsc(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    c.bench_function("baseline_mpsc_send_recv", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<LightEvent>(1024);
+            let consumer = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                tx.send(LightEvent(i)).await.unwrap();
+            }
+            drop(tx);
+            consumer.await.unwrap();
+            start.elapsed()
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Middleware overhead
+// ---------------------------------------------------------------------------
+
+struct PassthroughMiddleware;
+impl Middleware for PassthroughMiddleware {
+    async fn process(&self, _name: &'static str, _event: &(dyn Any + Send + Sync)) -> MiddlewareDecision {
+        MiddlewareDecision::Continue
+    }
+}
+
+fn bench_middleware_overhead(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    for n in [0usize, 1, 5, 10] {
+        c.bench_function(&format!("middleware_{n}_layers_sync"), |b| {
+            b.to_async(&rt).iter_custom(|iters| async move {
+                let bus = EventBus::new(1024).expect("valid config");
+                let _sub = bus.subscribe::<LightEvent, _, _>(NoOpSync).await.unwrap();
+                for _ in 0..n {
+                    let _ = bus.add_middleware(PassthroughMiddleware).await.unwrap();
+                }
+                let start = std::time::Instant::now();
+                for i in 0..iters {
+                    bus.publish(LightEvent(i)).await.unwrap();
+                }
+                bus.shutdown().await.unwrap();
+                start.elapsed()
+            });
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Event-size scaling
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct SmallEvent(#[allow(dead_code)] u64);
+
+#[derive(Clone)]
+struct MediumEvent(#[allow(dead_code)] [u8; 256]);
+
+#[derive(Clone)]
+struct LargeEvent(#[allow(dead_code)] Vec<u8>);
+
+struct NoOpSyncSmall;
+impl SyncEventHandler<SmallEvent> for NoOpSyncSmall {
+    fn handle(&self, _event: &SmallEvent) -> HandlerResult {
+        Ok(())
+    }
+}
+
+struct NoOpAsyncSmall;
+impl EventHandler<SmallEvent> for NoOpAsyncSmall {
+    async fn handle(&self, _event: &SmallEvent) -> HandlerResult {
+        Ok(())
+    }
+}
+
+struct NoOpSyncMedium;
+impl SyncEventHandler<MediumEvent> for NoOpSyncMedium {
+    fn handle(&self, _event: &MediumEvent) -> HandlerResult {
+        Ok(())
+    }
+}
+
+struct NoOpAsyncMedium;
+impl EventHandler<MediumEvent> for NoOpAsyncMedium {
+    async fn handle(&self, _event: &MediumEvent) -> HandlerResult {
+        Ok(())
+    }
+}
+
+struct NoOpSyncLarge;
+impl SyncEventHandler<LargeEvent> for NoOpSyncLarge {
+    fn handle(&self, _event: &LargeEvent) -> HandlerResult {
+        Ok(())
+    }
+}
+
+struct NoOpAsyncLarge;
+impl EventHandler<LargeEvent> for NoOpAsyncLarge {
+    async fn handle(&self, _event: &LargeEvent) -> HandlerResult {
+        Ok(())
+    }
+}
+
+fn bench_event_size(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Sync handlers — measures dispatch overhead without clone cost
+    c.bench_function("event_size_8B_sync", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            let _sub = bus.subscribe::<SmallEvent, _, _>(NoOpSyncSmall).await.unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(SmallEvent(i)).await.unwrap();
+            }
+            bus.shutdown().await.unwrap();
+            start.elapsed()
+        });
+    });
+
+    c.bench_function("event_size_256B_sync", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            let _sub = bus.subscribe::<MediumEvent, _, _>(NoOpSyncMedium).await.unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(MediumEvent([i as u8; 256])).await.unwrap();
+            }
+            bus.shutdown().await.unwrap();
+            start.elapsed()
+        });
+    });
+
+    c.bench_function("event_size_4KB_sync", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            let _sub = bus.subscribe::<LargeEvent, _, _>(NoOpSyncLarge).await.unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(LargeEvent(vec![i as u8; 4096])).await.unwrap();
+            }
+            bus.shutdown().await.unwrap();
+            start.elapsed()
+        });
+    });
+
+    // Async handlers — includes the clone cost per handler invocation
+    c.bench_function("event_size_8B_async", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            let _sub = bus.subscribe::<SmallEvent, _, _>(NoOpAsyncSmall).await.unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(SmallEvent(i)).await.unwrap();
+            }
+            bus.shutdown().await.unwrap();
+            start.elapsed()
+        });
+    });
+
+    c.bench_function("event_size_256B_async", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            let _sub = bus.subscribe::<MediumEvent, _, _>(NoOpAsyncMedium).await.unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(MediumEvent([i as u8; 256])).await.unwrap();
+            }
+            bus.shutdown().await.unwrap();
+            start.elapsed()
+        });
+    });
+
+    c.bench_function("event_size_4KB_async", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            let _sub = bus.subscribe::<LargeEvent, _, _>(NoOpAsyncLarge).await.unwrap();
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(LargeEvent(vec![i as u8; 4096])).await.unwrap();
+            }
+            bus.shutdown().await.unwrap();
+            start.elapsed()
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_publish_sync,
@@ -178,5 +373,8 @@ criterion_group!(
     bench_try_publish,
     bench_mixed_sync_async,
     bench_contention,
+    bench_baseline_mpsc,
+    bench_middleware_overhead,
+    bench_event_size,
 );
 criterion_main!(benches);

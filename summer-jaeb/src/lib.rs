@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 mod config;
 
 use std::future::Future;

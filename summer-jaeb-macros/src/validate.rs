@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Validation and extraction helpers for event listener function signatures.
 
 use syn::punctuated::Punctuated;

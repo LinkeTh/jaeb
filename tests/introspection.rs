@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
@@ -144,7 +143,7 @@ async fn stats_shutdown_called() {
 
     bus.shutdown().await.expect("shutdown");
 
-    // After shutdown, stats() should return ActorStopped.
+    // After shutdown, stats() should return Stopped.
     let result = bus.stats().await;
     assert!(result.is_err(), "stats after shutdown should fail");
 }

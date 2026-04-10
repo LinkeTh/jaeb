@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use jaeb::{EventBus, HandlerResult, SyncEventHandler};
 
@@ -75,7 +74,7 @@ async fn unsubscribe_unknown_id_returns_false() {
     let id = sub.id();
     sub.unsubscribe().await.expect("first unsubscribe");
 
-    // Now `id` is no longer tracked by the actor — should return Ok(false).
+    // Now `id` is no longer tracked by the runtime state — should return Ok(false).
     let removed = bus.unsubscribe(id).await.expect("second unsubscribe");
     assert!(!removed);
 

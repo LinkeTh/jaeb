@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Missing event parameter should fail.
 
 use jaeb::HandlerResult;

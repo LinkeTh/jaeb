@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: MIT
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use jaeb::{EventBus, EventBusError, EventHandler, HandlerResult, SyncEventHandler};
@@ -68,14 +67,14 @@ async fn shutdown_stops_new_operations() {
         Ok(_) => panic!("subscribe after shutdown unexpectedly succeeded"),
         Err(err) => err,
     };
-    assert_eq!(reg_err, EventBusError::ActorStopped);
+    assert_eq!(reg_err, EventBusError::Stopped);
 
     let pub_err = bus.publish(Work { value: 1 }).await.expect_err("publish after shutdown");
-    assert_eq!(pub_err, EventBusError::ActorStopped);
+    assert_eq!(pub_err, EventBusError::Stopped);
 }
 
 #[tokio::test]
-async fn unsubscribe_after_shutdown_returns_actor_stopped() {
+async fn unsubscribe_after_shutdown_returns_stopped() {
     let bus = EventBus::new(16).expect("valid config");
     let sum = Arc::new(AtomicUsize::new(0));
 
@@ -85,7 +84,7 @@ async fn unsubscribe_after_shutdown_returns_actor_stopped() {
     bus.shutdown().await.expect("shutdown");
 
     let err = bus.unsubscribe(id).await.expect_err("unsubscribe after shutdown");
-    assert_eq!(err, EventBusError::ActorStopped);
+    assert_eq!(err, EventBusError::Stopped);
 }
 
 #[tokio::test]
@@ -146,7 +145,7 @@ async fn shutdown_returns_timeout_when_tasks_aborted() {
 
     // The bus should be fully stopped afterward.
     let err = bus.publish(Work { value: 2 }).await.expect_err("publish after shutdown");
-    assert_eq!(err, EventBusError::ActorStopped);
+    assert_eq!(err, EventBusError::Stopped);
 }
 
 #[tokio::test]

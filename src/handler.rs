@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT
 use std::future::Future;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use crate::actor::{ListenerMeta, ListenerRegistry, RegisterFn, TypedAsyncHandlerFn, TypedHandler, TypedSyncHandlerFn};
 use crate::error::HandlerResult;
+use crate::registry::{ErasedAsyncHandlerFn, ErasedSyncHandlerFn, EventType, ListenerEntry, ListenerKind};
 use crate::types::Event;
 
 pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
@@ -27,6 +27,8 @@ pub struct SyncMode;
 pub struct AsyncFnMode;
 pub struct SyncFnMode;
 
+pub(crate) type RegisterFn = Box<dyn FnOnce(crate::types::SubscriptionId, crate::types::FailurePolicy, bool) -> ListenerEntry + Send>;
+
 pub(crate) struct RegisteredHandler {
     pub register: RegisterFn,
     pub name: Option<&'static str>,
@@ -48,13 +50,24 @@ where
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
-            let typed_fn: TypedAsyncHandlerFn<E> = Arc::new(move |event: Arc<E>| {
+        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+            let typed_fn: ErasedAsyncHandlerFn = Arc::new(move |event: EventType| {
                 let handler = Arc::clone(&handler);
-                let event = (*event).clone();
-                Box::pin(async move { handler.handle(&event).await })
+                let event = event.downcast::<E>();
+                Box::pin(async move {
+                    let event = event.map_err(|_| "event type mismatch")?;
+                    let event = (*event).clone();
+                    handler.handle(&event).await
+                })
             });
-            registry.add_typed_listener::<E>(meta, TypedHandler::Async(typed_fn));
+            ListenerEntry {
+                id,
+                kind: ListenerKind::Async(typed_fn),
+                failure_policy,
+                name,
+                once,
+                fired: once.then(|| Arc::new(AtomicBool::new(false))),
+            }
         });
 
         RegisteredHandler {
@@ -74,9 +87,21 @@ where
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
-            let typed_fn: TypedSyncHandlerFn<E> = Arc::new(move |event: &E| handler.handle(event));
-            registry.add_typed_listener::<E>(meta, TypedHandler::Sync(typed_fn));
+        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+            let typed_fn: ErasedSyncHandlerFn = Arc::new(move |event: &(dyn std::any::Any + Send + Sync)| {
+                let Some(event) = event.downcast_ref::<E>() else {
+                    return Err("event type mismatch".into());
+                };
+                handler.handle(event)
+            });
+            ListenerEntry {
+                id,
+                kind: ListenerKind::Sync(typed_fn),
+                failure_policy,
+                name,
+                once,
+                fired: once.then(|| Arc::new(AtomicBool::new(false))),
+            }
         });
 
         RegisteredHandler {
@@ -95,9 +120,21 @@ where
 {
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
-            let typed_fn: TypedSyncHandlerFn<E> = Arc::new(move |event: &E| (handler)(event));
-            registry.add_typed_listener::<E>(meta, TypedHandler::Sync(typed_fn));
+        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+            let typed_fn: ErasedSyncHandlerFn = Arc::new(move |event: &(dyn std::any::Any + Send + Sync)| {
+                let Some(event) = event.downcast_ref::<E>() else {
+                    return Err("event type mismatch".into());
+                };
+                (handler)(event)
+            });
+            ListenerEntry {
+                id,
+                kind: ListenerKind::Sync(typed_fn),
+                failure_policy,
+                name: None,
+                once,
+                fired: once.then(|| Arc::new(AtomicBool::new(false))),
+            }
         });
 
         RegisteredHandler {
@@ -117,13 +154,24 @@ where
 {
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |registry: &mut ListenerRegistry, meta: ListenerMeta| {
-            let typed_fn: TypedAsyncHandlerFn<E> = Arc::new(move |event: Arc<E>| {
+        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+            let typed_fn: ErasedAsyncHandlerFn = Arc::new(move |event: EventType| {
                 let handler = Arc::clone(&handler);
-                let event = (*event).clone();
-                Box::pin(async move { (handler)(event).await })
+                let event = event.downcast::<E>();
+                Box::pin(async move {
+                    let event = event.map_err(|_| "event type mismatch")?;
+                    let event = (*event).clone();
+                    (handler)(event).await
+                })
             });
-            registry.add_typed_listener::<E>(meta, TypedHandler::Async(typed_fn));
+            ListenerEntry {
+                id,
+                kind: ListenerKind::Async(typed_fn),
+                failure_policy,
+                name: None,
+                once,
+                fired: once.then(|| Arc::new(AtomicBool::new(false))),
+            }
         });
 
         RegisteredHandler {

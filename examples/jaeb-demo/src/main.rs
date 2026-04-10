@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 use std::sync::Arc;
 
 use jaeb::{DeadLetter, EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy, SyncEventHandler};
@@ -10,7 +9,7 @@ use std::time::Duration;
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{fmt, EnvFilter};
 
 // ── Events ──────────────────────────────────────────────────────────────
 

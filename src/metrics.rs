@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 #[cfg(feature = "metrics")]
 use metrics::histogram;
 

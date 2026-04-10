@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Tests for the `test-utils` feature-gated module.
 
 #![cfg(feature = "test-utils")]

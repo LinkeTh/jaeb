@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 //! Compile-fail tests for the `#[event_listener]` proc macro.
 //!
 //! These tests verify that incorrect usage produces clear, actionable

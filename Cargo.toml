@@ -1,12 +1,12 @@
 [package]
 name = "jaeb"
-version = "0.2.4"
+version = "0.3.0"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
-description = "simple actor based event bus"
+description = "simple snapshot-driven event bus"
 license = "MIT"
 repository = "https://github.com/LinkeTh/jaeb"
-keywords = ["event-bus", "actor", "tokio", "async", "pubsub"]
+keywords = ["event-bus", "tokio", "async", "pubsub", "snapshot"]
 categories = ["asynchronous", "concurrency"]
 readme = "README.md"
 rust-version = "1.88"
@@ -23,6 +23,7 @@ members = [
     "summer-jaeb",
 ]
 [dependencies]
+arc-swap = "1.7"
 metrics = { version = "0.24", optional = true }
 tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 tracing = { version = "0.1", features = ["std", "log"] }

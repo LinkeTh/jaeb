@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 //! Middleware traits for cross-cutting event interception.
 //!
 //! Middlewares run **before** listener dispatch and can inspect (or reject) any
