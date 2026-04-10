@@ -6,6 +6,20 @@ use crate::bus::EventBus;
 use crate::error::EventBusError;
 use crate::types::SubscriptionId;
 
+/// Handle representing an active listener or middleware registration.
+///
+/// Returned by the `subscribe_*` and `add_*middleware*` methods on
+/// [`EventBus`]. The listener remains registered as long as the bus is
+/// running — dropping a `Subscription` does **not** unsubscribe it.
+///
+/// To automatically unsubscribe when a scope exits, convert this into a
+/// [`SubscriptionGuard`] with [`into_guard`](Self::into_guard).
+///
+/// # Cloning
+///
+/// `Subscription` is `Clone`. All clones refer to the same underlying
+/// registration; calling [`unsubscribe`](Self::unsubscribe) on any clone
+/// removes the listener.
 #[derive(Clone)]
 #[must_use = "dropping the Subscription leaves the listener registered; call .unsubscribe() or .into_guard() or store the handle"]
 pub struct Subscription {
@@ -18,6 +32,10 @@ impl Subscription {
         Self { id, bus }
     }
 
+    /// Return the unique [`SubscriptionId`] for this registration.
+    ///
+    /// The id can be passed to [`EventBus::unsubscribe`] to remove the
+    /// listener without consuming this handle.
     pub const fn id(&self) -> SubscriptionId {
         self.id
     }

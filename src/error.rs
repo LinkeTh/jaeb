@@ -1,6 +1,15 @@
 use std::fmt;
 
+/// The error type returned by [`EventHandler::handle`](crate::EventHandler::handle)
+/// and [`SyncEventHandler::handle`](crate::SyncEventHandler::handle) on failure.
+///
+/// This is a type-erased, heap-allocated error that can carry any `Send +
+/// Sync` error value.
 pub type HandlerError = Box<dyn std::error::Error + Send + Sync + 'static>;
+/// The result type for handler methods.
+///
+/// Return `Ok(())` to indicate success, or `Err(e)` to signal a failure that
+/// will be processed according to the listener's [`FailurePolicy`](crate::FailurePolicy).
 pub type HandlerResult = Result<(), HandlerError>;
 
 /// Specific reason why an [`EventBus`](crate::EventBus) configuration is invalid.
@@ -23,10 +32,28 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Errors returned by [`EventBus`](crate::EventBus) publish and shutdown
+/// operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventBusError {
+    /// The bus has been shut down.
+    ///
+    /// Returned by all publish, subscribe, unsubscribe, and stats calls made
+    /// after [`EventBus::shutdown`](crate::EventBus::shutdown) has been
+    /// invoked.
     Stopped,
+    /// The internal channel buffer is full and no capacity is available.
+    ///
+    /// Only returned by [`EventBus::try_publish`](crate::EventBus::try_publish).
+    /// Use [`EventBus::publish`](crate::EventBus::publish) to wait for
+    /// available capacity instead.
     ChannelFull,
+    /// Shutdown timed out before all in-flight async tasks completed.
+    ///
+    /// Remaining tasks were aborted. Returned by
+    /// [`EventBus::shutdown`](crate::EventBus::shutdown) when a
+    /// [`shutdown_timeout`](crate::EventBusBuilder::shutdown_timeout) was
+    /// configured and elapsed.
     ShutdownTimeout,
     /// The builder configuration is invalid.
     InvalidConfig(ConfigError),

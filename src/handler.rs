@@ -6,25 +6,121 @@ use crate::error::HandlerResult;
 use crate::registry::{ErasedAsyncHandlerFn, ErasedSyncHandlerFn, EventType, ListenerEntry, ListenerKind};
 use crate::types::Event;
 
+/// Trait for **asynchronous** event handlers.
+///
+/// Implement this trait on a struct to receive events of type `E`
+/// asynchronously. When an event is published:
+/// - The event is cloned once per registered async listener (hence the
+///   `E: Clone` bound).
+/// - Each invocation is spawned as an independent Tokio task.
+/// - [`EventBus::publish`](crate::EventBus::publish) returns once all async
+///   handler tasks have been *spawned*, not necessarily *completed*.
+///
+/// # Examples
+///
+/// ```
+/// use jaeb::{EventHandler, HandlerResult};
+///
+/// #[derive(Clone)]
+/// struct OrderPlaced { id: u64 }
+///
+/// struct EmailNotifier;
+///
+/// impl EventHandler<OrderPlaced> for EmailNotifier {
+///     async fn handle(&self, event: &OrderPlaced) -> HandlerResult {
+///         // send email …
+///         Ok(())
+///     }
+/// }
+/// ```
 pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
+    /// Handle a single published event.
+    ///
+    /// Called with a shared reference to the cloned event. Return `Ok(())`
+    /// on success or a [`HandlerError`](crate::HandlerError) on failure.
+    /// Failures are subject to the listener's [`FailurePolicy`](crate::FailurePolicy).
     fn handle(&self, event: &E) -> impl Future<Output = HandlerResult> + Send;
 
+    /// Return an optional human-readable name for this listener.
+    ///
+    /// The name appears in [`ListenerInfo`](crate::ListenerInfo) (reported by
+    /// [`EventBus::stats`](crate::EventBus::stats)) and in
+    /// [`DeadLetter::listener_name`](crate::DeadLetter::listener_name).
+    ///
+    /// Defaults to `None`; the `#[event_listener]` macro sets this
+    /// automatically from the function name.
     fn name(&self) -> Option<&'static str> {
         None
     }
 }
 
+/// Trait for **synchronous** event handlers.
+///
+/// Implement this trait on a struct to receive events of type `E`
+/// synchronously. When an event is published:
+/// - The handler is called inline in a serialized per-event-type FIFO lane.
+/// - [`EventBus::publish`](crate::EventBus::publish) waits for the handler to
+///   return before proceeding.
+/// - Sync handlers do **not** require `E: Clone` because the original event
+///   reference is passed directly.
+///
+/// Sync handlers must use [`NoRetryPolicy`](crate::NoRetryPolicy); passing a
+/// [`FailurePolicy`](crate::FailurePolicy) for a sync handler is a
+/// compile-time error.
+///
+/// # Examples
+///
+/// ```
+/// use jaeb::{SyncEventHandler, HandlerResult};
+///
+/// #[derive(Clone)]
+/// struct UserDeleted { id: u64 }
+///
+/// struct AuditLog;
+///
+/// impl SyncEventHandler<UserDeleted> for AuditLog {
+///     fn handle(&self, event: &UserDeleted) -> HandlerResult {
+///         // write to audit log …
+///         Ok(())
+///     }
+/// }
+/// ```
 pub trait SyncEventHandler<E: Event>: Send + Sync + 'static {
+    /// Handle a single published event synchronously.
+    ///
+    /// Called with a shared reference to the event. Return `Ok(())` on success
+    /// or a [`HandlerError`](crate::HandlerError) on failure. On failure a
+    /// [`DeadLetter`](crate::DeadLetter) is emitted if the listener's policy
+    /// has `dead_letter` enabled.
     fn handle(&self, event: &E) -> HandlerResult;
 
+    /// Return an optional human-readable name for this listener.
+    ///
+    /// See [`EventHandler::name`] for details.
     fn name(&self) -> Option<&'static str> {
         None
     }
 }
 
+/// Marker type that selects **async struct** dispatch for [`IntoHandler`].
+///
+/// Used as the `Mode` type parameter when a struct implementing
+/// [`EventHandler<E>`] is passed to a `subscribe_*` method.
 pub struct AsyncMode;
+/// Marker type that selects **sync struct** dispatch for [`IntoHandler`].
+///
+/// Used as the `Mode` type parameter when a struct implementing
+/// [`SyncEventHandler<E>`] is passed to a `subscribe_*` method.
 pub struct SyncMode;
+/// Marker type that selects **async function** dispatch for [`IntoHandler`].
+///
+/// Used as the `Mode` type parameter when a plain `async fn(E) -> HandlerResult`
+/// function pointer or closure is passed to a `subscribe_*` method.
 pub struct AsyncFnMode;
+/// Marker type that selects **sync function** dispatch for [`IntoHandler`].
+///
+/// Used as the `Mode` type parameter when a plain `fn(&E) -> HandlerResult`
+/// function pointer or closure is passed to a `subscribe_*` method.
 pub struct SyncFnMode;
 
 pub(crate) type RegisterFn = Box<dyn FnOnce(crate::types::SubscriptionId, crate::types::FailurePolicy, bool) -> ListenerEntry + Send>;
@@ -35,6 +131,22 @@ pub(crate) struct RegisteredHandler {
     pub is_sync: bool,
 }
 
+/// Type-erases a concrete handler into the internal representation
+/// expected by the bus registry.
+///
+/// This trait is implemented for:
+/// - Structs implementing [`EventHandler<E>`] (selects [`AsyncMode`]).
+/// - Structs implementing [`SyncEventHandler<E>`] (selects [`SyncMode`]).
+/// - `async fn(E) -> HandlerResult` closures / function pointers (selects
+///   [`AsyncFnMode`]).
+/// - `fn(&E) -> HandlerResult` closures / function pointers (selects
+///   [`SyncFnMode`]).
+///
+/// The `Mode` type parameter is inferred by the compiler from the concrete
+/// handler type; callers never need to name it explicitly.
+///
+/// You do not need to implement this trait manually — it is a blanket
+/// implementation over [`EventHandler`] and [`SyncEventHandler`].
 #[allow(private_interfaces)]
 pub trait IntoHandler<E: Event, Mode> {
     #[doc(hidden)]

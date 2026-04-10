@@ -21,6 +21,17 @@ use crate::registry::{
 use crate::subscription::Subscription;
 use crate::types::{BusConfig, BusStats, DeadLetter, Event, FailurePolicy, IntoFailurePolicy, NoRetryPolicy, SubscriptionId};
 
+/// Builder for constructing an [`EventBus`] with custom configuration.
+///
+/// Obtain an instance via [`EventBus::builder()`]. All settings have sensible
+/// defaults (see individual methods), so calling [`build`](Self::build) on a
+/// freshly created builder is valid and yields a ready-to-use bus.
+///
+/// # Errors
+///
+/// [`build`](Self::build) returns [`EventBusError::InvalidConfig`] when:
+/// - `buffer_size` was set to `0`.
+/// - `max_concurrent_async` was set to `0`.
 pub struct EventBusBuilder {
     config: BusConfig,
 }
@@ -38,31 +49,83 @@ impl EventBusBuilder {
         }
     }
 
+    /// Set the internal channel buffer capacity.
+    ///
+    /// This controls the maximum number of in-flight publish permits at any
+    /// given time. When the buffer is full, [`EventBus::publish`] will wait
+    /// until space becomes available, and [`EventBus::try_publish`] will
+    /// return [`EventBusError::ChannelFull`] immediately.
+    ///
+    /// **Default:** `256`.
+    ///
+    /// # Errors
+    ///
+    /// [`build`](Self::build) will return an error if `size` is `0`.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.config.buffer_size = size;
         self
     }
 
+    /// Set a per-invocation timeout for async handler tasks.
+    ///
+    /// If an async handler does not complete within this duration it is
+    /// cancelled and treated as a failure (subject to the listener's
+    /// [`FailurePolicy`]). Sync handlers are not affected.
+    ///
+    /// **Default:** no timeout (handlers may run indefinitely).
     pub fn handler_timeout(mut self, timeout: Duration) -> Self {
         self.config.handler_timeout = Some(timeout);
         self
     }
 
+    /// Set the maximum number of async handler tasks that may run concurrently.
+    ///
+    /// When this limit is reached, new async dispatches wait until a running
+    /// task finishes. Sync handlers are not counted toward this limit.
+    ///
+    /// **Default:** unlimited (`None`).
+    ///
+    /// # Errors
+    ///
+    /// [`build`](Self::build) will return an error if `max` is `0`.
     pub fn max_concurrent_async(mut self, max: usize) -> Self {
         self.config.max_concurrent_async = Some(max);
         self
     }
 
+    /// Set the fallback [`FailurePolicy`] applied to every new subscription
+    /// that does not specify its own policy.
+    ///
+    /// This policy is overridden on a per-subscription basis by
+    /// [`EventBus::subscribe_with_policy`] and friends.
+    ///
+    /// **Default:** [`FailurePolicy::default()`] — no retries, dead-letter
+    /// enabled.
     pub fn default_failure_policy(mut self, policy: FailurePolicy) -> Self {
         self.config.default_failure_policy = policy;
         self
     }
 
+    /// Set a deadline for draining in-flight async tasks during shutdown.
+    ///
+    /// If tasks do not complete within this duration after [`EventBus::shutdown`]
+    /// is called they are aborted and shutdown returns
+    /// [`EventBusError::ShutdownTimeout`].
+    ///
+    /// **Default:** no timeout (shutdown waits indefinitely for tasks to
+    /// finish).
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.config.shutdown_timeout = Some(timeout);
         self
     }
 
+    /// Consume the builder and construct the [`EventBus`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::InvalidConfig`] wrapping a [`ConfigError`] if:
+    /// - `buffer_size` is `0` ([`ConfigError::ZeroBufferSize`]).
+    /// - `max_concurrent_async` is `0` ([`ConfigError::ZeroConcurrency`]).
     pub fn build(self) -> Result<EventBus, EventBusError> {
         if self.config.buffer_size == 0 {
             return Err(ConfigError::ZeroBufferSize.into());
@@ -109,6 +172,25 @@ impl Inner {
     }
 }
 
+/// The central in-process event bus.
+///
+/// `EventBus` is a cheap-to-clone handle backed by a shared `Arc`. All clones
+/// refer to the same underlying runtime state and share the same listener
+/// registry, middleware pipeline, and configuration.
+///
+/// Use [`EventBus::builder()`] for full configuration or [`EventBus::new`] for
+/// a quick default setup.
+///
+/// # Thread safety
+///
+/// `EventBus` is `Clone + Send + Sync` and can be freely shared across threads
+/// and tasks.
+///
+/// # Shutdown
+///
+/// Call [`shutdown`](Self::shutdown) to gracefully stop the bus. After
+/// shutdown, all publish and subscribe operations return
+/// [`EventBusError::Stopped`].
 #[derive(Clone)]
 pub struct EventBus {
     inner: Arc<Inner>,
@@ -124,10 +206,20 @@ impl std::fmt::Debug for EventBus {
 }
 
 impl EventBus {
+    /// Create an `EventBus` with the given channel buffer size and default
+    /// settings for all other options.
+    ///
+    /// This is a convenience shorthand for
+    /// `EventBus::builder().buffer_size(buffer).build()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::InvalidConfig`] if `buffer` is `0`.
     pub fn new(buffer: usize) -> Result<Self, EventBusError> {
         Self::builder().buffer_size(buffer).build()
     }
 
+    /// Return an [`EventBusBuilder`] for constructing a customised bus.
     pub fn builder() -> EventBusBuilder {
         EventBusBuilder::new()
     }
@@ -184,6 +276,25 @@ impl EventBus {
         false
     }
 
+    /// Register a handler for event type `E` using the bus's default failure policy.
+    ///
+    /// The dispatch mode (async vs sync) is inferred from the handler type:
+    /// - Types implementing [`EventHandler<E>`](crate::EventHandler) are dispatched
+    ///   asynchronously — `publish` spawns a task and may return before the handler
+    ///   finishes. The event type must be `Clone` because a separate clone is passed
+    ///   to each concurrent invocation.
+    /// - Types implementing [`SyncEventHandler<E>`](crate::SyncEventHandler) are
+    ///   dispatched synchronously — `publish` waits for the handler to return before
+    ///   proceeding.
+    /// - Plain `async fn(E)` closures/function pointers select async dispatch.
+    /// - Plain `fn(&E)` closures/function pointers select sync dispatch.
+    ///
+    /// Returns a [`Subscription`] handle. The listener remains active until the
+    /// subscription is explicitly unsubscribed or the bus is shut down.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn subscribe<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -198,6 +309,19 @@ impl EventBus {
         self.subscribe_internal::<E>(registered, policy, false).await
     }
 
+    /// Register a handler for event type `E` with an explicit failure policy.
+    ///
+    /// Behaves the same as [`subscribe`](Self::subscribe) but overrides the
+    /// bus-level default [`FailurePolicy`] for this listener.
+    ///
+    /// The `policy` parameter accepts either a [`FailurePolicy`] (async handlers
+    /// only — retry + dead-letter) or a [`NoRetryPolicy`] (all handlers —
+    /// dead-letter only). Passing a [`FailurePolicy`] for a sync handler is a
+    /// **compile-time error** enforced by [`IntoFailurePolicy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn subscribe_with_policy<E, H, M>(&self, handler: H, policy: impl IntoFailurePolicy<M>) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -228,6 +352,16 @@ impl EventBus {
         Ok(Subscription::new(id, self.clone()))
     }
 
+    /// Register a sync handler that receives [`DeadLetter`] events.
+    ///
+    /// Dead-letter listeners must be **synchronous** ([`SyncEventHandler<DeadLetter>`]).
+    /// The listener's own `dead_letter` flag is forced to `false` to prevent
+    /// infinite recursion (a failure in a dead-letter listener cannot produce
+    /// another dead letter).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn subscribe_dead_letters<H>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         H: SyncEventHandler<DeadLetter>,
@@ -237,6 +371,16 @@ impl EventBus {
             .await
     }
 
+    /// Register a handler that automatically unsubscribes after its first
+    /// invocation.
+    ///
+    /// Uses the bus default failure policy with `dead_letter` inherited from
+    /// that policy. For custom dead-letter behaviour use
+    /// [`subscribe_once_with_policy`](Self::subscribe_once_with_policy).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn subscribe_once<E, H, M>(&self, handler: H) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -248,6 +392,15 @@ impl EventBus {
         self.subscribe_once_with_policy(handler, policy).await
     }
 
+    /// Register a one-shot handler with an explicit [`NoRetryPolicy`].
+    ///
+    /// The handler fires at most once and then unsubscribes itself. Retries
+    /// are not supported for one-shot listeners, so only [`NoRetryPolicy`] is
+    /// accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn subscribe_once_with_policy<E, H, M>(&self, handler: H, failure_policy: NoRetryPolicy) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -257,6 +410,19 @@ impl EventBus {
         self.subscribe_internal::<E>(registered, failure_policy.into(), true).await
     }
 
+    /// Add a global async middleware that intercepts **all** event types.
+    ///
+    /// Middleware runs before any listener receives an event. If the middleware
+    /// returns [`MiddlewareDecision::Reject`](crate::MiddlewareDecision::Reject),
+    /// the event is dropped and [`EventBusError::MiddlewareRejected`] is returned
+    /// to the caller.
+    ///
+    /// Global middlewares run in registration order. Returns a [`Subscription`]
+    /// that can be used to remove the middleware via [`unsubscribe`](Self::unsubscribe).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn add_middleware<M: Middleware>(&self, middleware: M) -> Result<Subscription, EventBusError> {
         if self.inner.shutdown_called.load(Ordering::Acquire) {
             return Err(EventBusError::Stopped);
@@ -274,6 +440,14 @@ impl EventBus {
         Ok(Subscription::new(id, self.clone()))
     }
 
+    /// Add a global **sync** middleware that intercepts all event types.
+    ///
+    /// Behaves like [`add_middleware`](Self::add_middleware) but the middleware
+    /// function is synchronous and runs inline during dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn add_sync_middleware<M: SyncMiddleware>(&self, middleware: M) -> Result<Subscription, EventBusError> {
         if self.inner.shutdown_called.load(Ordering::Acquire) {
             return Err(EventBusError::Stopped);
@@ -290,6 +464,17 @@ impl EventBus {
         Ok(Subscription::new(id, self.clone()))
     }
 
+    /// Add an async middleware scoped to a single event type `E`.
+    ///
+    /// Unlike [`add_middleware`](Self::add_middleware), typed middleware only
+    /// intercepts events of type `E`. Multiple typed middlewares for the same
+    /// type run in registration order.
+    ///
+    /// Returns a [`Subscription`] that can be used to remove the middleware.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn add_typed_middleware<E, M>(&self, middleware: M) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -319,6 +504,16 @@ impl EventBus {
         Ok(Subscription::new(slot.id, self.clone()))
     }
 
+    /// Add a **sync** middleware scoped to a single event type `E`.
+    ///
+    /// Behaves like [`add_typed_middleware`](Self::add_typed_middleware) but the
+    /// middleware function is synchronous and runs inline during dispatch.
+    ///
+    /// Returns a [`Subscription`] that can be used to remove the middleware.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn add_typed_sync_middleware<E, M>(&self, middleware: M) -> Result<Subscription, EventBusError>
     where
         E: Event,
@@ -365,6 +560,24 @@ impl EventBus {
         Ok(())
     }
 
+    /// Publish an event to all registered listeners.
+    ///
+    /// Dispatch behaviour depends on handler type:
+    /// - **Sync handlers** run inline; `publish` waits for each one to return.
+    /// - **Async handlers** are spawned as separate tasks; `publish` returns
+    ///   once all tasks have been *spawned*, not necessarily *completed*.
+    ///
+    /// If the internal channel buffer is full this method waits asynchronously
+    /// until capacity is available. Use [`try_publish`](Self::try_publish) for
+    /// a non-blocking alternative.
+    ///
+    /// Events with no registered listeners (and no global middleware) are
+    /// silently dropped without allocating.
+    ///
+    /// # Errors
+    ///
+    /// - [`EventBusError::Stopped`] — the bus has been shut down.
+    /// - [`EventBusError::MiddlewareRejected`] — a middleware rejected the event.
     pub async fn publish<E>(&self, event: E) -> Result<(), EventBusError>
     where
         E: Event + Clone,
@@ -384,6 +597,21 @@ impl EventBus {
             .await
     }
 
+    /// Attempt to publish an event without waiting for buffer capacity.
+    ///
+    /// If there is room in the internal channel the event is enqueued and
+    /// dispatched in a background task; otherwise
+    /// [`EventBusError::ChannelFull`] is returned immediately.
+    ///
+    /// Because dispatch happens in a background task, errors from individual
+    /// listeners are logged via `tracing` but are **not** propagated to the
+    /// caller. Use [`publish`](Self::publish) if you need to observe per-listener
+    /// errors or middleware rejections synchronously.
+    ///
+    /// # Errors
+    ///
+    /// - [`EventBusError::Stopped`] — the bus has been shut down.
+    /// - [`EventBusError::ChannelFull`] — no buffer space is available.
     pub fn try_publish<E>(&self, event: E) -> Result<(), EventBusError>
     where
         E: Event + Clone,
@@ -414,6 +642,19 @@ impl EventBus {
         Ok(())
     }
 
+    /// Explicitly remove a listener or middleware by its [`SubscriptionId`].
+    ///
+    /// Returns `Ok(true)` if the subscription was found and removed, `Ok(false)`
+    /// if it was already absent.
+    ///
+    /// Prefer using the [`Subscription`] handle returned by the `subscribe_*`
+    /// and `add_*middleware*` methods — calling
+    /// [`Subscription::unsubscribe`](crate::Subscription::unsubscribe) is
+    /// equivalent and does not require storing the id separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn unsubscribe(&self, subscription_id: SubscriptionId) -> Result<bool, EventBusError> {
         if self.inner.shutdown_called.load(Ordering::Acquire) {
             return Err(EventBusError::Stopped);
@@ -426,6 +667,25 @@ impl EventBus {
         Ok(removed)
     }
 
+    /// Gracefully shut down the bus.
+    ///
+    /// Shutdown proceeds in the following order:
+    /// 1. The bus is marked as stopped; subsequent publish/subscribe calls
+    ///    return [`EventBusError::Stopped`].
+    /// 2. The internal publish-permit semaphore is closed so no new dispatches
+    ///    can begin.
+    /// 3. In-flight async handler tasks are awaited. If a
+    ///    [`shutdown_timeout`](EventBusBuilder::shutdown_timeout) was configured
+    ///    and the deadline passes, remaining tasks are aborted.
+    /// 4. Any pending failure/dead-letter notifications are flushed before the
+    ///    internal control loop terminates.
+    ///
+    /// Calling `shutdown` more than once is a no-op (returns `Ok(())`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::ShutdownTimeout`] if the configured
+    /// `shutdown_timeout` elapsed before all async tasks completed.
     pub async fn shutdown(&self) -> Result<(), EventBusError> {
         if self
             .inner
@@ -453,6 +713,11 @@ impl EventBus {
         if timed_out { Err(EventBusError::ShutdownTimeout) } else { Ok(()) }
     }
 
+    /// Return `true` if the bus is running and its internal control loop is
+    /// alive.
+    ///
+    /// Returns `false` after [`shutdown`](Self::shutdown) has been called, or
+    /// if the control loop has unexpectedly stopped.
     pub async fn is_healthy(&self) -> bool {
         if self.inner.shutdown_called.load(Ordering::Acquire) {
             return false;
@@ -464,6 +729,16 @@ impl EventBus {
         }
     }
 
+    /// Return a point-in-time snapshot of the bus internal state as
+    /// [`BusStats`].
+    ///
+    /// Useful for observability, health checks, and debugging. The snapshot is
+    /// computed under a brief registry lock and reflects the state at the
+    /// moment of the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
     pub async fn stats(&self) -> Result<BusStats, EventBusError> {
         if self.inner.shutdown_called.load(Ordering::Acquire) {
             return Err(EventBusError::Stopped);

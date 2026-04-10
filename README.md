@@ -26,7 +26,7 @@ JAEB provides:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.1" }
+jaeb = { version = "0.3.2" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -34,7 +34,7 @@ To enable metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.1", features = ["metrics"] }
+jaeb = { version = "0.3.2", features = ["metrics"] }
 ```
 
 ## Quick Start

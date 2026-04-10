@@ -4,10 +4,20 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+/// Unique identifier for a listener or middleware registration.
+///
+/// Assigned by the bus at subscription time and remains stable for the
+/// lifetime of the registration. Obtain it from
+/// [`Subscription::id`](crate::Subscription::id) or
+/// [`SubscriptionGuard::id`](crate::SubscriptionGuard::id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SubscriptionId(pub(crate) u64);
 
 impl SubscriptionId {
+    /// Return the raw numeric value of the identifier.
+    ///
+    /// Useful for logging and tracing; do not rely on the magnitude or
+    /// sequence of values.
     pub const fn as_u64(self) -> u64 {
         self.0
     }
@@ -105,8 +115,18 @@ impl RetryStrategy {
 /// `retry_strategy` set with `max_retries: 0`) are harmless but have no effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FailurePolicy {
+    /// Number of additional attempts after the first failure (0 = no retries).
+    ///
+    /// Only honoured for async handlers. Sync handlers always behave as if
+    /// this is `0`.
     pub max_retries: usize,
+    /// Optional back-off strategy between retry attempts.
+    ///
+    /// `None` means retry immediately. Ignored when `max_retries` is `0`.
     pub retry_strategy: Option<RetryStrategy>,
+    /// Emit a [`DeadLetter`] event after all attempts are exhausted.
+    ///
+    /// Automatically forced to `false` for dead-letter listeners.
     pub dead_letter: bool,
 }
 
@@ -121,6 +141,9 @@ impl Default for FailurePolicy {
 }
 
 impl FailurePolicy {
+    /// Set the maximum number of retries (builder-style).
+    ///
+    /// `0` disables retries. Only applicable to async handlers.
     pub const fn with_max_retries(mut self, max_retries: usize) -> Self {
         self.max_retries = max_retries;
         self
@@ -132,6 +155,7 @@ impl FailurePolicy {
         self
     }
 
+    /// Enable or disable dead-letter emission for this policy (builder-style).
     pub const fn with_dead_letter(mut self, dead_letter: bool) -> Self {
         self.dead_letter = dead_letter;
         self
@@ -149,6 +173,9 @@ impl FailurePolicy {
 /// retry support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoRetryPolicy {
+    /// Emit a [`DeadLetter`] event on failure.
+    ///
+    /// Automatically forced to `false` for dead-letter listeners.
     pub dead_letter: bool,
 }
 
@@ -159,6 +186,7 @@ impl Default for NoRetryPolicy {
 }
 
 impl NoRetryPolicy {
+    /// Enable or disable dead-letter emission for this policy (builder-style).
     pub const fn with_dead_letter(mut self, dead_letter: bool) -> Self {
         self.dead_letter = dead_letter;
         self
@@ -271,6 +299,20 @@ pub struct DeadLetter {
     pub listener_name: Option<&'static str>,
 }
 
+/// Marker trait for all publishable event types.
+///
+/// Any type that is `Send + Sync + 'static` automatically implements `Event`
+/// via a blanket implementation, so no manual implementation is required.
+/// Async handlers additionally require `E: Clone`.
+///
+/// # Examples
+///
+/// ```
+/// // No derive or impl needed — the blanket impl does it automatically.
+/// #[derive(Clone)]
+/// struct OrderPlaced { pub order_id: u64 }
+/// // OrderPlaced: Event is satisfied automatically.
+/// ```
 pub trait Event: Send + Sync + 'static {}
 impl<T: Send + Sync + 'static> Event for T {}
 
