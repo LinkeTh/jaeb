@@ -1,0 +1,16 @@
+[package]
+name = "jaeb-visualizer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "jaeb-visualizer"
+path = "src/main.rs"
+
+[dependencies]
+jaeb = { path = "../.." }
+ratatui = "0.30"
+crossterm = "0.29"
+tokio = { version = "1", features = ["full"] }
+rand = "0.9"

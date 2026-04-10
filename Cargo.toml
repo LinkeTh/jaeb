@@ -32,6 +32,7 @@ members = [
     "examples/graceful-shutdown",
     "examples/concurrency-limit",
     "examples/introspection",
+    "examples/jaeb-visualizer",
     "summer-jaeb-macros",
     "summer-jaeb",
 ]
