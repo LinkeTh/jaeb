@@ -43,7 +43,7 @@ members = [
 [dependencies]
 arc-swap = "1.7"
 inventory = { version = "0.3", optional = true }
-jaeb-macros = { path = "jaeb-macros", optional = true }
+jaeb-macros = { version = "1.0", path = "jaeb-macros", optional = true }
 metrics = { version = "0.24", optional = true }
 tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 tracing = { version = "0.1", features = ["std", "log"] }
