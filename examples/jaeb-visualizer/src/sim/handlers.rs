@@ -217,7 +217,7 @@ impl jaeb::SyncEventHandler<jaeb::DeadLetter> for DeadLetterCollector {
             .unwrap_or(0);
 
         let _ = self.tx.send(SimEvent::DeadLetterReceived {
-            listener: dl.listener_name.unwrap_or("unknown").to_string(),
+            listener: dl.handler_name.unwrap_or("unknown").to_string(),
             event_type,
             seq,
             error: dl.error.clone(),

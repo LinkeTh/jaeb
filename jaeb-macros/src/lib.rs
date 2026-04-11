@@ -202,7 +202,7 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
         ));
     }
 
-    let listener_name: Option<&str> = match &attrs.name {
+    let handler_name: Option<&str> = match &attrs.name {
         Some(n) if n.is_empty() => None,
         Some(n) => Some(n.as_str()),
         None => Some(fn_name_str.as_str()),
@@ -210,9 +210,9 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
 
     let handler_ident = handler_struct_ident(fn_name);
     let handler_impl = if is_async {
-        gen_async_handler_impl(&handler_ident, event_ty, fn_name, listener_name)
+        gen_async_handler_impl(&handler_ident, event_ty, fn_name, handler_name)
     } else {
-        gen_sync_handler_impl(&handler_ident, event_ty, fn_name, listener_name)
+        gen_sync_handler_impl(&handler_ident, event_ty, fn_name, handler_name)
     };
     let register_impl = gen_register_impl(&handler_ident, event_ty, &attrs, is_dead_letter, is_async);
     let registrar_impl = gen_registrar_impl(&handler_ident);

@@ -108,7 +108,7 @@ struct DeadLetterLogger;
 impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
     fn handle(&self, dl: &DeadLetter) -> HandlerResult {
         info!(
-            "dead-letter: event={} listener={} attempts={} error={}",
+            "dead-letter: event={} subscription={} attempts={} error={}",
             dl.event_name, dl.subscription_id, dl.attempts, dl.error
         );
         Ok(())

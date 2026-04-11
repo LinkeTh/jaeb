@@ -96,7 +96,7 @@ async fn named_sync_handler_appears_in_dead_letter() {
 
     let guard = letters.lock().unwrap();
     assert_eq!(guard.len(), 1);
-    assert_eq!(guard[0].listener_name, Some("audit-logger"));
+    assert_eq!(guard[0].handler_name, Some("audit-logger"));
 }
 
 #[tokio::test]
@@ -121,7 +121,7 @@ async fn named_async_handler_appears_in_dead_letter() {
 
     let guard = letters.lock().unwrap();
     assert_eq!(guard.len(), 1);
-    assert_eq!(guard[0].listener_name, Some("async-worker"));
+    assert_eq!(guard[0].handler_name, Some("async-worker"));
 }
 
 #[tokio::test]
@@ -148,7 +148,7 @@ async fn unnamed_handler_defaults_to_none() {
 
     let guard = letters.lock().unwrap();
     assert_eq!(guard.len(), 1);
-    assert_eq!(guard[0].listener_name, None);
+    assert_eq!(guard[0].handler_name, None);
 }
 
 // ── Subscription / SubscriptionGuard name query tests ───────────────

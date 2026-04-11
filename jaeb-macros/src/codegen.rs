@@ -10,8 +10,8 @@ pub(crate) fn handler_struct_ident(fn_name: &Ident) -> Ident {
     format_ident!("{}Handler", to_pascal_case(&fn_name.to_string()))
 }
 
-pub(crate) fn gen_async_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, listener_name: Option<&str>) -> TokenStream2 {
-    let name_method = gen_name_method(listener_name);
+pub(crate) fn gen_async_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, handler_name: Option<&str>) -> TokenStream2 {
+    let name_method = gen_name_method(handler_name);
 
     quote! {
         impl ::jaeb::EventHandler<#event_ty> for #handler_ident {
@@ -24,8 +24,8 @@ pub(crate) fn gen_async_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_
     }
 }
 
-pub(crate) fn gen_sync_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, listener_name: Option<&str>) -> TokenStream2 {
-    let name_method = gen_name_method(listener_name);
+pub(crate) fn gen_sync_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, handler_name: Option<&str>) -> TokenStream2 {
+    let name_method = gen_name_method(handler_name);
 
     quote! {
         impl ::jaeb::SyncEventHandler<#event_ty> for #handler_ident {
@@ -91,8 +91,8 @@ pub(crate) fn gen_inventory_submit(handler_ident: &Ident) -> TokenStream2 {
     }
 }
 
-fn gen_name_method(listener_name: Option<&str>) -> TokenStream2 {
-    match listener_name {
+fn gen_name_method(handler_name: Option<&str>) -> TokenStream2 {
+    match handler_name {
         Some(n) => quote! {
             fn name(&self) -> Option<&'static str> {
                 Some(#n)

@@ -336,8 +336,16 @@ pub struct DeadLetter {
     pub event: Arc<dyn Any + Send + Sync>,
     /// When the terminal failure occurred.
     pub failed_at: SystemTime,
-    /// Human-readable name of the listener that failed, if provided.
-    pub listener_name: Option<&'static str>,
+    /// Human-readable name of the handler that failed, if provided.
+    pub handler_name: Option<&'static str>,
+}
+
+impl DeadLetter {
+    /// Deprecated accessor for `handler_name`.
+    #[deprecated(since = "0.3.7", note = "renamed to handler_name")]
+    pub fn listener_name(&self) -> Option<&'static str> {
+        self.handler_name
+    }
 }
 
 /// Marker trait for all publishable event types.
@@ -357,15 +365,19 @@ pub struct DeadLetter {
 pub trait Event: Send + Sync + 'static {}
 impl<T: Send + Sync + 'static> Event for T {}
 
-/// Information about a single registered listener, as reported by
+/// Information about a single registered handler, as reported by
 /// [`BusStats`].
 #[derive(Debug, Clone)]
-pub struct ListenerInfo {
+pub struct HandlerInfo {
     /// The unique subscription identifier.
     pub subscription_id: SubscriptionId,
     /// Human-readable name, if the handler provides one.
     pub name: Option<&'static str>,
 }
+
+#[allow(dead_code)]
+#[deprecated(since = "0.3.7", note = "renamed to HandlerInfo")]
+pub type ListenerInfo = HandlerInfo;
 
 /// A point-in-time snapshot of the event bus internal state.
 ///
@@ -375,7 +387,7 @@ pub struct BusStats {
     /// Total number of active subscriptions across all event types.
     pub total_subscriptions: usize,
     /// Per-event-type listener details, keyed by the event type name.
-    pub subscriptions_by_event: HashMap<&'static str, Vec<ListenerInfo>>,
+    pub subscriptions_by_event: HashMap<&'static str, Vec<HandlerInfo>>,
     /// The type names of all event types that currently have at least one
     /// registered listener.
     pub registered_event_types: Vec<&'static str>,

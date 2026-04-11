@@ -33,8 +33,8 @@ struct DeadLetterSink;
 impl SyncEventHandler<DeadLetter> for DeadLetterSink {
     fn handle(&self, dl: &DeadLetter) -> HandlerResult {
         println!(
-            "dead letter: event={}, listener={:?}, attempts={}, error={}",
-            dl.event_name, dl.listener_name, dl.attempts, dl.error
+            "dead letter: event={}, handler={:?}, attempts={}, error={}",
+            dl.event_name, dl.handler_name, dl.attempts, dl.error
         );
         // Recover the original payload via downcast.
         if let Some(payment) = dl.event.downcast_ref::<Payment>() {

@@ -17,8 +17,8 @@ async fn process_payment(event: &Payment) -> HandlerResult {
 #[handler]
 fn log_dead_letter(event: &DeadLetter) -> HandlerResult {
     println!(
-        "dead-letter: event={}, listener={:?}, attempts={}, error={}",
-        event.event_name, event.listener_name, event.attempts, event.error
+        "dead-letter: event={}, handler={:?}, attempts={}, error={}",
+        event.event_name, event.handler_name, event.attempts, event.error
     );
     Ok(())
 }

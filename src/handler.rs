@@ -44,9 +44,9 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
 
     /// Return an optional human-readable name for this listener.
     ///
-    /// The name appears in [`ListenerInfo`](crate::ListenerInfo) (reported by
+    /// The name appears in [`HandlerInfo`](crate::HandlerInfo) (reported by
     /// [`EventBus::stats`](crate::EventBus::stats)) and in
-    /// [`DeadLetter::listener_name`](crate::DeadLetter::listener_name).
+    /// [`DeadLetter::handler_name`](crate::DeadLetter::handler_name).
     ///
     /// Defaults to `None`; the standalone `#[handler]` macro (feature
     /// `macros`) sets this automatically from the function name.
