@@ -650,7 +650,7 @@ fn bench_contention_4_publishers(c: &mut Criterion) {
     // Workaround attempts (yield_now after every emit, per-iteration
     // timeouts) reduce the probability but do not eliminate it — the
     // standalone benchmark in `benches/evno_contention.rs` still triggers
-    // timeouts ~2% of samples. See BENCHMARK.md for the full analysis.
+    // timeouts ~2% of samples.
 
     group.bench_function("eventador_publish", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {

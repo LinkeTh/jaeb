@@ -283,7 +283,7 @@ async fn control_loop(inner: std::sync::Weak<Inner>, mut notify_rx: mpsc::Unboun
                     let snapshot = bus.inner.snapshot.load_full();
                     let slot = snapshot.by_type.get(&TypeId::of::<DeadLetter>());
                     let _ = bus
-                        .publish_erased(&snapshot, slot, Arc::new(dead_letter), dead_letter_type, &dispatch_ctx)
+                        .publish_erased(snapshot.as_ref(), slot, Arc::new(dead_letter), dead_letter_type, &dispatch_ctx)
                         .await;
                 }
             }

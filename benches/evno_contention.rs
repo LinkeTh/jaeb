@@ -2,8 +2,7 @@
 ///
 /// This exists separately from `comparison.rs` so we can iterate quickly without
 /// running the full comparison suite. The benchmark includes a per-iteration
-/// timeout as a safety net against the gyre publisher starvation bug (see
-/// `BENCHMARK.md` for the root cause analysis).
+/// timeout as a safety net against the gyre publisher starvation bug.
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};

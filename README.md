@@ -162,15 +162,6 @@ Backward-compatible aliases remain available (deprecated):
 - `NoRetryPolicy` -> `SyncSubscriptionPolicy`
 - `IntoFailurePolicy` -> `IntoSubscriptionPolicy`
 
-## Performance
-
-See [`BENCHMARK.md`](BENCHMARK.md) for:
-
-- cross-library benchmark setup (`jaeb` vs `eventbuzz` vs `evno`)
-- reproducible benchmark command
-- measured results and caveats
-- documented `evno` contention benchmark hang under this environment
-
 ## Examples
 
 - `examples/basic-pubsub` - minimal publish/subscribe

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reduced publish-path snapshot overhead by switching dispatch reads from
+  `ArcSwap::load_full()` to `ArcSwap::load()` and threading borrowed snapshot
+  references through dispatch helpers.
 - Optimized async fanout throughput by batching multi-listener async dispatch
   into one tracked task using `FuturesUnordered`, while preserving
   per-listener retry, dead-letter, and timeout semantics.
@@ -20,17 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocation when dispatch does not require async fanout.
 - Added snapshot-level async middleware flags and slot reuse in publish hot
   path to reduce lookup and branch overhead.
-- Expanded `comparison` benchmark coverage with fanout levels 25/50 and a
-  mixed multi-event-type fanout scenario.
-
-### Performance
-
-- `comparison_async_single_listener` (`jaeb_publish`): ~`1.17 us` -> ~`1.19 us`
-  (no material change)
-- `comparison_async_fanout_10` (`jaeb_publish`): ~`8.75 us` -> ~`4.65 us`
-  (~47% faster)
-- `comparison_contention_4_publishers` (`jaeb_publish`): ~`0.33 us` -> ~`0.33 us`
-  (no material change)
 
 ## [0.3.5] - 2026-04-11
 
@@ -78,8 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tokio::sync::Mutex` to `std::sync::Mutex` and making task tracking updates
   synchronous.
 - Consolidated panic-message extraction for sync and async handler paths.
-- Updated `BENCHMARK.md` with new cross-library measurements after the
-  dispatch-path optimization pass.
 
 ### Performance
 
@@ -104,7 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Priority integration tests in `tests/priority.rs`.
 - Cross-library criterion benchmark harness in `benches/comparison.rs` for
   `jaeb`, `eventbuzz`, and `evno` (where stable).
-- `BENCHMARK.md` with benchmark methodology, latest measurements, and caveats.
 - New `examples/axum-integration` showcasing REST endpoints that publish domain
   events and consume dead letters.
 
@@ -130,12 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `default_subscription_policy(...)`).
 - `TestBusBuilder::default_failure_policy(...)` (use
   `default_subscription_policy(...)`).
-
-### Notes
-
-- `evno` contention benchmark is intentionally omitted from the active
-  criterion group due to reproducible instability (high CPU/non-terminating
-  behavior) in this environment; details are documented in `BENCHMARK.md`.
 
 ## [0.3.2] - 2026-04-10
 

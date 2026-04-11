@@ -342,7 +342,7 @@ pub struct DeadLetter {
 
 impl DeadLetter {
     /// Deprecated accessor for `handler_name`.
-    #[deprecated(since = "0.3.7", note = "renamed to handler_name")]
+    #[deprecated(since = "0.3.6", note = "renamed to handler_name")]
     pub fn listener_name(&self) -> Option<&'static str> {
         self.handler_name
     }
@@ -376,7 +376,7 @@ pub struct HandlerInfo {
 }
 
 #[allow(dead_code)]
-#[deprecated(since = "0.3.7", note = "renamed to HandlerInfo")]
+#[deprecated(since = "0.3.6", note = "renamed to HandlerInfo")]
 pub type ListenerInfo = HandlerInfo;
 
 /// A point-in-time snapshot of the event bus internal state.

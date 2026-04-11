@@ -11,7 +11,7 @@ use super::EventBus;
 impl EventBus {
     pub(super) async fn publish_erased(
         &self,
-        snapshot: &Arc<RegistrySnapshot>,
+        snapshot: &RegistrySnapshot,
         slot: Option<&Arc<TypeSlot>>,
         event: Arc<dyn Any + Send + Sync>,
         event_name: &'static str,
@@ -32,7 +32,7 @@ impl EventBus {
 
     async fn publish_sync_only<E>(
         &self,
-        snapshot: &Arc<RegistrySnapshot>,
+        snapshot: &RegistrySnapshot,
         slot: Option<&Arc<TypeSlot>>,
         event: E,
         event_name: &'static str,
@@ -79,7 +79,7 @@ impl EventBus {
             return Err(EventBusError::Stopped);
         }
 
-        let snapshot = self.inner.snapshot.load_full();
+        let snapshot = self.inner.snapshot.load();
         let event_type = TypeId::of::<E>();
         let slot = snapshot.by_type.get(&event_type);
         if slot.is_none() && snapshot.global_middlewares.is_empty() {
@@ -91,10 +91,10 @@ impl EventBus {
             !snapshot.global_has_async_middleware && slot.is_none_or(|slot| slot.async_listeners.is_empty() && !slot.has_async_middleware);
 
         if sync_only {
-            self.publish_sync_only(&snapshot, slot, event, std::any::type_name::<E>()).await
+            self.publish_sync_only(snapshot.as_ref(), slot, event, std::any::type_name::<E>()).await
         } else {
             let dispatch_ctx = self.inner.full_dispatch_context();
-            self.publish_erased(&snapshot, slot, Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
+            self.publish_erased(snapshot.as_ref(), slot, Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
                 .await
         }
     }
@@ -141,14 +141,14 @@ impl EventBus {
             let _keep = permit;
             let slot = slot.as_ref();
             if sync_only {
-                if let Err(_err) = bus.publish_sync_only(&snapshot, slot, event, std::any::type_name::<E>()).await {
+                if let Err(_err) = bus.publish_sync_only(snapshot.as_ref(), slot, event, std::any::type_name::<E>()).await {
                     #[cfg(feature = "trace")]
                     tracing::error!(error = %_err, "event_bus.try_publish.dispatch_failed");
                 }
             } else {
                 let dispatch_ctx = bus.inner.full_dispatch_context();
                 if let Err(_err) = bus
-                    .publish_erased(&snapshot, slot, Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
+                    .publish_erased(snapshot.as_ref(), slot, Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
                     .await
                 {
                     #[cfg(feature = "trace")]
