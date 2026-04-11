@@ -1,25 +1,23 @@
-# JAEB - Just Another Event Bus
+# ⚡ JAEB — Just Another Event Bus
 
 [![crates.io](https://img.shields.io/crates/v/jaeb.svg)](https://crates.io/crates/jaeb)
 [![docs.rs](https://docs.rs/jaeb/badge.svg)](https://docs.rs/jaeb)
 [![CI](https://github.com/LinkeTh/jaeb/actions/workflows/ci.yml/badge.svg)](https://github.com/LinkeTh/jaeb/actions/workflows/ci.yml)
 [![MSRV](https://img.shields.io/badge/MSRV-1.94-blue.svg)](https://github.com/LinkeTh/jaeb)
 [![license](https://img.shields.io/crates/l/jaeb.svg)](https://github.com/LinkeTh/jaeb/blob/main/LICENSE)
+[![downloads](https://img.shields.io/crates/d/jaeb.svg)](https://crates.io/crates/jaeb)
 
-In-process, snapshot-driven event bus for Tokio applications.
+> A lightweight, in-process event bus for Tokio — snapshot-driven dispatch with retry, dead-letter, and middleware support.
 
-JAEB focuses on correctness and observability for monolith-style event-driven Rust services:
+### ✨ Highlights
 
-- sync + async handlers behind one `subscribe` API
-- compile-time policy validation (retry policies cannot be used with sync handlers)
-- listener priority with FIFO stability for equal priorities
-- typed and global middleware
-- dead-letter stream with recursion guard
-- graceful shutdown with in-flight async drain
-- optional metrics (`metrics` feature) and built-in tracing
-- optional standalone macros (`macros` feature): `#[handler]` and `register_handlers!`
-- [summer-rs](https://crates.io/crates/summer) integration via [summer-jaeb](./summer-jaeb) and `#[event_listener]` macro
-  support [summer-jaeb-macros](./summer-jaeb-macros)
+- 🔀 **Sync + Async** handlers behind one `subscribe` API
+- 🔁 **Retry & Dead Letters** with per-listener policies
+- 🧩 **Typed & Global Middleware** pipeline
+- 📊 **Optional Metrics** (Prometheus-compatible via `metrics` crate)
+- 🔍 **Built-in Tracing** support (`trace` feature)
+- 🛑 **Graceful Shutdown** with async drain + timeout
+- 🏗️ **summer-rs Integration** for plugin-based auto-registration
 
 ## When to use JAEB
 
@@ -30,13 +28,14 @@ Use JAEB when you need:
 - retry/dead-letter behavior per listener
 - deterministic sync-lane ordering with priority hints
 
-JAEB is not a message broker. It does **not** provide persistence, replay, or cross-process delivery.
+JAEB is **not** a message broker — it does not provide persistence, replay, or cross-process delivery.
+If you need durable messaging, consider pairing JAEB with an external queue for outbox-style patterns.
 
 ## Installation
 
 ```toml
 [dependencies]
-jaeb = "0.3.6"
+jaeb = "0.3.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -44,19 +43,21 @@ With metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.6", features = ["metrics"] }
+jaeb = { version = "0.3.7", features = ["metrics"] }
 ```
 
 With standalone handler macros:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.6", features = ["macros"] }
+jaeb = { version = "0.3.7", features = ["macros"] }
 ```
 
-## Quick Start
+## ⚡ Quick Start
 
-```rust
+Full example with sync/async handlers, retry policies, and dead-letter handling:
+
+```rust,ignore
 use std::time::Duration;
 
 use jaeb::{
@@ -127,13 +128,13 @@ async fn main() -> Result<(), EventBusError> {
 
 JAEB uses an immutable snapshot registry (`ArcSwap`) for hot-path reads:
 
-```text
-publish(event)
-  -> load snapshot (lock-free)
-  -> global middleware
-  -> typed middleware
-  -> async lane (spawned)
-  -> sync lane (serialized FIFO, priority-ordered)
+```mermaid
+graph LR
+    P[publish] --> S[Load Snapshot]
+    S --> GM[Global Middleware]
+    GM --> TM[Typed Middleware]
+    TM --> AL[Async Lane - spawned]
+    TM --> SL[Sync Lane - serialized FIFO]
 ```
 
 - async and sync listeners are separated per event type
@@ -156,11 +157,14 @@ Core policy types:
 - `SyncSubscriptionPolicy { priority, dead_letter }`
 - `IntoSubscriptionPolicy<M>` sealed trait for compile-time mode/policy safety
 
-Backward-compatible aliases remain available (deprecated):
+<details>
+<summary>Deprecated aliases (will be removed in the next major version)</summary>
 
 - `FailurePolicy` -> `SubscriptionPolicy`
 - `NoRetryPolicy` -> `SyncSubscriptionPolicy`
 - `IntoFailurePolicy` -> `IntoSubscriptionPolicy`
+
+</details>
 
 ## Examples
 
@@ -174,6 +178,10 @@ Backward-compatible aliases remain available (deprecated):
 - `examples/concurrency-limit` - max concurrent async handlers
 - `examples/graceful-shutdown` - controlled shutdown and draining
 - `examples/introspection` - `EventBus::stats()` output
+- `examples/fire-once` - one-shot / fire-once handler
+- `examples/panic-safety` - panic handling behavior in handlers
+- `examples/subscription-lifecycle` - subscribe/unsubscribe lifecycle
+- `examples/jaeb-visualizer` - TUI visualizer for event bus activity
 - `examples/axum-integration` - axum REST app publishing domain events
 - `examples/macro-handlers` - standalone `#[handler]` + `register_handlers!`
 - `examples/macro-handlers-auto` - standalone `#[handler]` auto-discovery with `register_handlers!(bus)`
@@ -192,6 +200,7 @@ cargo run -p axum-integration
 |--------------|---------|-------------------------------------------------------------|
 | `macros`     | off     | Re-exports `#[handler]` and `register_handlers!`            |
 | `metrics`    | off     | Enables Prometheus-compatible instrumentation via `metrics` |
+| `trace`      | off     | Enables `tracing` spans and events for dispatch diagnostics |
 | `test-utils` | off     | Exposes `TestBus` helpers for integration tests             |
 
 When `metrics` is enabled, JAEB records:
@@ -215,6 +224,65 @@ Macro support includes:
 - `priority`
 - `name`
 
+```rust,ignore
+use jaeb::{DeadLetter, EventBus, HandlerResult};
+use summer::{App, AppBuilder, async_trait};
+use summer::extractor::Component;
+use summer::plugin::{MutableComponentRegistry, Plugin};
+use summer_jaeb::{SummerJaeb, event_listener};
+
+#[derive(Clone, Debug)]
+struct OrderPlacedEvent {
+    order_id: u32,
+}
+
+/// A dummy database pool registered as a summer Component via a plugin.
+#[derive(Clone, Debug)]
+struct DbPool;
+
+impl DbPool {
+    fn log_order(&self, order_id: u32) {
+        println!("DbPool: persisted order {order_id}");
+    }
+}
+
+struct DbPoolPlugin;
+
+#[async_trait]
+impl Plugin for DbPoolPlugin {
+    async fn build(&self, app: &mut AppBuilder) {
+        app.add_component(DbPool);
+    }
+    fn name(&self) -> &str { "DbPoolPlugin" }
+}
+
+/// Async listener — `DbPool` is injected automatically from summer's DI container.
+#[event_listener(retries = 2, retry_strategy = "fixed", retry_base_ms = 500, dead_letter = true)]
+async fn on_order_placed(event: &OrderPlacedEvent, Component(db): Component<DbPool>) -> HandlerResult {
+    db.log_order(event.order_id);
+    Ok(())
+}
+
+/// Sync dead-letter listener — auto-detected from the `DeadLetter` event type.
+#[event_listener(name = "dead_letter")]
+fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+    eprintln!("dead letter: event={}, attempts={}", event.event_name, event.attempts);
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    App::new()
+        .add_plugin(DbPoolPlugin)
+        .add_plugin(SummerJaeb::new().with_dependency("DbPoolPlugin"))
+        .run()
+        .await;
+}
+```
+
+All `#[event_listener]` functions are auto-discovered via `inventory` and subscribed
+during plugin startup — no manual registration needed.
+
 ## Standalone Macros
 
 Enable the `macros` feature to use `#[handler]` and `register_handlers!` without
@@ -230,6 +298,40 @@ async `register(&EventBus)` method. Policy attributes are supported:
 - `dead_letter`
 - `priority`
 - `name`
+
+```rust,ignore
+use std::time::Duration;
+use jaeb::{DeadLetter, EventBus, HandlerResult, handler, register_handlers};
+
+#[derive(Clone, Debug)]
+struct Payment {
+    id: u32,
+}
+
+#[handler(retries = 2, retry_strategy = "fixed", retry_base_ms = 50, dead_letter = true, name = "payment-processor")]
+async fn process_payment(event: &Payment) -> HandlerResult {
+    println!("processing payment {}", event.id);
+    Ok(())
+}
+
+#[handler]
+fn log_dead_letter(event: &DeadLetter) -> HandlerResult {
+    println!(
+        "dead-letter: event={}, handler={:?}, attempts={}, error={}",
+        event.event_name, event.handler_name, event.attempts, event.error
+    );
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), jaeb::EventBusError> {
+    let bus = EventBus::new(64)?;
+    register_handlers!(bus, process_payment, log_dead_letter)?;
+    bus.publish(Payment { id: 7 }).await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    bus.shutdown().await
+}
+```
 
 ## Notes
 

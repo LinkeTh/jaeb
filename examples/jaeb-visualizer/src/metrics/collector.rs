@@ -1,52 +1,79 @@
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
+use crate::config::types::ListenerConfig;
 use crate::metrics::state::{DeadLetterEntry, FlowBlip, VisualizationState};
 use crate::sim::SimEvent;
 
 /// Drains SimEvent from the channel and updates VisualizationState.
-pub async fn run_collector(mut rx: mpsc::UnboundedReceiver<SimEvent>, state: Arc<Mutex<VisualizationState>>, event_type_names: [String; 2]) {
+pub async fn run_collector(
+    mut rx: mpsc::UnboundedReceiver<SimEvent>,
+    state: Arc<Mutex<VisualizationState>>,
+    event_type_names: Vec<String>,
+    listeners: Vec<ListenerConfig>,
+) {
     while let Some(event) = rx.recv().await {
         let mut s = state.lock().expect("viz state lock poisoned");
         match event {
-            SimEvent::Published { event_type, seq, at } => {
+            SimEvent::Published { event_type_idx, seq, at } => {
                 s.total_published += 1;
-                s.in_flight += 1;
                 s.add_flow_blip(FlowBlip {
-                    event_type,
+                    event_type_idx,
                     progress: 0.0,
                     spawned_at: at,
                     ttl_secs: 1.5,
                 });
-                let _ = (seq,); // used for flow tracking
+                let _ = seq;
             }
-            SimEvent::HandlerStarted { .. } => {}
-            SimEvent::HandlerCompleted { .. } => {
+            SimEvent::HandlerStarted {
+                listener_idx,
+                event_type_idx,
+                seq,
+                at,
+                ..
+            } => {
+                s.in_flight += 1;
+                s.on_handler_started(listener_idx, event_type_idx, seq, at);
+            }
+            SimEvent::HandlerCompleted { listener_idx, seq, .. } => {
                 s.total_handled += 1;
-                s.in_flight -= 1;
+                s.in_flight = s.in_flight.saturating_sub(1);
+                s.on_handler_completed(listener_idx, seq);
+                s.total_processed.fetch_add(1, Ordering::Relaxed);
             }
-            SimEvent::HandlerFailed { .. } => {
+            SimEvent::HandlerFailed { listener_idx, seq, .. } => {
                 s.total_failed += 1;
+                s.in_flight = s.in_flight.saturating_sub(1);
+                s.on_handler_failed(listener_idx, seq);
             }
             SimEvent::DeadLetterReceived {
                 listener,
-                event_type,
+                listener_idx,
+                event_type_idx,
                 seq,
                 error,
                 at,
             } => {
                 s.total_dead_letters += 1;
-                s.in_flight -= 1;
+                s.total_processed.fetch_add(1, Ordering::Relaxed);
                 let elapsed = s.sim_start.map(|start| at.duration_since(start).as_secs_f64()).unwrap_or(0.0);
                 let type_name = event_type_names
-                    .get(event_type as usize)
+                    .get(event_type_idx)
                     .cloned()
-                    .unwrap_or_else(|| format!("Type{}", event_type));
+                    .unwrap_or_else(|| format!("Type{event_type_idx}"));
+                let mapped_listener_idx = listener_idx.or_else(|| {
+                    listeners
+                        .iter()
+                        .enumerate()
+                        .find_map(|(idx, l)| if l.name == listener { Some(idx) } else { None })
+                });
                 s.add_dead_letter(DeadLetterEntry {
                     at,
                     elapsed_secs: elapsed,
                     listener,
+                    listener_idx: mapped_listener_idx,
                     event_type: type_name,
                     seq,
                     reason: error,
@@ -55,8 +82,14 @@ pub async fn run_collector(mut rx: mpsc::UnboundedReceiver<SimEvent>, state: Arc
             SimEvent::BackpressureHit { .. } => {
                 s.backpressure_hits += 1;
             }
+            SimEvent::PublishingStopped { total_published } => {
+                s.total_published = total_published.max(s.total_published);
+                s.publishing_stopped = true;
+            }
             SimEvent::SimulationDone => {
                 s.sim_done = true;
+                s.sim_end = Some(std::time::Instant::now());
+                s.freeze_on_done();
                 break;
             }
         }
@@ -75,10 +108,11 @@ pub async fn run_sampler(state: Arc<Mutex<VisualizationState>>, bus: jaeb::Event
             }
             s.sample_throughput();
         }
-        // Poll bus stats
         if let Ok(stats) = bus.stats().await {
             let mut s = state.lock().expect("viz state lock poisoned");
             s.bus_in_flight_async = stats.in_flight_async;
+            s.bus_publish_in_flight = stats.publish_in_flight;
+            s.bus_queue_capacity = stats.queue_capacity;
             s.bus_total_subscriptions = stats.total_subscriptions;
         }
     }

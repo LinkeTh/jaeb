@@ -5,38 +5,45 @@ use std::time::Instant;
 #[allow(dead_code)] // Fields are structural; used for Debug output and future extension
 pub enum SimEvent {
     Published {
-        event_type: u8,
+        event_type_idx: usize,
         seq: u64,
         at: Instant,
     },
     HandlerStarted {
         listener: String,
-        event_type: u8,
+        listener_idx: usize,
+        event_type_idx: usize,
         seq: u64,
         at: Instant,
     },
     HandlerCompleted {
         listener: String,
-        event_type: u8,
+        listener_idx: usize,
+        event_type_idx: usize,
         seq: u64,
         duration_ms: u64,
         at: Instant,
     },
     HandlerFailed {
         listener: String,
-        event_type: u8,
+        listener_idx: usize,
+        event_type_idx: usize,
         seq: u64,
         at: Instant,
     },
     DeadLetterReceived {
         listener: String,
-        event_type: u8,
+        listener_idx: Option<usize>,
+        event_type_idx: usize,
         seq: u64,
         error: String,
         at: Instant,
     },
     BackpressureHit {
         at: Instant,
+    },
+    PublishingStopped {
+        total_published: u64,
     },
     SimulationDone,
 }

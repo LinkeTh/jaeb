@@ -56,6 +56,8 @@ async fn stats_empty_bus() {
     assert!(stats.registered_event_types.is_empty());
     assert!(stats.subscriptions_by_event.is_empty());
     assert_eq!(stats.queue_capacity, 128);
+    assert_eq!(stats.publish_permits_available, 128);
+    assert_eq!(stats.publish_in_flight, 0);
     assert_eq!(stats.in_flight_async, 0);
     assert!(!stats.shutdown_called);
 

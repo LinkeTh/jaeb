@@ -198,7 +198,13 @@ impl MutableRegistry {
         }
     }
 
-    pub(crate) fn stats(&self, in_flight_async: usize, queue_capacity: usize, shutdown_called: bool) -> crate::types::BusStats {
+    pub(crate) fn stats(
+        &self,
+        in_flight_async: usize,
+        queue_capacity: usize,
+        publish_permits_available: usize,
+        shutdown_called: bool,
+    ) -> crate::types::BusStats {
         let mut subscriptions_by_event: HashMap<&'static str, Vec<HandlerInfo>> = HashMap::new();
         let mut total_subscriptions = 0usize;
         let mut registered_event_types = Vec::new();
@@ -223,11 +229,15 @@ impl MutableRegistry {
 
         registered_event_types.sort_unstable();
 
+        let publish_in_flight = queue_capacity.saturating_sub(publish_permits_available);
+
         crate::types::BusStats {
             total_subscriptions,
             subscriptions_by_event,
             registered_event_types,
             queue_capacity,
+            publish_permits_available,
+            publish_in_flight,
             in_flight_async,
             shutdown_called,
         }

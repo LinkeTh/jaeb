@@ -5,7 +5,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct SimConfig {
     pub bus: BusConfigForm,
-    pub event_types: [String; 2],
+    pub event_types: Vec<EventTypeConfig>,
     pub listeners: Vec<ListenerConfig>,
     pub publish: PublishConfig,
 }
@@ -14,7 +14,20 @@ impl Default for SimConfig {
     fn default() -> Self {
         Self {
             bus: BusConfigForm::default(),
-            event_types: ["OrderEvent".into(), "PaymentEvent".into()],
+            event_types: vec![
+                EventTypeConfig {
+                    name: "OrderEvent".into(),
+                    events_per_sec: 25.0,
+                    pattern: PublishPattern::Constant,
+                    burst_every_n: 10,
+                },
+                EventTypeConfig {
+                    name: "PaymentEvent".into(),
+                    events_per_sec: 25.0,
+                    pattern: PublishPattern::Constant,
+                    burst_every_n: 10,
+                },
+            ],
             listeners: vec![
                 ListenerConfig {
                     name: "order_handler".into(),
@@ -47,20 +60,39 @@ impl SimConfig {
         if self.bus.buffer_size == 0 {
             return Err("Buffer size must be > 0".into());
         }
+        if self.event_types.is_empty() {
+            return Err("At least 1 event type required".into());
+        }
+        if self.event_types.len() > 8 {
+            return Err("Maximum 8 event types".into());
+        }
+        let mut normalized = std::collections::HashSet::new();
+        for event_type in &self.event_types {
+            let trimmed = event_type.name.trim();
+            if trimmed.is_empty() {
+                return Err("Event type names cannot be empty".into());
+            }
+            if !normalized.insert(trimmed.to_ascii_lowercase()) {
+                return Err(format!("Duplicate event type name: '{trimmed}'"));
+            }
+            if event_type.events_per_sec <= 0.0 {
+                return Err(format!("Event type '{trimmed}' rate must be > 0"));
+            }
+            if matches!(event_type.pattern, PublishPattern::Burst) && event_type.burst_every_n == 0 {
+                return Err(format!("Event type '{trimmed}' burst interval must be > 0"));
+            }
+        }
         if self.listeners.is_empty() {
             return Err("At least 1 listener required".into());
         }
         if self.listeners.len() > 6 {
             return Err("Maximum 6 listeners".into());
         }
-        if self.publish.events_per_sec <= 0.0 {
-            return Err("Publish rate must be > 0".into());
-        }
         for (i, l) in self.listeners.iter().enumerate() {
             if l.name.is_empty() {
                 return Err(format!("Listener {} has no name", i + 1));
             }
-            if l.event_type_idx > 1 {
+            if l.event_type_idx as usize >= self.event_types.len() {
                 return Err(format!("Listener '{}' has invalid event type", l.name));
             }
             if l.failure_rate < 0.0 || l.failure_rate > 1.0 {
@@ -73,6 +105,52 @@ impl SimConfig {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EventTypeConfig {
+    pub name: String,
+    pub events_per_sec: f64,
+    pub pattern: PublishPattern,
+    pub burst_every_n: u64,
+}
+
+impl Default for EventTypeConfig {
+    fn default() -> Self {
+        Self {
+            name: "EventType".into(),
+            events_per_sec: 20.0,
+            pattern: PublishPattern::Constant,
+            burst_every_n: 10,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublishPattern {
+    Constant,
+    Burst,
+    Random,
+}
+
+impl PublishPattern {
+    pub fn cycle_next(&self) -> Self {
+        match self {
+            Self::Constant => Self::Burst,
+            Self::Burst => Self::Random,
+            Self::Random => Self::Constant,
+        }
+    }
+}
+
+impl fmt::Display for PublishPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Constant => write!(f, "Constant"),
+            Self::Burst => write!(f, "Burst"),
+            Self::Random => write!(f, "Random"),
+        }
     }
 }
 
@@ -191,17 +269,13 @@ impl fmt::Display for RetryStrategyChoice {
 
 #[derive(Clone, Debug)]
 pub struct PublishConfig {
-    pub events_per_sec: f64,
     pub stop_condition: StopCondition,
-    pub burst_every_n: u64,
 }
 
 impl Default for PublishConfig {
     fn default() -> Self {
         Self {
-            events_per_sec: 50.0,
             stop_condition: StopCondition::Duration(Duration::from_secs(30)),
-            burst_every_n: 0,
         }
     }
 }
@@ -229,7 +303,7 @@ impl fmt::Display for StopCondition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Duration(d) => write!(f, "{}s", d.as_secs()),
-            Self::TotalEvents(n) => write!(f, "{} events", n),
+            Self::TotalEvents(n) => write!(f, "{} processed", n),
         }
     }
 }

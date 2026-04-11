@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-04-11
+
+### Changed
+
+- Expand `BusStats` by `publish_permits_available` and `publish_in_flight`
+- Update `README.md` '
+- Refreshed `examples/jaeb-visualizer` runtime UX so simulation completion now
+  freezes elapsed/average-rate metrics and exposes in-app post-run controls:
+  `R` rerun with the same configuration and `C` return to configuration.
+- Expanded the visualizer configuration model from hardcoded two event types to
+  a dynamic event-type list with add/remove/edit interactions and listener
+  index remapping.
+- Reworked the visualizer simulation event model to a dynamic envelope event,
+  enabling runtime event-type scaling without fixed `SimEventA/B` types.
+- Replaced the single large global throughput chart with compact per-handler
+  realtime charts and per-handler flow lanes.
+- Improved visualizer telemetry readability with explicit units/legends for
+  throughput and backpressure and a more vibrant dashboard color palette.
+
 ## [0.3.6] - 2026-04-11
 
 ### Changed

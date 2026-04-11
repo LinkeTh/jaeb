@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::DefaultTerminal;
 
+use crate::config::types::SimConfig;
 use crate::metrics::VisualizationState;
 use crate::sim::runner::SimHandle;
 use crate::ui::config_screen::ConfigState;
@@ -15,6 +16,7 @@ pub enum AppPhase {
         viz: Arc<Mutex<VisualizationState>>,
         dashboard: DashboardState,
         sim_handle: SimHandle,
+        config: SimConfig,
     },
     Quit,
 }
@@ -62,34 +64,71 @@ impl App {
             {
                 // Global quit
                 if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
-                    match &mut self.phase {
+                    let mut request_quit = false;
+                    let mut request_shutdown = false;
+                    match &self.phase {
                         AppPhase::Config(state) => {
                             if !state.editing {
-                                self.phase = AppPhase::Quit;
-                                continue;
+                                request_quit = true;
                             }
                         }
                         AppPhase::Running { .. } => {
-                            self.shutdown_sim();
-                            self.phase = AppPhase::Quit;
-                            continue;
+                            request_shutdown = true;
+                            request_quit = true;
                         }
                         AppPhase::Quit => break,
                     }
+                    if request_shutdown {
+                        self.shutdown_sim();
+                    }
+                    if request_quit {
+                        self.phase = AppPhase::Quit;
+                        continue;
+                    }
                 }
 
+                enum PendingAction {
+                    Start,
+                    Rerun(SimConfig),
+                    Reconfigure(SimConfig),
+                }
+                let mut pending_action: Option<PendingAction> = None;
                 match &mut self.phase {
                     AppPhase::Config(state) => {
                         let should_start = state.handle_input(key);
                         if should_start {
-                            self.start_simulation();
+                            pending_action = Some(PendingAction::Start);
                         }
                     }
-                    AppPhase::Running { viz, dashboard, .. } => {
-                        let viz = viz.lock().expect("viz lock poisoned");
-                        dashboard.handle_input(key, &viz);
+                    AppPhase::Running { viz, dashboard, config, .. } => {
+                        let viz_lock = viz.lock().expect("viz lock poisoned");
+                        let is_done = viz_lock.sim_done;
+                        dashboard.handle_input(key, &viz_lock);
+                        drop(viz_lock);
+
+                        if is_done && (key.code == KeyCode::Char('r') || key.code == KeyCode::Char('R')) {
+                            pending_action = Some(PendingAction::Rerun(config.clone()));
+                        }
+                        if is_done && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C')) {
+                            pending_action = Some(PendingAction::Reconfigure(config.clone()));
+                        }
                     }
                     AppPhase::Quit => {}
+                }
+
+                if let Some(action) = pending_action {
+                    match action {
+                        PendingAction::Start => self.start_simulation(),
+                        PendingAction::Rerun(config) => {
+                            self.shutdown_sim();
+                            self.start_simulation_with_config(config);
+                        }
+                        PendingAction::Reconfigure(config) => {
+                            self.shutdown_sim();
+                            self.phase = AppPhase::Config(ConfigState::from_config(config));
+                        }
+                    }
+                    continue;
                 }
             }
 
@@ -113,7 +152,12 @@ impl App {
             _ => return,
         };
 
-        let viz = Arc::new(Mutex::new(VisualizationState::new(config.bus.buffer_size)));
+        self.start_simulation_with_config(config);
+    }
+
+    fn start_simulation_with_config(&mut self, config: SimConfig) {
+        let viz = Arc::new(Mutex::new(VisualizationState::new(config.bus.buffer_size, &config.listeners)));
+
         {
             let mut v = viz.lock().expect("viz lock poisoned");
             v.sim_start = Some(Instant::now());
@@ -125,12 +169,13 @@ impl App {
             viz,
             dashboard: DashboardState::new(),
             sim_handle,
+            config,
         };
     }
 
     fn shutdown_sim(&mut self) {
         if let AppPhase::Running { sim_handle, .. } = &mut self.phase {
-            sim_handle.request_shutdown();
+            sim_handle.stop();
         }
     }
 }

@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,9 +15,9 @@ use crate::sim::publisher::run_publish_loop;
 
 pub struct SimHandle {
     bus: EventBus,
-    _sim_task: JoinHandle<()>,
-    _collector_task: JoinHandle<()>,
-    _sampler_task: JoinHandle<()>,
+    sim_task: JoinHandle<()>,
+    collector_task: JoinHandle<()>,
+    sampler_task: JoinHandle<()>,
 }
 
 impl SimHandle {
@@ -25,6 +26,13 @@ impl SimHandle {
         tokio::spawn(async move {
             let _ = bus.shutdown().await;
         });
+    }
+
+    pub fn stop(&self) {
+        self.request_shutdown();
+        self.sim_task.abort();
+        self.collector_task.abort();
+        self.sampler_task.abort();
     }
 }
 
@@ -52,83 +60,96 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     let tx_clone = tx.clone();
     let publish_config = config.publish.clone();
     let listeners = config.listeners.clone();
+    let event_types = config.event_types.clone();
+    let processed_counter = {
+        let viz = viz.lock().expect("viz lock poisoned");
+        viz.total_processed.clone()
+    };
 
     // Spawn simulation task: registers handlers then runs publish loop
     let sim_task = tokio::spawn(async move {
+        let listener_lookup: std::collections::HashMap<String, usize> =
+            listeners.iter().enumerate().map(|(idx, cfg)| (cfg.name.clone(), idx)).collect();
+
         // Register handlers
-        for listener_cfg in &listeners {
-            let policy = build_subscription_policy(listener_cfg);
-            match (listener_cfg.event_type_idx, &listener_cfg.mode) {
-                (0, HandlerMode::Async) => {
-                    let handler = MockAsyncHandlerA {
-                        name: listener_cfg.name.clone(),
-                        processing_ms: listener_cfg.processing_ms,
-                        failure_rate: listener_cfg.failure_rate,
+        for (listener_idx, listener_cfg) in listeners.iter().cloned().enumerate() {
+            let policy = build_subscription_policy(&listener_cfg);
+            match listener_cfg.mode.clone() {
+                HandlerMode::Async => {
+                    let handler = MockAsyncHandler {
+                        listener_idx,
+                        cfg: listener_cfg,
                         tx: tx_clone.clone(),
                     };
-                    let _ = bus_clone.subscribe_with_policy::<SimEventA, _, _>(handler, policy).await;
+                    let _ = bus_clone.subscribe_with_policy::<SimEnvelopeEvent, _, _>(handler, policy).await;
                 }
-                (0, HandlerMode::Sync) => {
-                    let handler = MockSyncHandlerA {
-                        name: listener_cfg.name.clone(),
-                        processing_ms: listener_cfg.processing_ms,
-                        failure_rate: listener_cfg.failure_rate,
-                        tx: tx_clone.clone(),
-                    };
-                    let no_retry = SyncSubscriptionPolicy {
-                        priority: 0,
-                        dead_letter: listener_cfg.dead_letter,
-                    };
-                    let _ = bus_clone.subscribe_with_policy::<SimEventA, _, _>(handler, no_retry).await;
-                }
-                (1, HandlerMode::Async) => {
-                    let handler = MockAsyncHandlerB {
-                        name: listener_cfg.name.clone(),
-                        processing_ms: listener_cfg.processing_ms,
-                        failure_rate: listener_cfg.failure_rate,
-                        tx: tx_clone.clone(),
-                    };
-                    let _ = bus_clone.subscribe_with_policy::<SimEventB, _, _>(handler, policy).await;
-                }
-                (1, HandlerMode::Sync) => {
-                    let handler = MockSyncHandlerB {
-                        name: listener_cfg.name.clone(),
-                        processing_ms: listener_cfg.processing_ms,
-                        failure_rate: listener_cfg.failure_rate,
+                HandlerMode::Sync => {
+                    let handler = MockSyncHandler {
+                        listener_idx,
+                        cfg: listener_cfg.clone(),
                         tx: tx_clone.clone(),
                     };
                     let no_retry = SyncSubscriptionPolicy {
                         priority: 0,
                         dead_letter: listener_cfg.dead_letter,
                     };
-                    let _ = bus_clone.subscribe_with_policy::<SimEventB, _, _>(handler, no_retry).await;
+                    let _ = bus_clone.subscribe_with_policy::<SimEnvelopeEvent, _, _>(handler, no_retry).await;
                 }
-                _ => {}
             }
         }
 
         // Register dead letter collector
-        let dl_collector = DeadLetterCollector { tx: tx_clone.clone() };
+        let dl_collector = DeadLetterCollector {
+            tx: tx_clone.clone(),
+            listener_lookup: Arc::new(listener_lookup),
+        };
         let _ = bus_clone.subscribe_dead_letters(dl_collector).await;
 
         // Run publish loop
-        run_publish_loop(bus_clone.clone(), publish_config, tx_clone).await;
+        let total_published = run_publish_loop(
+            bus_clone.clone(),
+            publish_config.clone(),
+            event_types.clone(),
+            processed_counter.clone(),
+            tx_clone.clone(),
+        )
+        .await;
+
+        match publish_config.stop_condition {
+            StopCondition::TotalEvents(target_processed) => {
+                while processed_counter.load(Ordering::Relaxed) < target_processed as u64 {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+            StopCondition::Duration(_) => loop {
+                if let Ok(stats) = bus_clone.stats().await
+                    && stats.in_flight_async == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            },
+        }
+
+        let _ = tx_clone.send(SimEvent::PublishingStopped { total_published });
+        let _ = tx_clone.send(SimEvent::SimulationDone);
 
         // Shutdown bus after publishing is done
         let _ = bus_clone.shutdown().await;
     });
 
     // Collector task
-    let collector_task = tokio::spawn(run_collector(rx, Arc::clone(&viz), config.event_types.clone()));
+    let event_type_names = config.event_types.iter().map(|e| e.name.clone()).collect();
+    let collector_task = tokio::spawn(run_collector(rx, Arc::clone(&viz), event_type_names, config.listeners.clone()));
 
     // Sampler task
     let sampler_task = tokio::spawn(run_sampler(Arc::clone(&viz), bus.clone()));
 
     SimHandle {
         bus,
-        _sim_task: sim_task,
-        _collector_task: collector_task,
-        _sampler_task: sampler_task,
+        sim_task,
+        collector_task,
+        sampler_task,
     }
 }
 

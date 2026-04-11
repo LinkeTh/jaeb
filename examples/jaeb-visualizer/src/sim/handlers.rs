@@ -1,107 +1,64 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::config::types::ListenerConfig;
 use crate::sim::SimEvent;
 
-/// Two compile-time event types for simulation.
 #[derive(Clone, Debug)]
-pub struct SimEventA {
+pub struct SimEnvelopeEvent {
     pub seq: u64,
+    pub event_type_idx: usize,
 }
 
-#[derive(Clone, Debug)]
-pub struct SimEventB {
-    pub seq: u64,
-}
+pub type ListenerLookup = Arc<HashMap<String, usize>>;
 
-/// Async mock handler for SimEventA.
-pub struct MockAsyncHandlerA {
-    pub name: String,
-    pub processing_ms: u64,
-    pub failure_rate: f64,
+pub struct MockAsyncHandler {
+    pub listener_idx: usize,
+    pub cfg: ListenerConfig,
     pub tx: mpsc::UnboundedSender<SimEvent>,
 }
 
-impl jaeb::EventHandler<SimEventA> for MockAsyncHandlerA {
-    fn handle(&self, event: &SimEventA) -> impl std::future::Future<Output = jaeb::HandlerResult> + Send {
-        let name = self.name.clone();
+impl jaeb::EventHandler<SimEnvelopeEvent> for MockAsyncHandler {
+    fn handle(&self, event: &SimEnvelopeEvent) -> impl std::future::Future<Output = jaeb::HandlerResult> + Send {
         let tx = self.tx.clone();
-        let processing_ms = self.processing_ms;
-        let failure_rate = self.failure_rate;
+        let listener_idx = self.listener_idx;
+        let cfg = self.cfg.clone();
         let seq = event.seq;
+        let event_type_idx = event.event_type_idx;
         async move {
+            if event_type_idx != cfg.event_type_idx as usize {
+                return Ok(());
+            }
+
             let start = Instant::now();
             let _ = tx.send(SimEvent::HandlerStarted {
-                listener: name.clone(),
-                event_type: 0,
+                listener: cfg.name.clone(),
+                listener_idx,
+                event_type_idx,
                 seq,
                 at: start,
             });
-            tokio::time::sleep(Duration::from_millis(processing_ms)).await;
-            if rand::random::<f64>() < failure_rate {
+
+            tokio::time::sleep(Duration::from_millis(cfg.processing_ms)).await;
+            if rand::random::<f64>() < cfg.failure_rate {
                 let _ = tx.send(SimEvent::HandlerFailed {
-                    listener: name,
-                    event_type: 0,
+                    listener: cfg.name,
+                    listener_idx,
+                    event_type_idx,
                     seq,
                     at: Instant::now(),
                 });
                 return Err("simulated failure".into());
             }
+
             let elapsed = start.elapsed().as_millis() as u64;
             let _ = tx.send(SimEvent::HandlerCompleted {
-                listener: name,
-                event_type: 0,
-                seq,
-                duration_ms: elapsed,
-                at: Instant::now(),
-            });
-            Ok(())
-        }
-    }
-
-    fn name(&self) -> Option<&'static str> {
-        None // dynamic names not supported by trait (requires &'static str)
-    }
-}
-
-/// Async mock handler for SimEventB.
-pub struct MockAsyncHandlerB {
-    pub name: String,
-    pub processing_ms: u64,
-    pub failure_rate: f64,
-    pub tx: mpsc::UnboundedSender<SimEvent>,
-}
-
-impl jaeb::EventHandler<SimEventB> for MockAsyncHandlerB {
-    fn handle(&self, event: &SimEventB) -> impl std::future::Future<Output = jaeb::HandlerResult> + Send {
-        let name = self.name.clone();
-        let tx = self.tx.clone();
-        let processing_ms = self.processing_ms;
-        let failure_rate = self.failure_rate;
-        let seq = event.seq;
-        async move {
-            let start = Instant::now();
-            let _ = tx.send(SimEvent::HandlerStarted {
-                listener: name.clone(),
-                event_type: 1,
-                seq,
-                at: start,
-            });
-            tokio::time::sleep(Duration::from_millis(processing_ms)).await;
-            if rand::random::<f64>() < failure_rate {
-                let _ = tx.send(SimEvent::HandlerFailed {
-                    listener: name,
-                    event_type: 1,
-                    seq,
-                    at: Instant::now(),
-                });
-                return Err("simulated failure".into());
-            }
-            let elapsed = start.elapsed().as_millis() as u64;
-            let _ = tx.send(SimEvent::HandlerCompleted {
-                listener: name,
-                event_type: 1,
+                listener: cfg.name,
+                listener_idx,
+                event_type_idx,
                 seq,
                 duration_ms: elapsed,
                 at: Instant::now(),
@@ -115,37 +72,44 @@ impl jaeb::EventHandler<SimEventB> for MockAsyncHandlerB {
     }
 }
 
-/// Sync mock handler for SimEventA.
-pub struct MockSyncHandlerA {
-    pub name: String,
-    pub processing_ms: u64,
-    pub failure_rate: f64,
+pub struct MockSyncHandler {
+    pub listener_idx: usize,
+    pub cfg: ListenerConfig,
     pub tx: mpsc::UnboundedSender<SimEvent>,
 }
 
-impl jaeb::SyncEventHandler<SimEventA> for MockSyncHandlerA {
-    fn handle(&self, event: &SimEventA) -> jaeb::HandlerResult {
+impl jaeb::SyncEventHandler<SimEnvelopeEvent> for MockSyncHandler {
+    fn handle(&self, event: &SimEnvelopeEvent) -> jaeb::HandlerResult {
+        if event.event_type_idx != self.cfg.event_type_idx as usize {
+            return Ok(());
+        }
+
         let start = Instant::now();
         let _ = self.tx.send(SimEvent::HandlerStarted {
-            listener: self.name.clone(),
-            event_type: 0,
+            listener: self.cfg.name.clone(),
+            listener_idx: self.listener_idx,
+            event_type_idx: event.event_type_idx,
             seq: event.seq,
             at: start,
         });
-        std::thread::sleep(Duration::from_millis(self.processing_ms));
-        if rand::random::<f64>() < self.failure_rate {
+
+        std::thread::sleep(Duration::from_millis(self.cfg.processing_ms));
+        if rand::random::<f64>() < self.cfg.failure_rate {
             let _ = self.tx.send(SimEvent::HandlerFailed {
-                listener: self.name.clone(),
-                event_type: 0,
+                listener: self.cfg.name.clone(),
+                listener_idx: self.listener_idx,
+                event_type_idx: event.event_type_idx,
                 seq: event.seq,
                 at: Instant::now(),
             });
             return Err("simulated failure".into());
         }
+
         let elapsed = start.elapsed().as_millis() as u64;
         let _ = self.tx.send(SimEvent::HandlerCompleted {
-            listener: self.name.clone(),
-            event_type: 0,
+            listener: self.cfg.name.clone(),
+            listener_idx: self.listener_idx,
+            event_type_idx: event.event_type_idx,
             seq: event.seq,
             duration_ms: elapsed,
             at: Instant::now(),
@@ -158,67 +122,23 @@ impl jaeb::SyncEventHandler<SimEventA> for MockSyncHandlerA {
     }
 }
 
-/// Sync mock handler for SimEventB.
-pub struct MockSyncHandlerB {
-    pub name: String,
-    pub processing_ms: u64,
-    pub failure_rate: f64,
-    pub tx: mpsc::UnboundedSender<SimEvent>,
-}
-
-impl jaeb::SyncEventHandler<SimEventB> for MockSyncHandlerB {
-    fn handle(&self, event: &SimEventB) -> jaeb::HandlerResult {
-        let start = Instant::now();
-        let _ = self.tx.send(SimEvent::HandlerStarted {
-            listener: self.name.clone(),
-            event_type: 1,
-            seq: event.seq,
-            at: start,
-        });
-        std::thread::sleep(Duration::from_millis(self.processing_ms));
-        if rand::random::<f64>() < self.failure_rate {
-            let _ = self.tx.send(SimEvent::HandlerFailed {
-                listener: self.name.clone(),
-                event_type: 1,
-                seq: event.seq,
-                at: Instant::now(),
-            });
-            return Err("simulated failure".into());
-        }
-        let elapsed = start.elapsed().as_millis() as u64;
-        let _ = self.tx.send(SimEvent::HandlerCompleted {
-            listener: self.name.clone(),
-            event_type: 1,
-            seq: event.seq,
-            duration_ms: elapsed,
-            at: Instant::now(),
-        });
-        Ok(())
-    }
-
-    fn name(&self) -> Option<&'static str> {
-        None
-    }
-}
-
-/// Dead letter listener that forwards dead letters to the SimEvent channel.
 pub struct DeadLetterCollector {
     pub tx: mpsc::UnboundedSender<SimEvent>,
+    pub listener_lookup: ListenerLookup,
 }
 
 impl jaeb::SyncEventHandler<jaeb::DeadLetter> for DeadLetterCollector {
     fn handle(&self, dl: &jaeb::DeadLetter) -> jaeb::HandlerResult {
-        let event_type = if dl.event_name.contains("SimEventA") { 0u8 } else { 1u8 };
-        let seq = dl
-            .event
-            .downcast_ref::<SimEventA>()
-            .map(|e| e.seq)
-            .or_else(|| dl.event.downcast_ref::<SimEventB>().map(|e| e.seq))
-            .unwrap_or(0);
+        let envelope = dl.event.downcast_ref::<SimEnvelopeEvent>();
+        let event_type_idx = envelope.map(|e| e.event_type_idx).unwrap_or(0);
+        let seq = envelope.map(|e| e.seq).unwrap_or(0);
 
+        let listener_name = dl.handler_name.unwrap_or("unknown").to_string();
+        let listener_idx = self.listener_lookup.get(&listener_name).copied();
         let _ = self.tx.send(SimEvent::DeadLetterReceived {
-            listener: dl.handler_name.unwrap_or("unknown").to_string(),
-            event_type,
+            listener: listener_name,
+            listener_idx,
+            event_type_idx,
             seq,
             error: dl.error.clone(),
             at: Instant::now(),

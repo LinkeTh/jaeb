@@ -1,11 +1,12 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::config::types::*;
+use crate::ui::palette;
 
 // ── Config tabs ──────────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ pub struct ConfigState {
     pub config: SimConfig,
     pub active_tab: ConfigTab,
     pub field_idx: usize,
+    pub selected_event_type: usize,
     pub selected_listener: usize,
     pub editing: bool,
     pub edit_buffer: String,
@@ -54,10 +56,15 @@ pub struct ConfigState {
 
 impl ConfigState {
     pub fn new() -> Self {
+        Self::from_config(SimConfig::default())
+    }
+
+    pub fn from_config(config: SimConfig) -> Self {
         Self {
-            config: SimConfig::default(),
+            config,
             active_tab: ConfigTab::Bus,
             field_idx: 0,
+            selected_event_type: 0,
             selected_listener: 0,
             editing: false,
             edit_buffer: String::new(),
@@ -68,7 +75,7 @@ impl ConfigState {
     fn field_count(&self) -> usize {
         match self.active_tab {
             ConfigTab::Bus => 4,
-            ConfigTab::EventTypes => 2,
+            ConfigTab::EventTypes => 4,
             ConfigTab::Listeners => {
                 if self.config.listeners.is_empty() {
                     0
@@ -76,7 +83,7 @@ impl ConfigState {
                     8 // fields per listener
                 }
             }
-            ConfigTab::Publish => 4,
+            ConfigTab::Publish => 2,
         }
     }
 
@@ -115,6 +122,20 @@ impl ConfigState {
                     self.error_msg = Some("Maximum 6 listeners".into());
                 }
             }
+            // Add event type
+            KeyCode::Char('a') | KeyCode::Char('A') if !self.editing && self.active_tab == ConfigTab::EventTypes => {
+                if self.config.event_types.len() < 8 {
+                    let idx = self.config.event_types.len() + 1;
+                    self.config.event_types.push(EventTypeConfig {
+                        name: format!("EventType{idx}"),
+                        ..Default::default()
+                    });
+                    self.selected_event_type = self.config.event_types.len() - 1;
+                    self.field_idx = 0;
+                } else {
+                    self.error_msg = Some("Maximum 8 event types".into());
+                }
+            }
             // Delete listener
             KeyCode::Char('d') | KeyCode::Char('D') if !self.editing && self.active_tab == ConfigTab::Listeners => {
                 if !self.config.listeners.is_empty() {
@@ -124,15 +145,47 @@ impl ConfigState {
                     }
                 }
             }
+            // Delete event type
+            KeyCode::Char('d') | KeyCode::Char('D') if !self.editing && self.active_tab == ConfigTab::EventTypes => {
+                if self.config.event_types.len() > 1 {
+                    let removed_idx = self.selected_event_type.min(self.config.event_types.len().saturating_sub(1));
+                    self.config.event_types.remove(removed_idx);
+                    for listener in &mut self.config.listeners {
+                        let idx = listener.event_type_idx as usize;
+                        if idx == removed_idx {
+                            listener.event_type_idx = 0;
+                        } else if idx > removed_idx {
+                            listener.event_type_idx = (idx - 1) as u8;
+                        }
+                    }
+                    if self.selected_event_type >= self.config.event_types.len() {
+                        self.selected_event_type = self.config.event_types.len().saturating_sub(1);
+                    }
+                    self.field_idx = self.field_idx.min(3);
+                } else {
+                    self.error_msg = Some("At least 1 event type required".into());
+                }
+            }
             // Select listener (left/right in Listeners tab when not editing)
-            KeyCode::Left if !self.editing && self.active_tab == ConfigTab::Listeners && self.field_idx == 0 => {
+            KeyCode::Left if !self.editing && self.active_tab == ConfigTab::Listeners => {
                 if self.selected_listener > 0 {
                     self.selected_listener -= 1;
                 }
             }
-            KeyCode::Right if !self.editing && self.active_tab == ConfigTab::Listeners && self.field_idx == 0 => {
+            KeyCode::Right if !self.editing && self.active_tab == ConfigTab::Listeners => {
                 if self.selected_listener + 1 < self.config.listeners.len() {
                     self.selected_listener += 1;
+                }
+            }
+            // Select event type
+            KeyCode::Left if !self.editing && self.active_tab == ConfigTab::EventTypes => {
+                if self.selected_event_type > 0 {
+                    self.selected_event_type -= 1;
+                }
+            }
+            KeyCode::Right if !self.editing && self.active_tab == ConfigTab::EventTypes => {
+                if self.selected_event_type + 1 < self.config.event_types.len() {
+                    self.selected_event_type += 1;
                 }
             }
             // Field navigation
@@ -192,13 +245,21 @@ impl ConfigState {
                 self.editing = true;
             }
             ConfigTab::EventTypes => {
+                let Some(event_type) = self.config.event_types.get(self.selected_event_type) else {
+                    return;
+                };
                 let val = match self.field_idx {
-                    0 => self.config.event_types[0].clone(),
-                    1 => self.config.event_types[1].clone(),
+                    0 => event_type.name.clone(),
+                    1 => format!("{:.1}", event_type.events_per_sec),
+                    2 => event_type.pattern.to_string(),
+                    3 => event_type.burst_every_n.to_string(),
                     _ => return,
                 };
                 self.edit_buffer = val;
-                self.editing = true;
+                self.editing = !matches!(self.field_idx, 2);
+                if self.field_idx == 2 {
+                    self.cycle_enum_field();
+                }
             }
             ConfigTab::Listeners => {
                 if self.config.listeners.is_empty() {
@@ -231,21 +292,13 @@ impl ConfigState {
             }
             ConfigTab::Publish => {
                 match self.field_idx {
-                    0 => {
-                        self.edit_buffer = format!("{:.1}", self.config.publish.events_per_sec);
-                        self.editing = true;
-                    }
-                    1 => self.cycle_enum_field(), // stop condition type
-                    2 => {
+                    0 => self.cycle_enum_field(), // stop condition type
+                    1 => {
                         let val = match &self.config.publish.stop_condition {
                             StopCondition::Duration(d) => d.as_secs().to_string(),
                             StopCondition::TotalEvents(n) => n.to_string(),
                         };
                         self.edit_buffer = val;
-                        self.editing = true;
-                    }
-                    3 => {
-                        self.edit_buffer = self.config.publish.burst_every_n.to_string();
                         self.editing = true;
                     }
                     _ => {}
@@ -256,17 +309,27 @@ impl ConfigState {
 
     fn cycle_enum_field(&mut self) {
         match self.active_tab {
+            ConfigTab::EventTypes => {
+                if let Some(event_type) = self.config.event_types.get_mut(self.selected_event_type)
+                    && self.field_idx == 2
+                {
+                    event_type.pattern = event_type.pattern.cycle_next();
+                }
+            }
             ConfigTab::Listeners if !self.config.listeners.is_empty() => {
                 let l = &mut self.config.listeners[self.selected_listener];
                 match self.field_idx {
-                    1 => l.event_type_idx = 1 - l.event_type_idx,
+                    1 => {
+                        let len = self.config.event_types.len().max(1);
+                        l.event_type_idx = ((l.event_type_idx as usize + 1) % len) as u8;
+                    }
                     2 => l.mode = l.mode.cycle_next(),
                     6 => l.retry_strategy = l.retry_strategy.cycle_next(),
                     7 => l.dead_letter = !l.dead_letter,
                     _ => {}
                 }
             }
-            ConfigTab::Publish if self.field_idx == 1 => {
+            ConfigTab::Publish if self.field_idx == 0 => {
                 self.config.publish.stop_condition = self.config.publish.stop_condition.cycle_next();
             }
             _ => {}
@@ -291,11 +354,24 @@ impl ConfigState {
                     }
                 }
             }
-            ConfigTab::EventTypes => match self.field_idx {
-                0 => self.config.event_types[0] = self.edit_buffer.clone(),
-                1 => self.config.event_types[1] = self.edit_buffer.clone(),
-                _ => {}
-            },
+            ConfigTab::EventTypes => {
+                if let Some(event_type) = self.config.event_types.get_mut(self.selected_event_type) {
+                    match self.field_idx {
+                        0 => event_type.name = self.edit_buffer.clone(),
+                        1 => {
+                            if let Ok(v) = self.edit_buffer.parse::<f64>() {
+                                event_type.events_per_sec = v.max(0.1);
+                            }
+                        }
+                        3 => {
+                            if let Ok(v) = self.edit_buffer.parse::<u64>() {
+                                event_type.burst_every_n = v;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             ConfigTab::Listeners if !self.config.listeners.is_empty() => {
                 let l = &mut self.config.listeners[self.selected_listener];
                 match self.field_idx {
@@ -318,31 +394,20 @@ impl ConfigState {
                     _ => {}
                 }
             }
-            ConfigTab::Publish => match self.field_idx {
-                0 => {
-                    if let Ok(v) = self.edit_buffer.parse::<f64>() {
-                        self.config.publish.events_per_sec = v.max(0.1);
-                    }
-                }
-                2 => {
-                    if let Ok(v) = self.edit_buffer.parse::<u64>() {
-                        match &self.config.publish.stop_condition {
-                            StopCondition::Duration(_) => {
-                                self.config.publish.stop_condition = StopCondition::Duration(std::time::Duration::from_secs(v));
-                            }
-                            StopCondition::TotalEvents(_) => {
-                                self.config.publish.stop_condition = StopCondition::TotalEvents(v as usize);
-                            }
+            ConfigTab::Publish => {
+                if self.field_idx == 1
+                    && let Ok(v) = self.edit_buffer.parse::<u64>()
+                {
+                    match &self.config.publish.stop_condition {
+                        StopCondition::Duration(_) => {
+                            self.config.publish.stop_condition = StopCondition::Duration(std::time::Duration::from_secs(v));
+                        }
+                        StopCondition::TotalEvents(_) => {
+                            self.config.publish.stop_condition = StopCondition::TotalEvents(v as usize);
                         }
                     }
                 }
-                3 => {
-                    if let Ok(v) = self.edit_buffer.parse() {
-                        self.config.publish.burst_every_n = v;
-                    }
-                }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
@@ -351,13 +416,15 @@ impl ConfigState {
 // ── Rendering ────────────────────────────────────────────────────────────
 
 pub fn render_config_screen(area: Rect, buf: &mut Buffer, state: &ConfigState) {
+    buf.set_style(area, Style::default().bg(palette::BG));
+
     let [header_area, tabs_area, content_area, help_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(2)]).areas(area);
 
     // Header
     Paragraph::new(Line::from(vec![
-        Span::styled("  jaeb-visualizer", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  —  Configure Simulation"),
+        Span::styled("  jaeb-visualizer", Style::default().fg(palette::BRAND).add_modifier(Modifier::BOLD)),
+        Span::styled("  —  Configure Simulation", Style::default().fg(palette::VALUE)),
     ]))
     .render(header_area, buf);
 
@@ -365,7 +432,15 @@ pub fn render_config_screen(area: Rect, buf: &mut Buffer, state: &ConfigState) {
     render_tabs(tabs_area, buf, state.active_tab);
 
     // Content
-    let content = Block::default().borders(Borders::ALL).title(format!(" {} ", state.active_tab.label()));
+    let border = match state.active_tab {
+        ConfigTab::EventTypes | ConfigTab::Listeners => palette::BORDER_ALT,
+        _ => palette::BORDER,
+    };
+    let content = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .style(Style::default().bg(palette::PANEL_BG))
+        .title(format!(" {} ", state.active_tab.label()));
     let inner = content.inner(content_area);
     content.render(content_area, buf);
 
@@ -378,11 +453,11 @@ pub fn render_config_screen(area: Rect, buf: &mut Buffer, state: &ConfigState) {
 
     // Help line
     let help_text = if let Some(ref err) = state.error_msg {
-        Line::from(vec![Span::styled(format!("  Error: {}", err), Style::default().fg(Color::Red))])
+        Line::from(vec![Span::styled(format!("  Error: {}", err), Style::default().fg(palette::ERROR))])
     } else {
         Line::from(vec![Span::styled(
-            "  ↑↓ fields  Tab/Shift+Tab sections  Enter edit  Space toggle  S start  Q quit",
-            Style::default().fg(Color::DarkGray),
+            "  ↑↓ fields  ←→ choose type/listener  Tab sections  Enter edit  Space toggle  S start  Q quit",
+            Style::default().fg(palette::MUTED),
         )])
     };
     Paragraph::new(help_text).render(help_area, buf);
@@ -392,9 +467,9 @@ fn render_tabs(area: Rect, buf: &mut Buffer, active: ConfigTab) {
     let mut spans = vec![Span::raw("  ")];
     for tab in ConfigTab::ALL {
         let style = if tab == active {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            Style::default().fg(palette::RUNNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(palette::MUTED)
         };
         spans.push(Span::styled(format!(" {} ", tab.label()), style));
         spans.push(Span::raw(" "));
@@ -403,7 +478,7 @@ fn render_tabs(area: Rect, buf: &mut Buffer, active: ConfigTab) {
 }
 
 fn field_line(label: &str, value: &str, selected: bool, editing: bool, edit_buf: &str) -> Line<'static> {
-    let label_style = Style::default().fg(Color::White);
+    let label_style = Style::default().fg(palette::MUTED);
     let value_str = if editing && selected {
         format!("{}_", edit_buf)
     } else {
@@ -411,16 +486,19 @@ fn field_line(label: &str, value: &str, selected: bool, editing: bool, edit_buf:
     };
     let val_style = if selected {
         if editing {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default().fg(palette::WARN).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::REVERSED)
+            Style::default().fg(palette::BG).bg(palette::RUNNING).add_modifier(Modifier::BOLD)
         }
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(palette::VALUE)
     };
     let marker = if selected { "► " } else { "  " };
     Line::from(vec![
-        Span::styled(marker.to_string(), Style::default().fg(Color::Cyan)),
+        Span::styled(
+            marker.to_string(),
+            Style::default().fg(if selected { palette::RUNNING } else { palette::MUTED }),
+        ),
         Span::styled(format!("{:<24}", label), label_style),
         Span::styled(value_str, val_style),
     ])
@@ -470,30 +548,75 @@ fn render_bus_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
 }
 
 fn render_event_types_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
-    let lines = vec![
-        field_line(
-            "Event Type A:",
-            &state.config.event_types[0],
+    if state.config.event_types.is_empty() {
+        let lines = vec![Line::from(Span::styled(
+            "  No event types. Press A to add one.",
+            Style::default().fg(palette::MUTED),
+        ))];
+        Paragraph::new(lines).render(area, buf);
+        return;
+    }
+
+    let [list_area, edit_area] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
+
+    let mut spans = vec![Span::raw("  ")];
+    for (i, event_type) in state.config.event_types.iter().enumerate() {
+        let style = if i == state.selected_event_type {
+            Style::default().fg(palette::RUNNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(palette::VALUE)
+        };
+        spans.push(Span::styled(format!(" {} ", event_type.name), style));
+        spans.push(Span::raw(" "));
+    }
+    let nav_lines = vec![
+        Line::from(spans),
+        Line::from(Span::styled("  ←→ select  A add  D delete", Style::default().fg(palette::MUTED))),
+    ];
+    Paragraph::new(nav_lines).render(list_area, buf);
+
+    let mut lines = Vec::new();
+    let idx = state.selected_event_type.min(state.config.event_types.len().saturating_sub(1));
+    if let Some(event_type) = state.config.event_types.get(idx) {
+        lines.push(field_line(
+            "Name:",
+            &event_type.name,
             state.field_idx == 0,
             state.editing,
             &state.edit_buffer,
-        ),
-        field_line(
-            "Event Type B:",
-            &state.config.event_types[1],
+        ));
+        lines.push(field_line(
+            "Events/sec:",
+            &format!("{:.1}", event_type.events_per_sec),
             state.field_idx == 1,
             state.editing,
             &state.edit_buffer,
-        ),
-    ];
-    Paragraph::new(lines).render(area, buf);
+        ));
+        lines.push(field_line("Pattern:", &event_type.pattern.to_string(), state.field_idx == 2, false, ""));
+        lines.push(field_line(
+            "Burst Every N:",
+            &if event_type.burst_every_n == 0 {
+                "disabled".to_string()
+            } else {
+                event_type.burst_every_n.to_string()
+            },
+            state.field_idx == 3,
+            state.editing,
+            &state.edit_buffer,
+        ));
+    }
+    lines.push(Line::from(Span::styled(
+        "  ↑↓ fields  Enter edit  Space toggle pattern",
+        Style::default().fg(palette::MUTED),
+    )));
+    Paragraph::new(lines).render(edit_area, buf);
 }
 
 fn render_listeners_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
     if state.config.listeners.is_empty() {
         let lines = vec![Line::from(Span::styled(
             "  No listeners. Press A to add one.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(palette::MUTED),
         ))];
         Paragraph::new(lines).render(area, buf);
         return;
@@ -505,22 +628,27 @@ fn render_listeners_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
     let mut spans = vec![Span::raw("  ")];
     for (i, l) in state.config.listeners.iter().enumerate() {
         let style = if i == state.selected_listener {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            Style::default().fg(palette::RUNNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(palette::VALUE)
         };
         spans.push(Span::styled(format!(" {} ", l.name), style));
         spans.push(Span::raw(" "));
     }
     let list_lines = vec![
         Line::from(spans),
-        Line::from(Span::styled("  ←→ select  A add  D delete", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("  ←→ select  A add  D delete", Style::default().fg(palette::MUTED))),
     ];
     Paragraph::new(list_lines).render(list_area, buf);
 
     // Edit panel for selected listener
     let l = &state.config.listeners[state.selected_listener];
-    let et_name = &state.config.event_types[l.event_type_idx as usize];
+    let et_name = state
+        .config
+        .event_types
+        .get(l.event_type_idx as usize)
+        .map(|e| e.name.as_str())
+        .unwrap_or("Unknown");
     let lines = vec![
         field_line("Name:", &l.name, state.field_idx == 0, state.editing, &state.edit_buffer),
         field_line(
@@ -563,29 +691,23 @@ fn render_publish_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
     let stop_type = if c.stop_condition.is_duration() { "Duration" } else { "Total Events" };
     let stop_val = match &c.stop_condition {
         StopCondition::Duration(d) => format!("{} seconds", d.as_secs()),
-        StopCondition::TotalEvents(n) => format!("{} events", n),
+        StopCondition::TotalEvents(n) => format!("{} processed events", n),
     };
     let lines = vec![
-        field_line(
-            "Events/sec:",
-            &format!("{:.1}", c.events_per_sec),
-            state.field_idx == 0,
-            state.editing,
-            &state.edit_buffer,
-        ),
-        field_line("Stop Mode:", stop_type, state.field_idx == 1, false, ""),
-        field_line("Stop Value:", &stop_val, state.field_idx == 2, state.editing, &state.edit_buffer),
-        field_line(
-            "Burst Every N:",
-            &if c.burst_every_n == 0 {
-                "disabled".into()
-            } else {
-                c.burst_every_n.to_string()
-            },
-            state.field_idx == 3,
-            state.editing,
-            &state.edit_buffer,
-        ),
+        field_line("Stop Mode:", stop_type, state.field_idx == 0, false, ""),
+        field_line("Stop Value:", &stop_val, state.field_idx == 1, state.editing, &state.edit_buffer),
+        Line::from(Span::styled(
+            "  Rates/patterns moved to Event Types tab.",
+            Style::default().fg(palette::MUTED),
+        )),
+        Line::from(Span::styled(
+            "  Duration: stop publishing after T, then drain in-flight.",
+            Style::default().fg(palette::MUTED),
+        )),
+        Line::from(Span::styled(
+            "  Total Events: stop when processed count reaches target.",
+            Style::default().fg(palette::MUTED),
+        )),
     ];
     Paragraph::new(lines).render(area, buf);
 }

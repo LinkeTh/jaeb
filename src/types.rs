@@ -393,6 +393,10 @@ pub struct BusStats {
     pub registered_event_types: Vec<&'static str>,
     /// The configured channel buffer capacity.
     pub queue_capacity: usize,
+    /// Number of currently available publish permits in the internal semaphore.
+    pub publish_permits_available: usize,
+    /// Number of currently occupied publish permits.
+    pub publish_in_flight: usize,
     /// Number of async handler tasks currently in flight.
     pub in_flight_async: usize,
     /// Whether [`EventBus::shutdown`](crate::EventBus::shutdown) has been called.

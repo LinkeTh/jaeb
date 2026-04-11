@@ -177,6 +177,8 @@ async fn stats(State(state): State<AppState>) -> impl IntoResponse {
                 "registered_event_types": stats.registered_event_types,
                 "in_flight_async": stats.in_flight_async,
                 "queue_capacity": stats.queue_capacity,
+                "publish_permits_available": stats.publish_permits_available,
+                "publish_in_flight": stats.publish_in_flight,
                 "shutdown_called": stats.shutdown_called,
             });
             (StatusCode::OK, Json(body)).into_response()

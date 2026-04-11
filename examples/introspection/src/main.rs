@@ -46,6 +46,8 @@ async fn main() {
     println!("total subscriptions: {}", stats.total_subscriptions);
     println!("registered event types: {:?}", stats.registered_event_types);
     println!("queue capacity: {}", stats.queue_capacity);
+    println!("publish permits available: {}", stats.publish_permits_available);
+    println!("publish in-flight: {}", stats.publish_in_flight);
     println!("in-flight async: {}", stats.in_flight_async);
 
     // Per-event-type details include listener names.

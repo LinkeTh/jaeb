@@ -264,6 +264,7 @@ impl EventBus {
         Ok(registry.stats(
             self.inner.tracker.in_flight(),
             self.inner.buffer_size,
+            self.inner.publish_permits.available_permits(),
             self.inner.shutdown_called.load(Ordering::Acquire),
         ))
     }
