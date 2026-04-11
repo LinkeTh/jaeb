@@ -1,5 +1,5 @@
 use std::fmt;
-
+#[cfg(feature = "trace")]
 use tracing::trace;
 
 use crate::bus::EventBus;
@@ -24,12 +24,13 @@ use crate::types::SubscriptionId;
 #[must_use = "dropping the Subscription leaves the listener registered; call .unsubscribe() or .into_guard() or store the handle"]
 pub struct Subscription {
     id: SubscriptionId,
+    name: Option<&'static str>,
     bus: EventBus,
 }
 
 impl Subscription {
-    pub(crate) fn new(id: SubscriptionId, bus: EventBus) -> Self {
-        Self { id, bus }
+    pub(crate) fn new(id: SubscriptionId, name: Option<&'static str>, bus: EventBus) -> Self {
+        Self { id, name, bus }
     }
 
     /// Return the unique [`SubscriptionId`] for this registration.
@@ -38,6 +39,15 @@ impl Subscription {
     /// listener without consuming this handle.
     pub const fn id(&self) -> SubscriptionId {
         self.id
+    }
+
+    /// Return the listener name, if one was provided by the handler.
+    ///
+    /// Named handlers expose their name through this getter, making it
+    /// possible to identify a subscription without querying
+    /// [`EventBus::stats`].  Middleware subscriptions always return `None`.
+    pub const fn name(&self) -> Option<&'static str> {
+        self.name
     }
 
     /// Remove this listener from the bus.
@@ -79,13 +89,13 @@ impl Subscription {
     /// # }
     /// ```
     pub fn into_guard(self) -> SubscriptionGuard {
-        SubscriptionGuard::new(self.id, self.bus)
+        SubscriptionGuard::new(self.id, self.name, self.bus)
     }
 }
 
 impl fmt::Debug for Subscription {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Subscription").field("id", &self.id).finish()
+        f.debug_struct("Subscription").field("id", &self.id).field("name", &self.name).finish()
     }
 }
 
@@ -106,19 +116,28 @@ pub struct SubscriptionGuard {
 
 struct GuardInner {
     subscription_id: SubscriptionId,
+    name: Option<&'static str>,
     bus: EventBus,
 }
 
 impl SubscriptionGuard {
-    fn new(subscription_id: SubscriptionId, bus: EventBus) -> Self {
+    fn new(subscription_id: SubscriptionId, name: Option<&'static str>, bus: EventBus) -> Self {
         Self {
-            inner: Some(GuardInner { subscription_id, bus }),
+            inner: Some(GuardInner { subscription_id, name, bus }),
         }
     }
 
     /// Return the subscription ID this guard manages.
     pub fn id(&self) -> Option<SubscriptionId> {
         self.inner.as_ref().map(|i| i.subscription_id)
+    }
+
+    /// Return the listener name, if one was provided by the handler.
+    ///
+    /// Returns `None` when the guard has been disarmed or the handler was
+    /// unnamed.
+    pub fn name(&self) -> Option<&'static str> {
+        self.inner.as_ref().and_then(|i| i.name)
     }
 
     /// Disarm the guard without unsubscribing.
@@ -133,6 +152,7 @@ impl SubscriptionGuard {
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
+            #[cfg(feature = "trace")]
             trace!(subscription_id = inner.subscription_id.as_u64(), "subscription_guard.drop.unsubscribe");
             if inner.bus.try_unsubscribe_best_effort(inner.subscription_id) {
                 return;
@@ -151,6 +171,7 @@ impl fmt::Debug for SubscriptionGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SubscriptionGuard")
             .field("id", &self.inner.as_ref().map(|i| i.subscription_id))
+            .field("name", &self.inner.as_ref().and_then(|i| i.name))
             .finish()
     }
 }

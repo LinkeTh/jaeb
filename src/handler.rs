@@ -239,7 +239,7 @@ where
                 let Some(event) = event.downcast_ref::<E>() else {
                     return Err("event type mismatch".into());
                 };
-                (handler)(event)
+                handler(event)
             });
             ListenerEntry {
                 id,
@@ -275,7 +275,7 @@ where
                 Box::pin(async move {
                     let event = event.map_err(|_| "event type mismatch")?;
                     let event = (*event).clone();
-                    (handler)(event).await
+                    handler(event).await
                 })
             });
             ListenerEntry {

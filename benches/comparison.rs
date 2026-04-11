@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use criterion::{Criterion, criterion_group, criterion_main};
+use eventador::Eventador;
 use eventbuzz::asynchronous::prelude::{ApplicationEvent, AsyncApplicationEventListener, AsyncEventbus};
 use evno::{Bus as EvnoBus, Close as EvnoClose, Emit as EvnoEmit, Guard as EvnoGuard, from_fn as evno_from_fn};
 use jaeb::{EventBus, EventHandler, HandlerResult};
@@ -99,6 +101,32 @@ fn bench_async_single_listener(c: &mut Criterion) {
         })
     });
 
+    group.bench_function("eventador_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = Eventador::new(1024).expect("create eventador");
+            let sub = bus.subscribe::<u64>();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop2 = Arc::clone(&stop);
+
+            let drainer = std::thread::spawn(move || {
+                while !stop2.load(Ordering::Relaxed) {
+                    let _ = sub.recv();
+                }
+            });
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(i);
+            }
+            let elapsed = start.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(0u64); // sentinel to wake blocked recv
+            drainer.join().expect("eventador drainer join");
+            elapsed
+        })
+    });
+
     group.finish();
 }
 
@@ -164,6 +192,36 @@ fn bench_async_fanout_10(c: &mut Criterion) {
             tokio::time::timeout(Duration::from_secs(5), bus.close())
                 .await
                 .expect("evno close timeout");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventador_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = Eventador::new(1024).expect("create eventador");
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut drainers = Vec::with_capacity(10);
+            for _ in 0..10 {
+                let sub = bus.subscribe::<u64>();
+                let stop2 = Arc::clone(&stop);
+                drainers.push(std::thread::spawn(move || {
+                    while !stop2.load(Ordering::Relaxed) {
+                        let _ = sub.recv();
+                    }
+                }));
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(i);
+            }
+            let elapsed = start.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(0u64); // sentinel to wake blocked recv
+            for d in drainers {
+                d.join().expect("eventador drainer join");
+            }
             elapsed
         })
     });
@@ -247,6 +305,47 @@ fn bench_contention_4_publishers(c: &mut Criterion) {
     // timeouts) reduce the probability but do not eliminate it — the
     // standalone benchmark in `benches/evno_contention.rs` still triggers
     // timeouts ~2% of samples. See BENCHMARK.md for the full analysis.
+
+    group.bench_function("eventador_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let workers = 4usize;
+            let per = (iters as usize) / workers;
+            let extra = (iters as usize) % workers;
+
+            let bus = Eventador::new(4096).expect("create eventador");
+            let sub = bus.subscribe::<u64>();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop2 = Arc::clone(&stop);
+
+            let drainer = std::thread::spawn(move || {
+                while !stop2.load(Ordering::Relaxed) {
+                    let _ = sub.recv();
+                }
+            });
+
+            let start = std::time::Instant::now();
+            let mut joins = Vec::with_capacity(workers);
+            for worker_idx in 0..workers {
+                let bus = bus.clone();
+                let n = per + usize::from(worker_idx < extra);
+                joins.push(tokio::spawn(async move {
+                    for i in 0..n {
+                        bus.publish(i as u64);
+                    }
+                }));
+            }
+            for join in joins {
+                join.await.expect("join");
+            }
+            let elapsed = start.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(0u64); // sentinel to wake blocked recv
+            drainer.join().expect("eventador drainer join");
+            elapsed
+        })
+    });
+
     group.finish();
 }
 

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot};
 use tokio::task::AbortHandle;
+#[cfg(feature = "trace")]
 use tracing::{error, warn};
 
 #[cfg(feature = "metrics")]
@@ -506,7 +507,7 @@ async fn execute_async_listener(
         attempts += 1;
 
         #[cfg(feature = "metrics")]
-        let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
+        let _timer = TimerGuard::start("eventbus.handler.duration", event_name, listener.listener_name);
 
         let handler_future = CatchUnwindFuture::new(handler(Arc::clone(&event)));
 
@@ -539,9 +540,11 @@ async fn execute_async_listener(
                 }
 
                 retries_left -= 1;
+                #[cfg(feature = "trace")]
                 warn!(
                     event = event_name,
                     listener_id = listener.subscription_id.as_u64(),
+                    listener_name = listener.listener_name,
                     attempts,
                     retries_left,
                     error = %error_message,
@@ -625,7 +628,7 @@ async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static 
         }
 
         #[cfg(feature = "metrics")]
-        let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
+        let _timer = TimerGuard::start("eventbus.handler.duration", event_name, listener.name);
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             // Safe because we only pass shared references to listener code.
@@ -696,16 +699,22 @@ pub(crate) async fn dispatch_with_snapshot(
 }
 
 pub(crate) fn dead_letter_from_failure(failure: &ListenerFailure) -> Option<DeadLetter> {
+    #[cfg(feature = "trace")]
     error!(
         event = failure.event_name,
         listener_id = failure.subscription_id.as_u64(),
+        listener_name = failure.listener_name,
         attempts = failure.attempts,
         error = %failure.error,
         "handler.failed"
     );
 
     #[cfg(feature = "metrics")]
-    counter!("eventbus.handler.error", "event" => failure.event_name).increment(1);
+    if let Some(name) = failure.listener_name {
+        counter!("eventbus.handler.error", "event" => failure.event_name, "listener" => name).increment(1);
+    } else {
+        counter!("eventbus.handler.error", "event" => failure.event_name).increment(1);
+    }
 
     let dead_letter_type = std::any::type_name::<DeadLetter>();
     if failure.dead_letter && failure.event_name != dead_letter_type {

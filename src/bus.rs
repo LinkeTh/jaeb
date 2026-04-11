@@ -9,6 +9,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
+#[cfg(feature = "trace")]
 use tracing::{error, trace, warn};
 
 use crate::error::{ConfigError, EventBusError};
@@ -349,6 +350,7 @@ impl EventBus {
             return Err(EventBusError::Stopped);
         }
 
+        #[cfg(feature = "trace")]
         trace!("event_bus.subscribe {:?}", &registered.name);
         let id = self.next_subscription_id();
         let listener = (registered.register)(id, subscription_policy, once);
@@ -357,7 +359,7 @@ impl EventBus {
         registry.add_listener(TypeId::of::<E>(), std::any::type_name::<E>(), listener);
         self.refresh_snapshot_locked(&registry).await;
 
-        Ok(Subscription::new(id, self.clone()))
+        Ok(Subscription::new(id, registered.name, self.clone()))
     }
 
     /// Register a sync handler that receives [`DeadLetter`] events.
@@ -450,7 +452,7 @@ impl EventBus {
         let mut registry = self.inner.registry.lock().await;
         registry.add_global_middleware(id, erased);
         self.refresh_snapshot_locked(&registry).await;
-        Ok(Subscription::new(id, self.clone()))
+        Ok(Subscription::new(id, None, self.clone()))
     }
 
     /// Add a global **sync** middleware that intercepts all event types.
@@ -474,7 +476,7 @@ impl EventBus {
         let mut registry = self.inner.registry.lock().await;
         registry.add_global_middleware(id, erased);
         self.refresh_snapshot_locked(&registry).await;
-        Ok(Subscription::new(id, self.clone()))
+        Ok(Subscription::new(id, None, self.clone()))
     }
 
     /// Add an async middleware scoped to a single event type `E`.
@@ -514,7 +516,7 @@ impl EventBus {
         let mut registry = self.inner.registry.lock().await;
         registry.add_typed_middleware(TypeId::of::<E>(), std::any::type_name::<E>(), slot.clone());
         self.refresh_snapshot_locked(&registry).await;
-        Ok(Subscription::new(slot.id, self.clone()))
+        Ok(Subscription::new(slot.id, None, self.clone()))
     }
 
     /// Add a **sync** middleware scoped to a single event type `E`.
@@ -549,7 +551,7 @@ impl EventBus {
         let mut registry = self.inner.registry.lock().await;
         registry.add_typed_middleware(TypeId::of::<E>(), std::any::type_name::<E>(), slot.clone());
         self.refresh_snapshot_locked(&registry).await;
-        Ok(Subscription::new(slot.id, self.clone()))
+        Ok(Subscription::new(slot.id, None, self.clone()))
     }
 
     async fn publish_erased(
@@ -645,11 +647,12 @@ impl EventBus {
         tokio::spawn(async move {
             let _keep = permit;
             let dispatch_ctx = bus.inner.full_dispatch_context();
-            if let Err(err) = bus
+            if let Err(_err) = bus
                 .publish_erased(TypeId::of::<E>(), Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
                 .await
             {
-                error!(error = %err, "event_bus.try_publish.dispatch_failed");
+                #[cfg(feature = "trace")]
+                error!(error = %_err, "event_bus.try_publish.dispatch_failed");
             }
         });
         Ok(())
@@ -786,5 +789,6 @@ async fn control_loop(inner: std::sync::Weak<Inner>, mut notify_rx: mpsc::Unboun
             }
         }
     }
+    #[cfg(feature = "trace")]
     warn!("event_bus.control_loop.stopped");
 }

@@ -46,13 +46,14 @@ inventory = { version = "0.3", optional = true }
 jaeb-macros = { version = "0.2", path = "jaeb-macros", optional = true }
 metrics = { version = "0.24", optional = true }
 tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
-tracing = { version = "0.1", features = ["std", "log"] }
+tracing = { version = "0.1", features = ["std", "log"], optional = true }
 
 [features]
 default = []
 macros = ["dep:jaeb-macros", "dep:inventory"]
 metrics = ["dep:metrics"]
 test-utils = []
+trace = ["dep:tracing"]
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["async_tokio"] }
@@ -60,6 +61,7 @@ tokio = { version = "1.51", features = ["full", "test-util"] }
 async-trait = "0.1"
 eventbuzz = { version = "0.2", features = ["asynchronous"] }
 evno = "1.0.2"
+eventador = { version = "0.0.18", features = ["async"] }
 
 [[bench]]
 name = "throughput"
