@@ -86,6 +86,7 @@ pub(crate) struct TypeSlot {
     pub has_async_middleware: bool,
     pub sync_gate: Arc<Mutex<()>>,
     pub async_semaphore: Option<Arc<Semaphore>>,
+    pub worker: Option<super::worker::AsyncSlotWorker>,
 }
 
 #[derive(Default)]

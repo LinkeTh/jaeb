@@ -62,6 +62,21 @@ impl AsyncTaskTracker {
         self.in_flight.load(Ordering::Acquire)
     }
 
+    /// Increment the in-flight counter without spawning a task.
+    /// Used by persistent async workers that manage their own execution.
+    pub(crate) fn track_external(&self) {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Decrement the in-flight counter for an externally-managed work item.
+    /// Must be paired with a prior `track_external()` call.
+    pub(crate) fn finish_external(&self) {
+        let prev = self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            self.notify.notify_waiters();
+        }
+    }
+
     pub(crate) async fn shutdown(&self, timeout: Option<Duration>) -> bool {
         if self.in_flight() == 0 {
             return false;

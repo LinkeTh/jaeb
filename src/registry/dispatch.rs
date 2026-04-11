@@ -19,6 +19,7 @@ use super::types::{
     ControlNotification, DispatchContext, ErasedAsyncHandlerFn, ErasedMiddleware, EventType, HandlerFuture, ListenerFailure, RegistrySnapshot,
     SyncListenerEntry, TypeSlot, TypedMiddlewareEntry,
 };
+use super::worker::WorkItem;
 use crate::error::{EventBusError, HandlerResult};
 use crate::middleware::MiddlewareDecision;
 use crate::types::{DeadLetter, SubscriptionId, SubscriptionPolicy};
@@ -60,10 +61,10 @@ impl std::future::Future for CatchUnwindFuture {
 }
 
 #[derive(Clone, Copy)]
-struct AsyncListenerMeta {
-    subscription_id: SubscriptionId,
-    subscription_policy: SubscriptionPolicy,
-    handler_name: Option<&'static str>,
+pub(crate) struct AsyncListenerMeta {
+    pub subscription_id: SubscriptionId,
+    pub subscription_policy: SubscriptionPolicy,
+    pub handler_name: Option<&'static str>,
 }
 
 fn sync_listener_failed(listener: &SyncListenerEntry, event_name: &'static str, event: &EventType, err: String) -> ListenerFailure {
@@ -78,7 +79,7 @@ fn sync_listener_failed(listener: &SyncListenerEntry, event_name: &'static str, 
     }
 }
 
-async fn execute_async_listener(
+pub(crate) async fn execute_async_listener(
     handler: ErasedAsyncHandlerFn,
     event: EventType,
     event_name: &'static str,
@@ -154,12 +155,16 @@ fn should_fire_once(once: bool, fired: Option<&Arc<AtomicBool>>) -> bool {
     }
 }
 
-async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static str, dispatch_ctx: &DispatchContext<'_>) -> Vec<SubscriptionId> {
+pub(crate) async fn dispatch_slot(
+    slot: &TypeSlot,
+    event: &EventType,
+    event_name: &'static str,
+    dispatch_ctx: &DispatchContext<'_>,
+) -> Vec<SubscriptionId> {
     let mut once_removed = Vec::new();
 
     // Async lane: schedule async handlers without waiting for sync gate.
     if dispatch_ctx.spawn_async_handlers && !slot.async_listeners.is_empty() {
-        let tracker = Arc::clone(dispatch_ctx.tracker);
         let handler_timeout = dispatch_ctx.handler_timeout;
         let semaphore = slot.async_semaphore.as_ref().map(Arc::clone);
 
@@ -175,24 +180,43 @@ async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static 
                     subscription_policy: listener.subscription_policy,
                     handler_name: listener.name,
                 };
-                let handler = Arc::clone(&listener.handler);
-                let event = Arc::clone(event);
-                let notify = dispatch_ctx.notify_tx.clone();
-                tracker.spawn_tracked(async move {
-                    let task = async {
-                        if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
-                            let _ = notify.send(ControlNotification::Failure(failure));
-                        }
-                    };
 
-                    if let Some(semaphore) = semaphore {
-                        if let Ok(_permit) = semaphore.acquire().await {
+                // Fast path: use the persistent worker to avoid per-publish tokio::spawn().
+                // Falls back to spawn for `once` listeners (need synchronous once_removed return).
+                if !listener.once
+                    && let Some(worker) = &slot.worker
+                {
+                    dispatch_ctx.tracker.track_external();
+                    worker.send(WorkItem {
+                        handler: Arc::clone(&listener.handler),
+                        event: Arc::clone(event),
+                        event_name,
+                        meta: listener_meta,
+                        handler_timeout,
+                        notify_tx: dispatch_ctx.notify_tx.clone(),
+                        concurrency_semaphore: semaphore,
+                    });
+                } else {
+                    let tracker = Arc::clone(dispatch_ctx.tracker);
+                    let handler = Arc::clone(&listener.handler);
+                    let event = Arc::clone(event);
+                    let notify = dispatch_ctx.notify_tx.clone();
+                    tracker.spawn_tracked(async move {
+                        let task = async {
+                            if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
+                                let _ = notify.send(ControlNotification::Failure(failure));
+                            }
+                        };
+
+                        if let Some(semaphore) = semaphore {
+                            if let Ok(_permit) = semaphore.acquire().await {
+                                task.await;
+                            }
+                        } else {
                             task.await;
                         }
-                    } else {
-                        task.await;
-                    }
-                });
+                    });
+                }
             }
         } else {
             let mut async_batch = FuturesUnordered::new();
@@ -226,6 +250,7 @@ async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static 
 
             if !async_batch.is_empty() {
                 let notify = dispatch_ctx.notify_tx.clone();
+                let tracker = Arc::clone(dispatch_ctx.tracker);
                 tracker.spawn_tracked(async move {
                     while let Some(failure) = async_batch.next().await {
                         if let Some(failure) = failure {

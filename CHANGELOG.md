@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocation when dispatch does not require async fanout.
 - Added snapshot-level async middleware flags and slot reuse in publish hot
   path to reduce lookup and branch overhead.
+- Added an optimistic semaphore permit fast path in `publish` that attempts
+  `try_acquire()` before falling back to `acquire().await`, reducing steady-state
+  async publish overhead when permits are available.
+- Added a no-middleware dispatch fast path in `publish_erased` that directly
+  invokes slot dispatch when no global or type middleware is registered,
+  bypassing extra dispatch indirection.
+- Replaced single-listener async spawn dispatch with a persistent per-slot async
+  worker queue (for non-`once` listeners), avoiding per-publish `tokio::spawn`
+  cost while preserving retry, dead-letter, panic-safety, and shutdown
+  guarantees.
 
 ## [0.3.5] - 2026-04-11
 

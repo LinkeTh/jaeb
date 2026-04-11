@@ -112,7 +112,7 @@ impl EventBus {
         let tracker = Arc::new(AsyncTaskTracker::new(config.shutdown_timeout.is_some()));
         let inner = Arc::new(Inner {
             snapshot: ArcSwap::from_pointee(RegistrySnapshot::default()),
-            registry: Mutex::new(MutableRegistry::new(config.max_concurrent_async)),
+            registry: Mutex::new(MutableRegistry::new(config.max_concurrent_async, Arc::clone(&tracker))),
             default_subscription_policy: config.default_subscription_policy,
             tracker,
             publish_permits: Arc::new(Semaphore::new(config.buffer_size)),

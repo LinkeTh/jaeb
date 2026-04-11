@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Semaphore};
 
+use super::tracker::AsyncTaskTracker;
 use super::types::{
     AsyncListenerEntry, ErasedMiddleware, ListenerEntry, ListenerKind, RegistrySnapshot, SyncListenerEntry, TypeSlot, TypedMiddlewareEntry,
     TypedMiddlewareSlot,
 };
+use super::worker::AsyncSlotWorker;
 use crate::types::{HandlerInfo, SubscriptionId};
 
 struct MutableTypeSlot {
@@ -16,6 +18,7 @@ struct MutableTypeSlot {
     middlewares: Vec<TypedMiddlewareSlot>,
     sync_gate: Arc<Mutex<()>>,
     async_semaphore: Option<Arc<Semaphore>>,
+    worker: Option<AsyncSlotWorker>,
 }
 
 impl MutableTypeSlot {
@@ -60,6 +63,7 @@ impl MutableTypeSlot {
             has_async_middleware,
             sync_gate: Arc::clone(&self.sync_gate),
             async_semaphore: self.async_semaphore.as_ref().map(Arc::clone),
+            worker: self.worker.clone(),
         })
     }
 }
@@ -76,16 +80,18 @@ pub(crate) struct MutableRegistry {
     index: HashMap<SubscriptionId, IndexEntry>,
     type_names: HashMap<TypeId, &'static str>,
     max_concurrent_async: Option<usize>,
+    tracker: Arc<AsyncTaskTracker>,
 }
 
 impl MutableRegistry {
-    pub(crate) fn new(max_concurrent_async: Option<usize>) -> Self {
+    pub(crate) fn new(max_concurrent_async: Option<usize>, tracker: Arc<AsyncTaskTracker>) -> Self {
         Self {
             slots: HashMap::new(),
             global_middlewares: Vec::new(),
             index: HashMap::new(),
             type_names: HashMap::new(),
             max_concurrent_async,
+            tracker,
         }
     }
 
@@ -97,11 +103,19 @@ impl MutableRegistry {
             middlewares: Vec::new(),
             sync_gate: Arc::new(Mutex::new(())),
             async_semaphore: self.max_concurrent_async.map(|n| Arc::new(Semaphore::new(n))),
+            worker: None,
         })
     }
 
     pub(crate) fn add_listener(&mut self, event_type: TypeId, event_name: &'static str, listener: ListenerEntry) {
-        self.ensure_slot(event_type, event_name).listeners.push(listener.clone());
+        let is_async = matches!(listener.kind, ListenerKind::Async(_));
+        let tracker = Arc::clone(&self.tracker);
+        let slot = self.ensure_slot(event_type, event_name);
+        slot.listeners.push(listener.clone());
+        // Lazily create a persistent worker when the first async listener arrives.
+        if is_async && slot.worker.is_none() {
+            slot.worker = Some(AsyncSlotWorker::spawn(tracker));
+        }
         self.index.insert(listener.id, IndexEntry::Listener(event_type));
     }
 

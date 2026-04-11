@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::error::EventBusError;
-use crate::registry::{DispatchContext, RegistrySnapshot, TypeSlot, dispatch_sync_only_with_snapshot, dispatch_with_snapshot};
+use crate::registry::{DispatchContext, RegistrySnapshot, TypeSlot, dispatch_slot, dispatch_sync_only_with_snapshot, dispatch_with_snapshot};
 use crate::types::Event;
 
 use super::EventBus;
@@ -17,7 +17,15 @@ impl EventBus {
         event_name: &'static str,
         dispatch_ctx: &DispatchContext<'_>,
     ) -> Result<(), EventBusError> {
-        let once_removed = dispatch_with_snapshot(snapshot, slot, event, event_name, dispatch_ctx).await?;
+        // Fast path: no middleware at all — skip dispatch_with_snapshot indirection.
+        let once_removed = if snapshot.global_middlewares.is_empty() && slot.is_none_or(|s| s.middlewares.is_empty()) {
+            match slot {
+                None => Vec::new(),
+                Some(s) => dispatch_slot(s.as_ref(), &event, event_name, dispatch_ctx).await,
+            }
+        } else {
+            dispatch_with_snapshot(snapshot, slot, event, event_name, dispatch_ctx).await?
+        };
 
         if !once_removed.is_empty() {
             let mut registry = self.inner.registry.lock().await;
@@ -86,7 +94,11 @@ impl EventBus {
             return Ok(());
         }
 
-        let _permit = self.inner.publish_permits.acquire().await.map_err(|_| EventBusError::Stopped)?;
+        let _permit = match self.inner.publish_permits.try_acquire() {
+            Ok(permit) => permit,
+            Err(tokio::sync::TryAcquireError::NoPermits) => self.inner.publish_permits.acquire().await.map_err(|_| EventBusError::Stopped)?,
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(EventBusError::Stopped),
+        };
         let sync_only =
             !snapshot.global_has_async_middleware && slot.is_none_or(|slot| slot.async_listeners.is_empty() && !slot.has_async_middleware);
 
