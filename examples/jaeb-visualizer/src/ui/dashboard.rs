@@ -152,7 +152,7 @@ fn render_handler_panels(area: Rect, buf: &mut Buffer, viz: &VisualizationState,
     let remaining_rows = rows.saturating_sub(dash.handler_scroll);
 
     let min_row_height: u16 = 5;
-    let target_visible_rows: usize = remaining_rows.min(3).max(1);
+    let target_visible_rows: usize = remaining_rows.clamp(1, 3);
     let mut visible_rows = target_visible_rows;
     while visible_rows > 1 && available_rows_height < min_row_height * visible_rows as u16 {
         visible_rows -= 1;
