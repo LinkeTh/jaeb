@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use crate::bus::{EventBus, EventBusBuilder};
 use crate::error::EventBusError;
 use crate::handler::SyncEventHandler;
-use crate::types::{Event, FailurePolicy};
+use crate::types::{Event, SubscriptionPolicy};
 
 type AnyBuffer = Arc<Mutex<Vec<Box<dyn Any + Send + Sync>>>>;
 
@@ -101,7 +101,7 @@ impl TestBus {
         // Subscribe with dead_letter = false to avoid noise in tests.
         // The subscription handle is intentionally dropped — the capture
         // handler should remain registered for the lifetime of the TestBus.
-        let policy = crate::NoRetryPolicy::default().with_dead_letter(false);
+        let policy = crate::SyncSubscriptionPolicy::default().with_dead_letter(false);
         let _sub = self.bus.subscribe_with_policy::<E, _, crate::handler::SyncMode>(handler, policy).await?;
 
         Ok(())
@@ -191,10 +191,15 @@ impl TestBusBuilder {
         self
     }
 
-    /// See [`EventBusBuilder::default_failure_policy`].
-    pub fn default_failure_policy(mut self, policy: FailurePolicy) -> Self {
-        self.inner = self.inner.default_failure_policy(policy);
+    /// See [`EventBusBuilder::default_subscription_policy`].
+    pub fn default_subscription_policy(mut self, policy: SubscriptionPolicy) -> Self {
+        self.inner = self.inner.default_subscription_policy(policy);
         self
+    }
+
+    #[deprecated(since = "0.3.3", note = "renamed to default_subscription_policy")]
+    pub fn default_failure_policy(self, policy: SubscriptionPolicy) -> Self {
+        self.default_subscription_policy(policy)
     }
 
     /// Build and return the [`TestBus`].

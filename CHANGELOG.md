@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-04-11
+
+### Added
+
+- New standalone proc-macro crate `jaeb-macros` with:
+    - `#[handler]` for generating JAEB handler structs from free functions
+    - `register_handlers!(bus, ...)` for batch async registration with `?`-based error propagation
+    - `register_handlers!(bus)` for `inventory`-based auto-discovery and registration
+- New optional `macros` feature on `jaeb` that re-exports `handler` and
+  `register_handlers`, and enables internal `inventory` support required for
+  auto-discovery.
+- New `examples/macro-handlers` demonstrating standalone macro usage without
+  summer-rs.
+- New `examples/macro-handlers-auto` showing zero-argument macro registration.
+
+### Changed
+
+- Optimized async dispatch hot path by removing an internal nested
+  `tokio::spawn` during listener execution; async handler futures are now
+  executed directly in the tracked task with panic capture.
+- Reduced tracker overhead by switching internal async-task handle storage from
+  `tokio::sync::Mutex` to `std::sync::Mutex` and making task tracking updates
+  synchronous.
+- Consolidated panic-message extraction for sync and async handler paths.
+- Updated `BENCHMARK.md` with new cross-library measurements after the
+  dispatch-path optimization pass.
+
+### Performance
+
+- `comparison_async_single_listener` (`jaeb_publish`): ~`1.96 us` -> ~`1.39 us`
+  (~29% faster)
+- `comparison_async_fanout_10` (`jaeb_publish`): ~`19.16 us` -> ~`10.64 us`
+  (~45% faster)
+- `comparison_contention_4_publishers` (`jaeb_publish`): ~`1.83 us` -> ~`0.45 us`
+  (~75% faster)
+
+## [0.3.3] - 2026-04-11
+
+### Added
+
+- Listener priority support via `priority` on subscription policies, with
+  higher-priority listeners dispatched first and stable registration order for
+  equal priority.
+- New policy types:
+    - `SubscriptionPolicy { priority, max_retries, retry_strategy, dead_letter }`
+    - `SyncSubscriptionPolicy { priority, dead_letter }`
+- New compile-time compatibility trait name: `IntoSubscriptionPolicy<M>`.
+- Priority integration tests in `tests/priority.rs`.
+- Cross-library criterion benchmark harness in `benches/comparison.rs` for
+  `jaeb`, `eventbuzz`, and `evno` (where stable).
+- `BENCHMARK.md` with benchmark methodology, latest measurements, and caveats.
+- New `examples/axum-integration` showcasing REST endpoints that publish domain
+  events and consume dead letters.
+- Proc-macro evaluation document at `docs/PROC_MACRO_EVALUATION.md` describing
+  current summer-rs coupling and standalone options.
+
+### Changed
+
+- Renamed public policy API from failure-centric names to subscription-centric
+  names throughout docs and examples.
+- `EventBusBuilder::default_failure_policy(...)` renamed to
+  `default_subscription_policy(...)`.
+- `TestBusBuilder::default_failure_policy(...)` renamed to
+  `default_subscription_policy(...)`.
+- `#[event_listener]` macro now supports a `priority = <int>` attribute and
+  generates policy chains using `SubscriptionPolicy` / `SyncSubscriptionPolicy`.
+- README was expanded and updated with architecture, policy model, benchmark,
+  and example guidance.
+
+### Deprecated
+
+- `FailurePolicy` (use `SubscriptionPolicy`).
+- `NoRetryPolicy` (use `SyncSubscriptionPolicy`).
+- `IntoFailurePolicy` (use `IntoSubscriptionPolicy`).
+- `EventBusBuilder::default_failure_policy(...)` (use
+  `default_subscription_policy(...)`).
+- `TestBusBuilder::default_failure_policy(...)` (use
+  `default_subscription_policy(...)`).
+
+### Notes
+
+- `evno` contention benchmark is intentionally omitted from the active
+  criterion group due to reproducible instability (high CPU/non-terminating
+  behavior) in this environment; details are documented in `BENCHMARK.md`.
+
 ## [0.3.2] - 2026-04-10
 
 ### Added

@@ -89,8 +89,8 @@ pub(crate) fn gen_subscribe_call(
                 .await
                 .expect(#subscribe_msg);
         }
-    } else if attrs.has_failure_policy() {
-        let policy = gen_failure_policy(attrs, is_async);
+    } else if attrs.has_subscription_policy() {
+        let policy = gen_subscription_policy(attrs, is_async);
         quote! {
             let _sub = bus.subscribe_with_policy::<#event_ty, _, _>(#handler_expr, #policy)
                 .await
@@ -105,13 +105,13 @@ pub(crate) fn gen_subscribe_call(
     }
 }
 
-fn gen_failure_policy(attrs: &ListenerAttrs, is_async: bool) -> TokenStream2 {
-    // For async handlers, use FailurePolicy (supports retries).
-    // For sync handlers, use NoRetryPolicy (compile-time safety — no retries allowed).
+fn gen_subscription_policy(attrs: &ListenerAttrs, is_async: bool) -> TokenStream2 {
+    // For async handlers, use SubscriptionPolicy (supports retries).
+    // For sync handlers, use SyncSubscriptionPolicy (compile-time safety — no retries allowed).
     let mut chain = if is_async {
-        quote! { ::jaeb::FailurePolicy::default() }
+        quote! { ::jaeb::SubscriptionPolicy::default() }
     } else {
-        quote! { ::jaeb::NoRetryPolicy::default() }
+        quote! { ::jaeb::SyncSubscriptionPolicy::default() }
     };
 
     // Retry-related attrs are only valid for async handlers (enforced by validation
@@ -162,6 +162,10 @@ fn gen_failure_policy(attrs: &ListenerAttrs, is_async: bool) -> TokenStream2 {
 
     if let Some(dl) = attrs.dead_letter {
         chain = quote! { #chain.with_dead_letter(#dl) };
+    }
+
+    if let Some(priority) = attrs.priority {
+        chain = quote! { #chain.with_priority(#priority) };
     }
 
     chain

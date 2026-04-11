@@ -1,4 +1,4 @@
-error: unknown attribute `unknown`, expected one of: retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, name
+error: unknown attribute `unknown`, expected one of: retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority, name
  --> tests/compile_fail/unknown_attr.rs:9:18
   |
 9 | #[event_listener(unknown = 42)]

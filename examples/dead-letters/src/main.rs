@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use jaeb::{DeadLetter, EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy, SyncEventHandler};
+use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler};
 
 // ── Events ──────────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ impl SyncEventHandler<DeadLetter> for DeadLetterSink {
 async fn main() {
     let bus = EventBus::new(64).expect("valid config");
 
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(true);

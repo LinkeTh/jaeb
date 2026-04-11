@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy};
+use jaeb::{EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy};
 
 // ── Events ──────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ async fn main() {
     let bus = EventBus::new(64).expect("valid config");
 
     // Fixed: wait 50ms between each retry.
-    let fixed_policy = FailurePolicy::default()
+    let fixed_policy = SubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(false);
@@ -58,7 +58,7 @@ async fn main() {
         .expect("subscribe failed");
 
     // Exponential: 25ms, 50ms, 100ms, ...
-    let exp_policy = FailurePolicy::default()
+    let exp_policy = SubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::Exponential {
             base: Duration::from_millis(25),
@@ -78,7 +78,7 @@ async fn main() {
         .expect("subscribe failed");
 
     // ExponentialWithJitter: randomised delay up to the exponential cap.
-    let jitter_policy = FailurePolicy::default()
+    let jitter_policy = SubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::ExponentialWithJitter {
             base: Duration::from_millis(25),

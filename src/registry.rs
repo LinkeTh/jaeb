@@ -4,7 +4,9 @@ use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot};
@@ -16,7 +18,7 @@ use metrics::counter;
 
 use crate::error::{EventBusError, HandlerResult};
 use crate::middleware::MiddlewareDecision;
-use crate::types::{DeadLetter, FailurePolicy, ListenerInfo, SubscriptionId};
+use crate::types::{DeadLetter, ListenerInfo, SubscriptionId, SubscriptionPolicy};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::TimerGuard;
@@ -24,6 +26,39 @@ use crate::metrics::TimerGuard;
 pub(crate) type EventType = Arc<dyn Any + Send + Sync>;
 pub(crate) type HandlerFuture = Pin<Box<dyn Future<Output = HandlerResult> + Send>>;
 pub(crate) type MiddlewareFuture = Pin<Box<dyn Future<Output = MiddlewareDecision> + Send>>;
+
+fn extract_panic_message(panic_payload: Box<dyn Any + Send>) -> String {
+    if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "handler panicked".to_string()
+    }
+}
+
+struct CatchUnwindFuture {
+    inner: HandlerFuture,
+}
+
+impl CatchUnwindFuture {
+    fn new(inner: HandlerFuture) -> Self {
+        Self { inner }
+    }
+}
+
+impl Future for CatchUnwindFuture {
+    type Output = Result<HandlerResult, String>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        match catch_unwind(AssertUnwindSafe(|| this.inner.as_mut().poll(cx))) {
+            Ok(Poll::Ready(result)) => Poll::Ready(Ok(result)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(panic_payload) => Poll::Ready(Err(extract_panic_message(panic_payload))),
+        }
+    }
+}
 
 pub(crate) type ErasedAsyncMiddleware = Arc<dyn Fn(&'static str, EventType) -> MiddlewareFuture + Send + Sync>;
 pub(crate) type ErasedSyncMiddleware = Arc<dyn Fn(&'static str, &(dyn Any + Send + Sync)) -> MiddlewareDecision + Send + Sync>;
@@ -50,7 +85,7 @@ pub(crate) enum ListenerKind {
 pub(crate) struct ListenerEntry {
     pub id: SubscriptionId,
     pub kind: ListenerKind,
-    pub failure_policy: FailurePolicy,
+    pub subscription_policy: SubscriptionPolicy,
     pub name: Option<&'static str>,
     pub once: bool,
     pub fired: Option<Arc<AtomicBool>>,
@@ -101,6 +136,9 @@ impl MutableTypeSlot {
                 ListenerKind::Async(_) => async_listeners.push(listener.clone()),
             }
         }
+        sync_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
+        async_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
+
         Arc::new(TypeSlot {
             sync_listeners: sync_listeners.into(),
             async_listeners: async_listeners.into(),
@@ -290,12 +328,12 @@ pub(crate) struct DispatchContext {
 pub(crate) struct AsyncTaskTracker {
     next_id: AtomicU64,
     in_flight: AtomicUsize,
-    tasks: Mutex<HashMap<u64, Option<AbortHandle>>>,
+    tasks: StdMutex<HashMap<u64, Option<AbortHandle>>>,
     notify: Notify,
 }
 
 impl AsyncTaskTracker {
-    pub(crate) async fn spawn_tracked<F>(self: &Arc<Self>, fut: F)
+    pub(crate) fn spawn_tracked<F>(self: &Arc<Self>, fut: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -304,11 +342,11 @@ impl AsyncTaskTracker {
         let tracker = Arc::clone(self);
         let handle = tokio::spawn(async move {
             fut.await;
-            tracker.finish_task(id).await;
+            tracker.finish_task(id);
         });
 
         let abort_handle = handle.abort_handle();
-        self.tasks.lock().await.insert(id, Some(abort_handle));
+        self.tasks.lock().expect("tracker task lock poisoned").insert(id, Some(abort_handle));
     }
 
     pub(crate) fn in_flight(&self) -> usize {
@@ -332,7 +370,7 @@ impl AsyncTaskTracker {
             };
             if tokio::time::timeout(timeout, wait).await.is_err() {
                 let handles: Vec<AbortHandle> = {
-                    let mut guard = self.tasks.lock().await;
+                    let mut guard = self.tasks.lock().expect("tracker task lock poisoned");
                     guard.drain().filter_map(|(_, h)| h).collect()
                 };
                 for handle in &handles {
@@ -353,16 +391,16 @@ impl AsyncTaskTracker {
         }
     }
 
-    async fn finish_task(&self, id: u64) {
+    fn finish_task(&self, id: u64) {
         self.in_flight.fetch_sub(1, Ordering::AcqRel);
-        self.remove_abort_handle(id).await;
+        self.remove_abort_handle(id);
         if self.in_flight.load(Ordering::Acquire) == 0 {
             self.notify.notify_waiters();
         }
     }
 
-    async fn remove_abort_handle(&self, id: u64) {
-        self.tasks.lock().await.remove(&id);
+    fn remove_abort_handle(&self, id: u64) {
+        self.tasks.lock().expect("tracker task lock poisoned").remove(&id);
     }
 }
 
@@ -372,7 +410,7 @@ fn sync_listener_failed(listener: &ListenerEntry, event_name: &'static str, even
         subscription_id: listener.id,
         attempts: 1,
         error: err,
-        dead_letter: listener.failure_policy.dead_letter,
+        dead_letter: listener.subscription_policy.dead_letter,
         event: Arc::clone(event),
         listener_name: listener.name,
     }
@@ -385,9 +423,7 @@ async fn execute_async_listener(
     listener: ListenerEntry,
     handler_timeout: Option<Duration>,
 ) -> Option<ListenerFailure> {
-    // Panics from async handlers are surfaced as JoinError and treated like
-    // regular failures, so they follow the same retry/dead-letter policy.
-    let mut retries_left = listener.failure_policy.max_retries;
+    let mut retries_left = listener.subscription_policy.max_retries;
     let mut attempts = 0usize;
     loop {
         attempts += 1;
@@ -395,22 +431,17 @@ async fn execute_async_listener(
         #[cfg(feature = "metrics")]
         let _timer = TimerGuard::start("eventbus.handler.duration", event_name);
 
+        let handler_future = CatchUnwindFuture::new(handler(Arc::clone(&event)));
+
         let result = match handler_timeout {
-            Some(timeout) => {
-                let mut join = tokio::spawn(handler(Arc::clone(&event)));
-                match tokio::time::timeout(timeout, &mut join).await {
-                    Ok(Ok(inner)) => inner,
-                    Ok(Err(join_error)) => Err(format!("handler task failed: {join_error}").into()),
-                    Err(_) => {
-                        join.abort();
-                        let _ = join.await;
-                        Err(format!("handler timed out after {timeout:?}").into())
-                    }
-                }
-            }
-            None => match tokio::spawn(handler(Arc::clone(&event))).await {
+            Some(timeout) => match tokio::time::timeout(timeout, handler_future).await {
+                Ok(Ok(inner)) => inner,
+                Ok(Err(panic_msg)) => Err(format!("handler panicked: {panic_msg}").into()),
+                Err(_) => Err(format!("handler timed out after {timeout:?}").into()),
+            },
+            None => match handler_future.await {
                 Ok(inner) => inner,
-                Err(join_error) => Err(format!("handler task failed: {join_error}").into()),
+                Err(panic_msg) => Err(format!("handler panicked: {panic_msg}").into()),
             },
         };
 
@@ -424,7 +455,7 @@ async fn execute_async_listener(
                         subscription_id: listener.id,
                         attempts,
                         error: error_message,
-                        dead_letter: listener.failure_policy.dead_letter,
+                        dead_letter: listener.subscription_policy.dead_letter,
                         event: Arc::clone(&event),
                         listener_name: listener.name,
                     });
@@ -440,7 +471,7 @@ async fn execute_async_listener(
                     "handler.retry"
                 );
 
-                if let Some(strategy) = listener.failure_policy.retry_strategy {
+                if let Some(strategy) = listener.subscription_policy.retry_strategy {
                     tokio::time::sleep(strategy.delay_for_attempt(attempts - 1)).await;
                 }
             }
@@ -518,23 +549,21 @@ pub(crate) async fn dispatch_with_snapshot(
             let event = Arc::clone(&event);
             let notify = dispatch_ctx.notify_tx.clone();
             let semaphore = slot.async_semaphore.as_ref().map(Arc::clone);
-            tracker
-                .spawn_tracked(async move {
-                    let task = async {
-                        if let Some(failure) = execute_async_listener(handler, event, event_name, listener, handler_timeout).await {
-                            let _ = notify.send(ControlNotification::Failure(failure));
-                        }
-                    };
+            tracker.spawn_tracked(async move {
+                let task = async {
+                    if let Some(failure) = execute_async_listener(handler, event, event_name, listener, handler_timeout).await {
+                        let _ = notify.send(ControlNotification::Failure(failure));
+                    }
+                };
 
-                    if let Some(semaphore) = semaphore {
-                        if let Ok(_permit) = semaphore.acquire().await {
-                            task.await;
-                        }
-                    } else {
+                if let Some(semaphore) = semaphore {
+                    if let Ok(_permit) = semaphore.acquire().await {
                         task.await;
                     }
-                })
-                .await;
+                } else {
+                    task.await;
+                }
+            });
         }
     }
 
@@ -562,16 +591,7 @@ pub(crate) async fn dispatch_with_snapshot(
             // Safe because we only pass shared references to listener code.
             handler(event.as_ref())
         }))
-        .unwrap_or_else(|panic_payload| {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "handler panicked".to_string()
-            };
-            Err(msg.into())
-        });
+        .unwrap_or_else(|panic_payload| Err(extract_panic_message(panic_payload).into()));
 
         if let Err(err) = result {
             let _ = dispatch_ctx.notify_tx.send(ControlNotification::Failure(sync_listener_failed(
@@ -625,20 +645,18 @@ mod tests {
         let tracker = Arc::new(AsyncTaskTracker::default());
         let barrier = Arc::new(Barrier::new(2));
 
-        tracker
-            .spawn_tracked({
-                let barrier = Arc::clone(&barrier);
-                async move {
-                    barrier.wait().await;
-                }
-            })
-            .await;
+        tracker.spawn_tracked({
+            let barrier = Arc::clone(&barrier);
+            async move {
+                barrier.wait().await;
+            }
+        });
 
         barrier.wait().await;
         let timed_out = tracker.shutdown(Some(std::time::Duration::from_secs(1))).await;
         assert!(!timed_out, "tracker shutdown should complete without timeout");
 
-        let guard = tracker.tasks.lock().await;
+        let guard = tracker.tasks.lock().expect("tracker task lock poisoned");
         assert!(guard.is_empty(), "tracker task map should be empty after completion");
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use jaeb::{EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy, SyncEventHandler};
+use jaeb::{EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler};
 
 // ── Event types ──────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ async fn retry_policy_retries_async_handler() {
     let bus = EventBus::new(16).expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(1)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(1)));
 
@@ -114,7 +114,7 @@ async fn retry_multiple_attempts() {
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Fail the first 3, succeed on the 4th → need max_retries=3.
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(1)));
 
@@ -141,7 +141,7 @@ async fn retry_delay_is_respected() {
     let bus = EventBus::new(16).expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(1)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(false);
@@ -176,7 +176,7 @@ async fn retry_exponential_backoff() {
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Exponential: base=25ms, max=200ms → delays: 25ms, 50ms (attempts 0,1)
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Exponential {
             base: Duration::from_millis(25),
@@ -210,7 +210,7 @@ async fn retry_exponential_caps_at_max() {
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Exponential: base=50ms, max=60ms → delays: 50ms, 60ms (capped), 60ms (capped)
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::Exponential {
             base: Duration::from_millis(50),
@@ -246,7 +246,7 @@ async fn retry_exponential_with_jitter_is_bounded() {
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Jitter: base=10ms, max=100ms → delays are random in [0, capped]
-    let policy = FailurePolicy::default()
+    let policy = SubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::ExponentialWithJitter {
             base: Duration::from_millis(10),
@@ -281,7 +281,7 @@ async fn retry_no_strategy_retries_immediately() {
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // max_retries with no strategy → retries happen immediately (no delay).
-    let policy = FailurePolicy::default().with_max_retries(2).with_dead_letter(false);
+    let policy = SubscriptionPolicy::default().with_max_retries(2).with_dead_letter(false);
 
     let _ = bus
         .subscribe_with_policy(

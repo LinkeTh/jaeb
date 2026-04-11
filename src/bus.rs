@@ -19,7 +19,7 @@ use crate::registry::{
     TypedMiddlewareSlot, dead_letter_from_failure, dispatch_with_snapshot,
 };
 use crate::subscription::Subscription;
-use crate::types::{BusConfig, BusStats, DeadLetter, Event, FailurePolicy, IntoFailurePolicy, NoRetryPolicy, SubscriptionId};
+use crate::types::{BusConfig, BusStats, DeadLetter, Event, IntoSubscriptionPolicy, SubscriptionId, SubscriptionPolicy, SyncSubscriptionPolicy};
 
 /// Builder for constructing an [`EventBus`] with custom configuration.
 ///
@@ -70,7 +70,7 @@ impl EventBusBuilder {
     ///
     /// If an async handler does not complete within this duration it is
     /// cancelled and treated as a failure (subject to the listener's
-    /// [`FailurePolicy`]). Sync handlers are not affected.
+    /// [`SubscriptionPolicy`]). Sync handlers are not affected.
     ///
     /// **Default:** no timeout (handlers may run indefinitely).
     pub fn handler_timeout(mut self, timeout: Duration) -> Self {
@@ -93,17 +93,22 @@ impl EventBusBuilder {
         self
     }
 
-    /// Set the fallback [`FailurePolicy`] applied to every new subscription
+    /// Set the fallback [`SubscriptionPolicy`] applied to every new subscription
     /// that does not specify its own policy.
     ///
     /// This policy is overridden on a per-subscription basis by
     /// [`EventBus::subscribe_with_policy`] and friends.
     ///
-    /// **Default:** [`FailurePolicy::default()`] — no retries, dead-letter
-    /// enabled.
-    pub fn default_failure_policy(mut self, policy: FailurePolicy) -> Self {
-        self.config.default_failure_policy = policy;
+    /// **Default:** [`SubscriptionPolicy::default()`] — priority `0`, no
+    /// retries, dead-letter enabled.
+    pub fn default_subscription_policy(mut self, policy: SubscriptionPolicy) -> Self {
+        self.config.default_subscription_policy = policy;
         self
+    }
+
+    #[deprecated(since = "0.3.3", note = "renamed to default_subscription_policy")]
+    pub fn default_failure_policy(self, policy: SubscriptionPolicy) -> Self {
+        self.default_subscription_policy(policy)
     }
 
     /// Set a deadline for draining in-flight async tasks during shutdown.
@@ -140,7 +145,7 @@ impl EventBusBuilder {
 struct Inner {
     snapshot: ArcSwap<RegistrySnapshot>,
     registry: Mutex<MutableRegistry>,
-    default_failure_policy: FailurePolicy,
+    default_subscription_policy: SubscriptionPolicy,
     tracker: Arc<AsyncTaskTracker>,
     publish_permits: Arc<Semaphore>,
     shutdown_timeout: Option<Duration>,
@@ -199,7 +204,7 @@ pub struct EventBus {
 impl std::fmt::Debug for EventBus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventBus")
-            .field("default_failure_policy", &self.inner.default_failure_policy)
+            .field("default_subscription_policy", &self.inner.default_subscription_policy)
             .field("shutdown_called", &self.inner.shutdown_called.load(Ordering::Relaxed))
             .finish()
     }
@@ -230,7 +235,7 @@ impl EventBus {
         let inner = Arc::new(Inner {
             snapshot: ArcSwap::from_pointee(RegistrySnapshot::default()),
             registry: Mutex::new(MutableRegistry::new(config.max_concurrent_async)),
-            default_failure_policy: config.default_failure_policy,
+            default_subscription_policy: config.default_subscription_policy,
             tracker,
             publish_permits: Arc::new(Semaphore::new(config.buffer_size)),
             shutdown_timeout: config.shutdown_timeout,
@@ -276,7 +281,8 @@ impl EventBus {
         false
     }
 
-    /// Register a handler for event type `E` using the bus's default failure policy.
+    /// Register a handler for event type `E` using the bus's default
+    /// subscription policy.
     ///
     /// The dispatch mode (async vs sync) is inferred from the handler type:
     /// - Types implementing [`EventHandler<E>`](crate::EventHandler) are dispatched
@@ -301,7 +307,7 @@ impl EventBus {
         H: IntoHandler<E, M>,
     {
         let registered = handler.into_handler();
-        let mut policy = self.inner.default_failure_policy;
+        let mut policy = self.inner.default_subscription_policy;
         if registered.is_sync {
             policy.max_retries = 0;
             policy.retry_strategy = None;
@@ -309,32 +315,34 @@ impl EventBus {
         self.subscribe_internal::<E>(registered, policy, false).await
     }
 
-    /// Register a handler for event type `E` with an explicit failure policy.
+    /// Register a handler for event type `E` with an explicit subscription
+    /// policy.
     ///
     /// Behaves the same as [`subscribe`](Self::subscribe) but overrides the
-    /// bus-level default [`FailurePolicy`] for this listener.
+    /// bus-level default [`SubscriptionPolicy`] for this listener.
     ///
-    /// The `policy` parameter accepts either a [`FailurePolicy`] (async handlers
-    /// only — retry + dead-letter) or a [`NoRetryPolicy`] (all handlers —
-    /// dead-letter only). Passing a [`FailurePolicy`] for a sync handler is a
-    /// **compile-time error** enforced by [`IntoFailurePolicy`].
+    /// The `policy` parameter accepts either a [`SubscriptionPolicy`] (async
+    /// handlers only — priority + retry + dead-letter) or a
+    /// [`SyncSubscriptionPolicy`] (all handlers — priority + dead-letter only).
+    /// Passing a [`SubscriptionPolicy`] for a sync handler is a compile-time
+    /// error enforced by [`IntoSubscriptionPolicy`].
     ///
     /// # Errors
     ///
     /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
-    pub async fn subscribe_with_policy<E, H, M>(&self, handler: H, policy: impl IntoFailurePolicy<M>) -> Result<Subscription, EventBusError>
+    pub async fn subscribe_with_policy<E, H, M>(&self, handler: H, policy: impl IntoSubscriptionPolicy<M>) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
         let registered = handler.into_handler();
-        self.subscribe_internal::<E>(registered, policy.into_failure_policy(), false).await
+        self.subscribe_internal::<E>(registered, policy.into_subscription_policy(), false).await
     }
 
     async fn subscribe_internal<E: Event>(
         &self,
         registered: RegisteredHandler,
-        failure_policy: FailurePolicy,
+        subscription_policy: SubscriptionPolicy,
         once: bool,
     ) -> Result<Subscription, EventBusError> {
         if self.inner.shutdown_called.load(Ordering::Acquire) {
@@ -343,7 +351,7 @@ impl EventBus {
 
         trace!("event_bus.subscribe {:?}", &registered.name);
         let id = self.next_subscription_id();
-        let listener = (registered.register)(id, failure_policy, once);
+        let listener = (registered.register)(id, subscription_policy, once);
 
         let mut registry = self.inner.registry.lock().await;
         registry.add_listener(TypeId::of::<E>(), std::any::type_name::<E>(), listener);
@@ -366,7 +374,7 @@ impl EventBus {
     where
         H: SyncEventHandler<DeadLetter>,
     {
-        let policy = NoRetryPolicy::default().with_dead_letter(false);
+        let policy = SyncSubscriptionPolicy::default().with_dead_letter(false);
         self.subscribe_with_policy::<DeadLetter, H, crate::handler::SyncMode>(handler, policy)
             .await
     }
@@ -374,8 +382,8 @@ impl EventBus {
     /// Register a handler that automatically unsubscribes after its first
     /// invocation.
     ///
-    /// Uses the bus default failure policy with `dead_letter` inherited from
-    /// that policy. For custom dead-letter behaviour use
+    /// Uses the bus default subscription policy with `dead_letter` inherited
+    /// from that policy. For custom dead-letter behaviour use
     /// [`subscribe_once_with_policy`](Self::subscribe_once_with_policy).
     ///
     /// # Errors
@@ -386,28 +394,33 @@ impl EventBus {
         E: Event,
         H: IntoHandler<E, M>,
     {
-        let policy = NoRetryPolicy {
-            dead_letter: self.inner.default_failure_policy.dead_letter,
+        let policy = SyncSubscriptionPolicy {
+            priority: self.inner.default_subscription_policy.priority,
+            dead_letter: self.inner.default_subscription_policy.dead_letter,
         };
         self.subscribe_once_with_policy(handler, policy).await
     }
 
-    /// Register a one-shot handler with an explicit [`NoRetryPolicy`].
+    /// Register a one-shot handler with an explicit [`SyncSubscriptionPolicy`].
     ///
     /// The handler fires at most once and then unsubscribes itself. Retries
-    /// are not supported for one-shot listeners, so only [`NoRetryPolicy`] is
-    /// accepted.
+    /// are not supported for one-shot listeners, so only
+    /// [`SyncSubscriptionPolicy`] is accepted.
     ///
     /// # Errors
     ///
     /// Returns [`EventBusError::Stopped`] if the bus has already been shut down.
-    pub async fn subscribe_once_with_policy<E, H, M>(&self, handler: H, failure_policy: NoRetryPolicy) -> Result<Subscription, EventBusError>
+    pub async fn subscribe_once_with_policy<E, H, M>(
+        &self,
+        handler: H,
+        subscription_policy: SyncSubscriptionPolicy,
+    ) -> Result<Subscription, EventBusError>
     where
         E: Event,
         H: IntoHandler<E, M>,
     {
         let registered = handler.into_handler();
-        self.subscribe_internal::<E>(registered, failure_policy.into(), true).await
+        self.subscribe_internal::<E>(registered, subscription_policy.into(), true).await
     }
 
     /// Add a global async middleware that intercepts **all** event types.

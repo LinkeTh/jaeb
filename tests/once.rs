@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::NoRetryPolicy;
+use jaeb::SyncSubscriptionPolicy;
 use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, SyncEventHandler};
 
 #[derive(Clone)]
@@ -103,7 +103,7 @@ async fn once_handler_failure_emits_dead_letter_and_removes() {
         .await
         .expect("subscribe dead letters");
 
-    let policy = NoRetryPolicy::default();
+    let policy = SyncSubscriptionPolicy::default();
     let _sub = bus
         .subscribe_once_with_policy::<Ping, _, _>(FailingHandler, policy)
         .await

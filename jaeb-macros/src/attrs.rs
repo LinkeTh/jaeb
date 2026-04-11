@@ -1,17 +1,16 @@
-//! Parsing of `#[event_listener(...)]` attribute arguments and state parameters.
+//! Parsing of `#[handler(...)]` attribute arguments.
 
+use syn::Token;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Ident, Token, Type};
 
-// ── Attribute arguments ──────────────────────────────────────────────────────
-
-/// Parsed attributes from `#[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]`.
+/// Parsed attributes from:
+/// `#[handler(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]`.
 ///
 /// Retry strategy is specified via `retry_strategy = "..."` combined with
 /// `retry_base_ms` and optionally `retry_max_ms`.
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct ListenerAttrs {
+pub(crate) struct HandlerAttrs {
     pub retries: Option<usize>,
     pub retry_strategy: Option<String>,
     pub retry_base_ms: Option<u64>,
@@ -23,7 +22,7 @@ pub(crate) struct ListenerAttrs {
     pub name: Option<String>,
 }
 
-impl Parse for ListenerAttrs {
+impl Parse for HandlerAttrs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut retries = None;
         let mut retry_strategy = None;
@@ -140,15 +139,14 @@ impl Parse for ListenerAttrs {
                     return Err(syn::Error::new_spanned(
                         &pair.path,
                         format!(
-                            "unknown attribute `{key}`, expected one of: retries, \
-                             retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority, name"
+                            "unknown attribute `{key}`, expected one of: retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority, name"
                         ),
                     ));
                 }
             }
         }
 
-        Ok(ListenerAttrs {
+        Ok(HandlerAttrs {
             retries,
             retry_strategy,
             retry_base_ms,
@@ -160,7 +158,7 @@ impl Parse for ListenerAttrs {
     }
 }
 
-impl ListenerAttrs {
+impl HandlerAttrs {
     /// Returns `true` if any subscription-policy attribute was specified.
     pub(crate) fn has_subscription_policy(&self) -> bool {
         self.retries.is_some()
@@ -178,29 +176,18 @@ impl ListenerAttrs {
     }
 }
 
-// ── Parsed state parameter ───────────────────────────────────────────────────
-
-/// A `Component(name): Component<Type>` parameter extracted from the function signature.
-pub(crate) struct StateParam {
-    /// The binding name (e.g. `db` from `Component(db): Component<DbPool>`)
-    pub name: Ident,
-    /// The inner type (e.g. `DbPool`)
-    pub inner_ty: Type,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use syn::parse_str;
 
-    /// Helper: parse a `#[event_listener(...)]` attribute body into `ListenerAttrs`.
-    fn parse_attrs(input: &str) -> syn::Result<ListenerAttrs> {
-        parse_str::<ListenerAttrs>(input)
+    fn parse_attrs(input: &str) -> syn::Result<HandlerAttrs> {
+        parse_str::<HandlerAttrs>(input)
     }
 
     #[test]
     fn parse_empty_attrs() {
-        let attrs = parse_attrs("").unwrap();
+        let attrs = parse_attrs("").expect("should parse");
         assert!(attrs.retries.is_none());
         assert!(attrs.retry_strategy.is_none());
         assert!(attrs.retry_base_ms.is_none());
@@ -212,19 +199,19 @@ mod tests {
 
     #[test]
     fn parse_name_attr() {
-        let attrs = parse_attrs(r#"name = "custom""#).unwrap();
+        let attrs = parse_attrs(r#"name = "custom""#).expect("should parse");
         assert_eq!(attrs.name.as_deref(), Some("custom"));
     }
 
     #[test]
     fn parse_name_empty_string() {
-        let attrs = parse_attrs(r#"name = """#).unwrap();
+        let attrs = parse_attrs(r#"name = """#).expect("should parse");
         assert_eq!(attrs.name.as_deref(), Some(""));
     }
 
     #[test]
     fn parse_name_with_retry_attrs() {
-        let attrs = parse_attrs(r#"name = "x", retries = 3, dead_letter = true"#).unwrap();
+        let attrs = parse_attrs(r#"name = "x", retries = 3, dead_letter = true"#).expect("should parse");
         assert_eq!(attrs.name.as_deref(), Some("x"));
         assert_eq!(attrs.retries, Some(3));
         assert_eq!(attrs.dead_letter, Some(true));
@@ -232,31 +219,31 @@ mod tests {
 
     #[test]
     fn parse_priority_positive() {
-        let attrs = parse_attrs("priority = 10").unwrap();
+        let attrs = parse_attrs("priority = 10").expect("should parse");
         assert_eq!(attrs.priority, Some(10));
     }
 
     #[test]
     fn parse_priority_negative() {
-        let attrs = parse_attrs("priority = -3").unwrap();
+        let attrs = parse_attrs("priority = -3").expect("should parse");
         assert_eq!(attrs.priority, Some(-3));
     }
 
     #[test]
     fn parse_reject_duplicate_name() {
-        let err = parse_attrs(r#"name = "a", name = "b""#).unwrap_err();
+        let err = parse_attrs(r#"name = "a", name = "b""#).expect_err("should fail");
         assert!(err.to_string().contains("duplicate attribute `name`"));
     }
 
     #[test]
     fn parse_reject_non_string_name() {
-        let err = parse_attrs("name = 42").unwrap_err();
+        let err = parse_attrs("name = 42").expect_err("should fail");
         assert!(err.to_string().contains("expected string literal"));
     }
 
     #[test]
     fn has_subscription_policy_excludes_name() {
-        let attrs = parse_attrs(r#"name = "x""#).unwrap();
+        let attrs = parse_attrs(r#"name = "x""#).expect("should parse");
         assert!(!attrs.has_subscription_policy());
         assert!(!attrs.has_retry_strategy_attrs());
     }
@@ -265,26 +252,26 @@ mod tests {
     fn parse_all_retry_strategies() {
         for strategy in &["fixed", "exponential", "exponential_jitter"] {
             let input = format!(r#"retry_strategy = "{strategy}""#);
-            let attrs = parse_attrs(&input).unwrap();
+            let attrs = parse_attrs(&input).expect("should parse");
             assert_eq!(attrs.retry_strategy.as_deref(), Some(*strategy));
         }
     }
 
     #[test]
     fn parse_reject_unknown_attr() {
-        let err = parse_attrs("unknown = 1").unwrap_err();
+        let err = parse_attrs("unknown = 1").expect_err("should fail");
         assert!(err.to_string().contains("unknown attribute `unknown`"));
     }
 
     #[test]
     fn parse_reject_unknown_retry_strategy() {
-        let err = parse_attrs(r#"retry_strategy = "unknown""#).unwrap_err();
+        let err = parse_attrs(r#"retry_strategy = "unknown""#).expect_err("should fail");
         assert!(err.to_string().contains("expected one of"));
     }
 
     #[test]
     fn parse_full_retry_config() {
-        let attrs = parse_attrs(r#"retries = 5, retry_strategy = "fixed", retry_base_ms = 200, dead_letter = false"#).unwrap();
+        let attrs = parse_attrs(r#"retries = 5, retry_strategy = "fixed", retry_base_ms = 200, dead_letter = false"#).expect("should parse");
         assert_eq!(attrs.retries, Some(5));
         assert_eq!(attrs.dead_letter, Some(false));
         assert_eq!(attrs.retry_base_ms, Some(200));
@@ -295,7 +282,7 @@ mod tests {
 
     #[test]
     fn parse_exponential_config() {
-        let attrs = parse_attrs(r#"retries = 3, retry_strategy = "exponential", retry_base_ms = 50, retry_max_ms = 5000"#).unwrap();
+        let attrs = parse_attrs(r#"retries = 3, retry_strategy = "exponential", retry_base_ms = 50, retry_max_ms = 5000"#).expect("should parse");
         assert_eq!(attrs.retries, Some(3));
         assert_eq!(attrs.retry_strategy.as_deref(), Some("exponential"));
         assert_eq!(attrs.retry_base_ms, Some(50));
@@ -304,13 +291,13 @@ mod tests {
 
     #[test]
     fn parse_reject_duplicate_retries() {
-        let err = parse_attrs("retries = 1, retries = 2").unwrap_err();
+        let err = parse_attrs("retries = 1, retries = 2").expect_err("should fail");
         assert!(err.to_string().contains("duplicate attribute `retries`"));
     }
 
     #[test]
     fn parse_reject_non_int_priority() {
-        let err = parse_attrs(r#"priority = "high""#).unwrap_err();
+        let err = parse_attrs(r#"priority = "high""#).expect_err("should fail");
         assert!(err.to_string().contains("expected integer"));
     }
 }

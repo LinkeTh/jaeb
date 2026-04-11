@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, NoRetryPolicy, SyncEventHandler};
+use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, SyncEventHandler, SyncSubscriptionPolicy};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
@@ -166,7 +166,7 @@ async fn dead_letter_suppressed_when_disabled() {
         .expect("subscribe dead letters");
 
     // Subscribe a handler with dead_letter = false.
-    let policy = NoRetryPolicy::default().with_dead_letter(false);
+    let policy = SyncSubscriptionPolicy::default().with_dead_letter(false);
     let _ = bus.subscribe_with_policy(AlwaysFailSync, policy).await.expect("subscribe");
 
     bus.publish(Alert("suppressed".into())).await.expect("publish");

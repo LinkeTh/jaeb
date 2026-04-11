@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use jaeb::{DeadLetter, EventBus, EventHandler, FailurePolicy, HandlerResult, RetryStrategy, SyncEventHandler};
+use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_util::MetricKindMask;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -145,7 +145,7 @@ async fn subscribe_listeners(bus: &EventBus) {
 
     let pool = DbPool;
     // In a real app, pass pool/config/etc. into handler structs here:
-    let retry_policy = FailurePolicy::default()
+    let retry_policy = SubscriptionPolicy::default()
         .with_max_retries(1)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(100)));
 
@@ -160,7 +160,7 @@ async fn subscribe_listeners(bus: &EventBus) {
     let _ = bus.subscribe(CheckoutLogger).await.expect("failed to subscribe checkout logger");
 
     // Always-failing handler with dead-letter enabled to demonstrate the dead-letter pipeline.
-    let dl_policy = FailurePolicy::default()
+    let dl_policy = SubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(true);

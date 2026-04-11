@@ -38,7 +38,8 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
     ///
     /// Called with a shared reference to the cloned event. Return `Ok(())`
     /// on success or a [`HandlerError`](crate::HandlerError) on failure.
-    /// Failures are subject to the listener's [`FailurePolicy`](crate::FailurePolicy).
+    /// Failures are subject to the listener's
+    /// [`SubscriptionPolicy`](crate::SubscriptionPolicy).
     fn handle(&self, event: &E) -> impl Future<Output = HandlerResult> + Send;
 
     /// Return an optional human-readable name for this listener.
@@ -47,8 +48,8 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
     /// [`EventBus::stats`](crate::EventBus::stats)) and in
     /// [`DeadLetter::listener_name`](crate::DeadLetter::listener_name).
     ///
-    /// Defaults to `None`; the `#[event_listener]` macro sets this
-    /// automatically from the function name.
+    /// Defaults to `None`; the standalone `#[handler]` macro (feature
+    /// `macros`) sets this automatically from the function name.
     fn name(&self) -> Option<&'static str> {
         None
     }
@@ -64,8 +65,9 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
 /// - Sync handlers do **not** require `E: Clone` because the original event
 ///   reference is passed directly.
 ///
-/// Sync handlers must use [`NoRetryPolicy`](crate::NoRetryPolicy); passing a
-/// [`FailurePolicy`](crate::FailurePolicy) for a sync handler is a
+/// Sync handlers must use
+/// [`SyncSubscriptionPolicy`](crate::SyncSubscriptionPolicy); passing a
+/// [`SubscriptionPolicy`](crate::SubscriptionPolicy) for a sync handler is a
 /// compile-time error.
 ///
 /// # Examples
@@ -123,7 +125,7 @@ pub struct AsyncFnMode;
 /// function pointer or closure is passed to a `subscribe_*` method.
 pub struct SyncFnMode;
 
-pub(crate) type RegisterFn = Box<dyn FnOnce(crate::types::SubscriptionId, crate::types::FailurePolicy, bool) -> ListenerEntry + Send>;
+pub(crate) type RegisterFn = Box<dyn FnOnce(crate::types::SubscriptionId, crate::types::SubscriptionPolicy, bool) -> ListenerEntry + Send>;
 
 pub(crate) struct RegisteredHandler {
     pub register: RegisterFn,
@@ -162,7 +164,7 @@ where
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
             let typed_fn: ErasedAsyncHandlerFn = Arc::new(move |event: EventType| {
                 let handler = Arc::clone(&handler);
                 let event = event.downcast::<E>();
@@ -175,7 +177,7 @@ where
             ListenerEntry {
                 id,
                 kind: ListenerKind::Async(typed_fn),
-                failure_policy,
+                subscription_policy,
                 name,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
@@ -199,7 +201,7 @@ where
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
             let typed_fn: ErasedSyncHandlerFn = Arc::new(move |event: &(dyn std::any::Any + Send + Sync)| {
                 let Some(event) = event.downcast_ref::<E>() else {
                     return Err("event type mismatch".into());
@@ -209,7 +211,7 @@ where
             ListenerEntry {
                 id,
                 kind: ListenerKind::Sync(typed_fn),
-                failure_policy,
+                subscription_policy,
                 name,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
@@ -232,7 +234,7 @@ where
 {
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
             let typed_fn: ErasedSyncHandlerFn = Arc::new(move |event: &(dyn std::any::Any + Send + Sync)| {
                 let Some(event) = event.downcast_ref::<E>() else {
                     return Err("event type mismatch".into());
@@ -242,7 +244,7 @@ where
             ListenerEntry {
                 id,
                 kind: ListenerKind::Sync(typed_fn),
-                failure_policy,
+                subscription_policy,
                 name: None,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
@@ -266,7 +268,7 @@ where
 {
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, failure_policy, once| {
+        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
             let typed_fn: ErasedAsyncHandlerFn = Arc::new(move |event: EventType| {
                 let handler = Arc::clone(&handler);
                 let event = event.downcast::<E>();
@@ -279,7 +281,7 @@ where
             ListenerEntry {
                 id,
                 kind: ListenerKind::Async(typed_fn),
-                failure_policy,
+                subscription_policy,
                 name: None,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),

@@ -56,7 +56,7 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 ///
 /// ```rust,ignore
 /// // Fixed delay
-/// #[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]
+/// #[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true, priority = 10)]
 /// async fn flaky_handler(event: &SomeEvent) -> HandlerResult {
 ///     // ...
 ///     Ok(())
@@ -177,13 +177,13 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
         ));
     }
 
-    // Failure policy attributes are not supported on DeadLetter listeners
+    // Subscription policy attributes are not supported on DeadLetter listeners
     // (subscribe_dead_letters hard-codes its own policy with dead_letter: false)
-    if is_dead_letter && attrs.has_failure_policy() {
+    if is_dead_letter && attrs.has_subscription_policy() {
         return Err(syn::Error::new_spanned(
             &func.sig,
-            "failure policy attributes (retries, retry_strategy, \
-             retry_base_ms, retry_max_ms, dead_letter) are not supported on DeadLetter listeners",
+            "subscription policy attributes (retries, retry_strategy, \
+             retry_base_ms, retry_max_ms, dead_letter, priority) are not supported on DeadLetter listeners",
         ));
     }
 

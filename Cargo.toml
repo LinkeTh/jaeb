@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.3.2"
+version = "0.3.4"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"
@@ -9,7 +9,7 @@ repository = "https://github.com/LinkeTh/jaeb"
 keywords = ["event-bus", "tokio", "async", "pubsub", "snapshot"]
 categories = ["asynchronous", "concurrency"]
 readme = "README.md"
-rust-version = "1.88"
+rust-version = "1.94"
 
 [lib]
 path = "src/lib.rs"
@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [workspace]
 members = [
     ".",
+    "jaeb-macros",
     "examples/jaeb-demo",
     "examples/summer-jaeb-demo",
     "examples/basic-pubsub",
@@ -32,25 +33,42 @@ members = [
     "examples/graceful-shutdown",
     "examples/concurrency-limit",
     "examples/introspection",
+    "examples/macro-handlers",
+    "examples/macro-handlers-auto",
     "examples/jaeb-visualizer",
+    "examples/axum-integration",
     "summer-jaeb-macros",
     "summer-jaeb",
 ]
 [dependencies]
 arc-swap = "1.7"
+inventory = { version = "0.3", optional = true }
+jaeb-macros = { path = "jaeb-macros", optional = true }
 metrics = { version = "0.24", optional = true }
 tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 tracing = { version = "0.1", features = ["std", "log"] }
 
 [features]
 default = []
+macros = ["dep:jaeb-macros", "dep:inventory"]
 metrics = ["dep:metrics"]
 test-utils = []
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["async_tokio"] }
 tokio = { version = "1.51", features = ["full", "test-util"] }
+async-trait = "0.1"
+eventbuzz = { version = "0.2", features = ["asynchronous"] }
+evno = "1.0.2"
 
 [[bench]]
 name = "throughput"
+harness = false
+
+[[bench]]
+name = "comparison"
+harness = false
+
+[[bench]]
+name = "evno_contention"
 harness = false

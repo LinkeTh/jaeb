@@ -1,4 +1,4 @@
-error: failure policy attributes (retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter) are not supported on DeadLetter listeners
+error: subscription policy attributes (retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority) are not supported on DeadLetter listeners
  --> tests/compile_fail/policy_on_dead_letter.rs:7:1
   |
 7 | fn on_dead_letter(event: &DeadLetter) -> HandlerResult {

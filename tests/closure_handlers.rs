@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::{DeadLetter, EventBus, EventBusError, FailurePolicy, HandlerResult, NoRetryPolicy, SyncEventHandler};
+use jaeb::{DeadLetter, EventBus, EventBusError, HandlerResult, SubscriptionPolicy, SyncEventHandler, SyncSubscriptionPolicy};
 
 #[derive(Clone)]
 struct Ping {
@@ -74,7 +74,7 @@ async fn async_closure_receives_event() {
 }
 
 #[tokio::test]
-async fn closure_with_failure_policy_emits_dead_letter() {
+async fn closure_with_subscription_policy_emits_dead_letter() {
     let bus = EventBus::new(64).expect("valid config");
     let dead_letters = Arc::new(AtomicUsize::new(0));
 
@@ -85,7 +85,7 @@ async fn closure_with_failure_policy_emits_dead_letter() {
         .await
         .expect("subscribe dead letters");
 
-    let policy = FailurePolicy::default().with_max_retries(1);
+    let policy = SubscriptionPolicy::default().with_max_retries(1);
     let _sub = bus
         .subscribe_with_policy::<Ping, _, _>(|_event: Ping| async move { Err::<(), _>("closure failed".into()) }, policy)
         .await
@@ -109,7 +109,7 @@ async fn closure_once_listener_fires_once() {
                 count_for_handler.fetch_add(event.value, Ordering::SeqCst);
                 Ok(())
             },
-            NoRetryPolicy::default(),
+            SyncSubscriptionPolicy::default(),
         )
         .await
         .expect("subscribe once closure");

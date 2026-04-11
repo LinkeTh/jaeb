@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jaeb::{EventBus, FailurePolicy, RetryStrategy};
+use jaeb::{EventBus, RetryStrategy, SubscriptionPolicy, SyncSubscriptionPolicy};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -41,7 +41,7 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     if config.bus.max_concurrent_async > 0 {
         builder = builder.max_concurrent_async(config.bus.max_concurrent_async);
     }
-    builder = builder.default_failure_policy(FailurePolicy::default());
+    builder = builder.default_subscription_policy(SubscriptionPolicy::default());
 
     let shutdown_timeout = Duration::from_millis(config.bus.shutdown_timeout_ms);
     builder = builder.shutdown_timeout(shutdown_timeout);
@@ -57,7 +57,7 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     let sim_task = tokio::spawn(async move {
         // Register handlers
         for listener_cfg in &listeners {
-            let policy = build_failure_policy(listener_cfg);
+            let policy = build_subscription_policy(listener_cfg);
             match (listener_cfg.event_type_idx, &listener_cfg.mode) {
                 (0, HandlerMode::Async) => {
                     let handler = MockAsyncHandlerA {
@@ -75,7 +75,8 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
                         failure_rate: listener_cfg.failure_rate,
                         tx: tx_clone.clone(),
                     };
-                    let no_retry = jaeb::NoRetryPolicy {
+                    let no_retry = SyncSubscriptionPolicy {
+                        priority: 0,
                         dead_letter: listener_cfg.dead_letter,
                     };
                     let _ = bus_clone.subscribe_with_policy::<SimEventA, _, _>(handler, no_retry).await;
@@ -96,7 +97,8 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
                         failure_rate: listener_cfg.failure_rate,
                         tx: tx_clone.clone(),
                     };
-                    let no_retry = jaeb::NoRetryPolicy {
+                    let no_retry = SyncSubscriptionPolicy {
+                        priority: 0,
                         dead_letter: listener_cfg.dead_letter,
                     };
                     let _ = bus_clone.subscribe_with_policy::<SimEventB, _, _>(handler, no_retry).await;
@@ -130,8 +132,8 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     }
 }
 
-fn build_failure_policy(cfg: &ListenerConfig) -> FailurePolicy {
-    let mut policy = FailurePolicy::default()
+fn build_subscription_policy(cfg: &ListenerConfig) -> SubscriptionPolicy {
+    let mut policy = SubscriptionPolicy::default()
         .with_max_retries(cfg.max_retries as usize)
         .with_dead_letter(cfg.dead_letter);
 

@@ -9,7 +9,8 @@ pub type HandlerError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// The result type for handler methods.
 ///
 /// Return `Ok(())` to indicate success, or `Err(e)` to signal a failure that
-/// will be processed according to the listener's [`FailurePolicy`](crate::FailurePolicy).
+/// will be processed according to the listener's
+/// [`SubscriptionPolicy`](crate::SubscriptionPolicy).
 pub type HandlerResult = Result<(), HandlerError>;
 
 /// Specific reason why an [`EventBus`](crate::EventBus) configuration is invalid.

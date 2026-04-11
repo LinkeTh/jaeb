@@ -31,7 +31,7 @@ impl fmt::Display for SubscriptionId {
 
 /// Strategy for computing the delay between retry attempts.
 ///
-/// Used by [`FailurePolicy`] to control back-off behaviour when a handler
+/// Used by [`SubscriptionPolicy`] to control back-off behaviour when a handler
 /// fails and is eligible for retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryStrategy {
@@ -95,12 +95,15 @@ impl RetryStrategy {
     }
 }
 
-/// Policy controlling how handler failures are treated.
+/// Policy controlling how a subscription is scheduled and how failures are treated.
 ///
+/// - `priority`: listener ordering hint. Higher values are dispatched first
+///   within the same dispatch lane (sync or async). Equal priorities keep
+///   FIFO registration order.
 /// - `max_retries`: how many *additional* attempts after the first failure
 ///   (0 means no retries). **Only supported for async handlers.** Sync
-///   handlers must use [`NoRetryPolicy`] instead; attempting to pass a
-///   `FailurePolicy` to a sync handler via
+///   handlers must use [`SyncSubscriptionPolicy`] instead; attempting to pass a
+///   `SubscriptionPolicy` to a sync handler via
 ///   [`subscribe_with_policy`](crate::EventBus::subscribe_with_policy) is a
 ///   compile-time error.
 /// - `retry_strategy`: optional [`RetryStrategy`] controlling the delay
@@ -114,7 +117,11 @@ impl RetryStrategy {
 /// All fields are public for convenience; invalid combinations (e.g.
 /// `retry_strategy` set with `max_retries: 0`) are harmless but have no effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FailurePolicy {
+pub struct SubscriptionPolicy {
+    /// Listener ordering hint (higher runs first).
+    ///
+    /// Applied independently within sync and async lanes.
+    pub priority: i32,
     /// Number of additional attempts after the first failure (0 = no retries).
     ///
     /// Only honoured for async handlers. Sync handlers always behave as if
@@ -130,9 +137,10 @@ pub struct FailurePolicy {
     pub dead_letter: bool,
 }
 
-impl Default for FailurePolicy {
+impl Default for SubscriptionPolicy {
     fn default() -> Self {
         Self {
+            priority: 0,
             max_retries: 0,
             retry_strategy: None,
             dead_letter: true,
@@ -140,7 +148,15 @@ impl Default for FailurePolicy {
     }
 }
 
-impl FailurePolicy {
+impl SubscriptionPolicy {
+    /// Set listener priority (builder-style).
+    ///
+    /// Higher values are dispatched first within each lane.
+    pub const fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
     /// Set the maximum number of retries (builder-style).
     ///
     /// `0` disables retries. Only applicable to async handlers.
@@ -162,30 +178,41 @@ impl FailurePolicy {
     }
 }
 
-/// Failure policy for handlers that do not support retries.
+/// Subscription policy for handlers that do not support retries.
 ///
 /// This type is accepted by [`subscribe_with_policy`](crate::EventBus::subscribe_with_policy)
 /// for sync handlers and by [`subscribe_once_with_policy`](crate::EventBus::subscribe_once_with_policy)
 /// for all handler types. It contains only the `dead_letter` flag since
 /// retry-related fields (`max_retries`, `retry_strategy`) are not applicable.
 ///
-/// Use [`FailurePolicy`] instead when subscribing async handlers that need
+/// Use [`SubscriptionPolicy`] instead when subscribing async handlers that need
 /// retry support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NoRetryPolicy {
+pub struct SyncSubscriptionPolicy {
+    /// Listener ordering hint (higher runs first).
+    pub priority: i32,
     /// Emit a [`DeadLetter`] event on failure.
     ///
     /// Automatically forced to `false` for dead-letter listeners.
     pub dead_letter: bool,
 }
 
-impl Default for NoRetryPolicy {
+impl Default for SyncSubscriptionPolicy {
     fn default() -> Self {
-        Self { dead_letter: true }
+        Self {
+            priority: 0,
+            dead_letter: true,
+        }
     }
 }
 
-impl NoRetryPolicy {
+impl SyncSubscriptionPolicy {
+    /// Set listener priority (builder-style).
+    pub const fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
     /// Enable or disable dead-letter emission for this policy (builder-style).
     pub const fn with_dead_letter(mut self, dead_letter: bool) -> Self {
         self.dead_letter = dead_letter;
@@ -193,9 +220,10 @@ impl NoRetryPolicy {
     }
 }
 
-impl From<NoRetryPolicy> for FailurePolicy {
-    fn from(policy: NoRetryPolicy) -> FailurePolicy {
-        FailurePolicy {
+impl From<SyncSubscriptionPolicy> for SubscriptionPolicy {
+    fn from(policy: SyncSubscriptionPolicy) -> SubscriptionPolicy {
+        SubscriptionPolicy {
+            priority: policy.priority,
             max_retries: 0,
             retry_strategy: None,
             dead_letter: policy.dead_letter,
@@ -203,15 +231,16 @@ impl From<NoRetryPolicy> for FailurePolicy {
     }
 }
 
-// ── IntoFailurePolicy ────────────────────────────────────────────────────────
+// ── IntoSubscriptionPolicy ───────────────────────────────────────────────────
 
 mod sealed {
     pub trait Sealed {}
-    impl Sealed for super::FailurePolicy {}
-    impl Sealed for super::NoRetryPolicy {}
+    impl Sealed for super::SubscriptionPolicy {}
+    impl Sealed for super::SyncSubscriptionPolicy {}
 }
 
-/// Trait that converts a policy type into a [`FailurePolicy`] suitable for the
+/// Trait that converts a policy type into a [`SubscriptionPolicy`] suitable for
+/// the
 /// handler's dispatch mode.
 ///
 /// This trait is **sealed** — it cannot be implemented outside this crate.
@@ -223,47 +252,59 @@ mod sealed {
 /// [`IntoHandler<E, M>`](crate::handler::IntoHandler), so callers never need
 /// to specify it explicitly. The type system enforces:
 ///
-/// - **Async handlers** accept both [`FailurePolicy`] (full retry support) and
-///   [`NoRetryPolicy`] (dead-letter only, no retries).
-/// - **Sync handlers** accept only [`NoRetryPolicy`]. Passing a
-///   [`FailurePolicy`] to a sync handler is a compile-time error.
-pub trait IntoFailurePolicy<M>: sealed::Sealed {
-    /// Convert into the internal [`FailurePolicy`] representation.
-    fn into_failure_policy(self) -> FailurePolicy;
+/// - **Async handlers** accept both [`SubscriptionPolicy`] (full retry
+///   support) and [`SyncSubscriptionPolicy`] (dead-letter only, no retries).
+/// - **Sync handlers** accept only [`SyncSubscriptionPolicy`]. Passing a
+///   [`SubscriptionPolicy`] to a sync handler is a compile-time error.
+pub trait IntoSubscriptionPolicy<M>: sealed::Sealed {
+    /// Convert into the internal [`SubscriptionPolicy`] representation.
+    fn into_subscription_policy(self) -> SubscriptionPolicy;
 }
 
-impl IntoFailurePolicy<crate::handler::AsyncMode> for FailurePolicy {
-    fn into_failure_policy(self) -> FailurePolicy {
+#[allow(dead_code)]
+#[deprecated(since = "0.3.3", note = "renamed to SubscriptionPolicy")]
+pub type FailurePolicy = SubscriptionPolicy;
+
+#[allow(dead_code)]
+#[deprecated(since = "0.3.3", note = "renamed to SyncSubscriptionPolicy")]
+pub type NoRetryPolicy = SyncSubscriptionPolicy;
+
+#[allow(unused_imports)]
+#[deprecated(since = "0.3.3", note = "renamed to IntoSubscriptionPolicy")]
+pub use IntoSubscriptionPolicy as IntoFailurePolicy;
+
+impl IntoSubscriptionPolicy<crate::handler::AsyncMode> for SubscriptionPolicy {
+    fn into_subscription_policy(self) -> SubscriptionPolicy {
         self
     }
 }
 
-impl IntoFailurePolicy<crate::handler::AsyncFnMode> for FailurePolicy {
-    fn into_failure_policy(self) -> FailurePolicy {
+impl IntoSubscriptionPolicy<crate::handler::AsyncFnMode> for SubscriptionPolicy {
+    fn into_subscription_policy(self) -> SubscriptionPolicy {
         self
     }
 }
 
-impl IntoFailurePolicy<crate::handler::AsyncMode> for NoRetryPolicy {
-    fn into_failure_policy(self) -> FailurePolicy {
+impl IntoSubscriptionPolicy<crate::handler::AsyncMode> for SyncSubscriptionPolicy {
+    fn into_subscription_policy(self) -> SubscriptionPolicy {
         self.into()
     }
 }
 
-impl IntoFailurePolicy<crate::handler::AsyncFnMode> for NoRetryPolicy {
-    fn into_failure_policy(self) -> FailurePolicy {
+impl IntoSubscriptionPolicy<crate::handler::AsyncFnMode> for SyncSubscriptionPolicy {
+    fn into_subscription_policy(self) -> SubscriptionPolicy {
         self.into()
     }
 }
 
-impl IntoFailurePolicy<crate::handler::SyncMode> for NoRetryPolicy {
-    fn into_failure_policy(self) -> FailurePolicy {
+impl IntoSubscriptionPolicy<crate::handler::SyncMode> for SyncSubscriptionPolicy {
+    fn into_subscription_policy(self) -> SubscriptionPolicy {
         self.into()
     }
 }
 
-impl IntoFailurePolicy<crate::handler::SyncFnMode> for NoRetryPolicy {
-    fn into_failure_policy(self) -> FailurePolicy {
+impl IntoSubscriptionPolicy<crate::handler::SyncFnMode> for SyncSubscriptionPolicy {
+    fn into_subscription_policy(self) -> SubscriptionPolicy {
         self.into()
     }
 }
@@ -352,7 +393,7 @@ pub(crate) struct BusConfig {
     pub buffer_size: usize,
     pub handler_timeout: Option<Duration>,
     pub max_concurrent_async: Option<usize>,
-    pub default_failure_policy: FailurePolicy,
+    pub default_subscription_policy: SubscriptionPolicy,
     pub shutdown_timeout: Option<Duration>,
 }
 
@@ -362,7 +403,7 @@ impl Default for BusConfig {
             buffer_size: 256,
             handler_timeout: None,
             max_concurrent_async: None,
-            default_failure_policy: FailurePolicy::default(),
+            default_subscription_policy: SubscriptionPolicy::default(),
             shutdown_timeout: None,
         }
     }
