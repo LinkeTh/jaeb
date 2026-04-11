@@ -12,7 +12,11 @@ use jaeb::{EventBus, EventHandler, HandlerResult};
 #[derive(Clone)]
 struct JaebEvent(#[allow(dead_code)] u64);
 
+#[derive(Clone)]
+struct JaebEventAlt(#[allow(dead_code)] u64);
+
 struct JaebNoOp;
+struct JaebNoOpAlt;
 
 impl EventHandler<JaebEvent> for JaebNoOp {
     async fn handle(&self, _event: &JaebEvent) -> HandlerResult {
@@ -20,10 +24,20 @@ impl EventHandler<JaebEvent> for JaebNoOp {
     }
 }
 
+impl EventHandler<JaebEventAlt> for JaebNoOpAlt {
+    async fn handle(&self, _event: &JaebEventAlt) -> HandlerResult {
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct EventbuzzEvent(#[allow(dead_code)] u64);
 
+#[derive(Clone)]
+struct EventbuzzEventAlt(#[allow(dead_code)] u64);
+
 impl ApplicationEvent for EventbuzzEvent {}
+impl ApplicationEvent for EventbuzzEventAlt {}
 
 struct EventbuzzNoOp;
 
@@ -32,8 +46,16 @@ impl AsyncApplicationEventListener<EventbuzzEvent> for EventbuzzNoOp {
     async fn on_application_event(&self, _event: &EventbuzzEvent) {}
 }
 
+#[async_trait]
+impl AsyncApplicationEventListener<EventbuzzEventAlt> for EventbuzzNoOp {
+    async fn on_application_event(&self, _event: &EventbuzzEventAlt) {}
+}
+
 #[derive(Clone, Debug)]
 struct EvnoEvent(#[allow(dead_code)] u64);
+
+#[derive(Clone, Debug)]
+struct EvnoEventAlt(#[allow(dead_code)] u64);
 
 fn bench_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
@@ -229,6 +251,330 @@ fn bench_async_fanout_10(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_async_fanout_25(c: &mut Criterion) {
+    let rt = bench_runtime();
+    let mut group = c.benchmark_group("comparison_async_fanout_25");
+
+    group.bench_function("jaeb_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            for _ in 0..25 {
+                let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(JaebEvent(i)).await.expect("publish");
+            }
+            let elapsed = start.elapsed();
+
+            bus.shutdown().await.expect("shutdown");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventbuzz_publish_event", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let mut bus: AsyncEventbus = AsyncEventbus::builder().build();
+            for _ in 0..25 {
+                bus.register_listener::<EventbuzzEvent, _>(EventbuzzNoOp).await;
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish_event(EventbuzzEvent(i)).await;
+            }
+            start.elapsed()
+        })
+    });
+
+    group.bench_function("evno_emit", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EvnoBus::new(1024);
+            for i in 0..25 {
+                let _sub = bus.on(evno_from_fn(|_event: EvnoGuard<EvnoEvent>| async move {}));
+
+                tokio::time::timeout(Duration::from_secs(2), bus.emit(EvnoEvent(u64::MAX - i as u64)))
+                    .await
+                    .expect("evno per-listener startup timeout");
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.emit(EvnoEvent(i)).await;
+                if i % 64 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            let elapsed = start.elapsed();
+
+            tokio::time::timeout(Duration::from_secs(5), bus.close())
+                .await
+                .expect("evno close timeout");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventador_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = Eventador::new(1024).expect("create eventador");
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut drainers = Vec::with_capacity(25);
+            for _ in 0..25 {
+                let sub = bus.subscribe::<u64>();
+                let stop2 = Arc::clone(&stop);
+                drainers.push(std::thread::spawn(move || {
+                    while !stop2.load(Ordering::Relaxed) {
+                        let _ = sub.recv();
+                    }
+                }));
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(i);
+            }
+            let elapsed = start.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(0u64);
+            for d in drainers {
+                d.join().expect("eventador drainer join");
+            }
+            elapsed
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_async_fanout_50(c: &mut Criterion) {
+    let rt = bench_runtime();
+    let mut group = c.benchmark_group("comparison_async_fanout_50");
+
+    group.bench_function("jaeb_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            for _ in 0..50 {
+                let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(JaebEvent(i)).await.expect("publish");
+            }
+            let elapsed = start.elapsed();
+
+            bus.shutdown().await.expect("shutdown");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventbuzz_publish_event", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let mut bus: AsyncEventbus = AsyncEventbus::builder().build();
+            for _ in 0..50 {
+                bus.register_listener::<EventbuzzEvent, _>(EventbuzzNoOp).await;
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish_event(EventbuzzEvent(i)).await;
+            }
+            start.elapsed()
+        })
+    });
+
+    group.bench_function("evno_emit", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EvnoBus::new(1024);
+            for i in 0..50 {
+                let _sub = bus.on(evno_from_fn(|_event: EvnoGuard<EvnoEvent>| async move {}));
+
+                tokio::time::timeout(Duration::from_secs(2), bus.emit(EvnoEvent(u64::MAX - i as u64)))
+                    .await
+                    .expect("evno per-listener startup timeout");
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.emit(EvnoEvent(i)).await;
+                if i % 64 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            let elapsed = start.elapsed();
+
+            tokio::time::timeout(Duration::from_secs(5), bus.close())
+                .await
+                .expect("evno close timeout");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventador_publish", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = Eventador::new(1024).expect("create eventador");
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut drainers = Vec::with_capacity(50);
+            for _ in 0..50 {
+                let sub = bus.subscribe::<u64>();
+                let stop2 = Arc::clone(&stop);
+                drainers.push(std::thread::spawn(move || {
+                    while !stop2.load(Ordering::Relaxed) {
+                        let _ = sub.recv();
+                    }
+                }));
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                bus.publish(i);
+            }
+            let elapsed = start.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(0u64);
+            for d in drainers {
+                d.join().expect("eventador drainer join");
+            }
+            elapsed
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_mixed_fanout_multi_type(c: &mut Criterion) {
+    let rt = bench_runtime();
+    let mut group = c.benchmark_group("comparison_mixed_fanout_multi_type");
+
+    group.bench_function("jaeb_publish_mixed", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EventBus::new(1024).expect("valid config");
+            for _ in 0..5 {
+                let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe jaeb");
+            }
+            for _ in 0..5 {
+                let _sub = bus.subscribe::<JaebEventAlt, _, _>(JaebNoOpAlt).await.expect("subscribe jaeb alt");
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                if i % 2 == 0 {
+                    bus.publish(JaebEvent(i)).await.expect("publish jaeb");
+                } else {
+                    bus.publish(JaebEventAlt(i)).await.expect("publish jaeb alt");
+                }
+            }
+            let elapsed = start.elapsed();
+
+            bus.shutdown().await.expect("shutdown");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventbuzz_publish_mixed", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let mut bus: AsyncEventbus = AsyncEventbus::builder().build();
+            for _ in 0..5 {
+                bus.register_listener::<EventbuzzEvent, _>(EventbuzzNoOp).await;
+            }
+            for _ in 0..5 {
+                bus.register_listener::<EventbuzzEventAlt, _>(EventbuzzNoOp).await;
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                if i % 2 == 0 {
+                    bus.publish_event(EventbuzzEvent(i)).await;
+                } else {
+                    bus.publish_event(EventbuzzEventAlt(i)).await;
+                }
+            }
+            start.elapsed()
+        })
+    });
+
+    group.bench_function("evno_emit_mixed", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = EvnoBus::new(1024);
+            for i in 0..5 {
+                let _sub = bus.on(evno_from_fn(|_event: EvnoGuard<EvnoEvent>| async move {}));
+                tokio::time::timeout(Duration::from_secs(2), bus.emit(EvnoEvent(u64::MAX - i as u64)))
+                    .await
+                    .expect("evno startup timeout event a");
+            }
+            for i in 0..5 {
+                let _sub = bus.on(evno_from_fn(|_event: EvnoGuard<EvnoEventAlt>| async move {}));
+                tokio::time::timeout(Duration::from_secs(2), bus.emit(EvnoEventAlt(u64::MAX - i as u64)))
+                    .await
+                    .expect("evno startup timeout event b");
+            }
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                if i % 2 == 0 {
+                    bus.emit(EvnoEvent(i)).await;
+                } else {
+                    bus.emit(EvnoEventAlt(i)).await;
+                }
+                if i % 64 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            let elapsed = start.elapsed();
+
+            tokio::time::timeout(Duration::from_secs(5), bus.close())
+                .await
+                .expect("evno close timeout");
+            elapsed
+        })
+    });
+
+    group.bench_function("eventador_publish_mixed", |b| {
+        b.to_async(&rt).iter_custom(|iters| async move {
+            let bus = Eventador::new(1024).expect("create eventador");
+            let stop = Arc::new(AtomicBool::new(false));
+
+            let sub_a = bus.subscribe::<u64>();
+            let stop_a = Arc::clone(&stop);
+            let drainer_a = std::thread::spawn(move || {
+                while !stop_a.load(Ordering::Relaxed) {
+                    let _ = sub_a.recv();
+                }
+            });
+
+            let sub_b = bus.subscribe::<u32>();
+            let stop_b = Arc::clone(&stop);
+            let drainer_b = std::thread::spawn(move || {
+                while !stop_b.load(Ordering::Relaxed) {
+                    let _ = sub_b.recv();
+                }
+            });
+
+            let start = std::time::Instant::now();
+            for i in 0..iters {
+                if i % 2 == 0 {
+                    bus.publish(i);
+                } else {
+                    bus.publish(i as u32);
+                }
+            }
+            let elapsed = start.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            bus.publish(0u64);
+            bus.publish(0u32);
+            drainer_a.join().expect("eventador drainer a join");
+            drainer_b.join().expect("eventador drainer b join");
+            elapsed
+        })
+    });
+
+    group.finish();
+}
+
 fn bench_contention_4_publishers(c: &mut Criterion) {
     let rt = bench_runtime();
     let mut group = c.benchmark_group("comparison_contention_4_publishers");
@@ -349,5 +695,13 @@ fn bench_contention_4_publishers(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_async_single_listener, bench_async_fanout_10, bench_contention_4_publishers,);
+criterion_group!(
+    benches,
+    bench_async_single_listener,
+    bench_async_fanout_10,
+    bench_async_fanout_25,
+    bench_async_fanout_50,
+    bench_mixed_fanout_multi_type,
+    bench_contention_4_publishers,
+);
 criterion_main!(benches);

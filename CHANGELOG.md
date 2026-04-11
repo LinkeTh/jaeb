@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-04-11
+
+### Changed
+
+- Optimized async fanout throughput by batching multi-listener async dispatch
+  into one tracked task using `FuturesUnordered`, while preserving
+  per-listener retry, dead-letter, and timeout semantics.
+- Added a single-listener async fast path to avoid batching overhead in
+  non-fanout workloads.
+- Reduced publish-path snapshot overhead by loading the routing snapshot once
+  in `publish`/`try_publish` and reusing it through dispatch.
+- Added a sync-only publish fast path that avoids unconditional shared-event
+  allocation when dispatch does not require async fanout.
+- Added snapshot-level async middleware flags and slot reuse in publish hot
+  path to reduce lookup and branch overhead.
+- Expanded `comparison` benchmark coverage with fanout levels 25/50 and a
+  mixed multi-event-type fanout scenario.
+
+### Performance
+
+- `comparison_async_single_listener` (`jaeb_publish`): ~`1.17 us` -> ~`1.19 us`
+  (no material change)
+- `comparison_async_fanout_10` (`jaeb_publish`): ~`8.75 us` -> ~`4.65 us`
+  (~47% faster)
+- `comparison_contention_4_publishers` (`jaeb_publish`): ~`0.33 us` -> ~`0.33 us`
+  (no material change)
+
 ## [0.3.5] - 2026-04-11
 
 ### Changed

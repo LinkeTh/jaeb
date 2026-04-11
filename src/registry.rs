@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot};
 use tokio::task::AbortHandle;
 #[cfg(feature = "trace")]
@@ -129,6 +130,7 @@ pub(crate) struct TypeSlot {
     pub sync_listeners: Arc<[SyncListenerEntry]>,
     pub async_listeners: Arc<[AsyncListenerEntry]>,
     pub middlewares: Arc<[TypedMiddlewareSlot]>,
+    pub has_async_middleware: bool,
     pub sync_gate: Arc<Mutex<()>>,
     pub async_semaphore: Option<Arc<Semaphore>>,
 }
@@ -137,6 +139,7 @@ pub(crate) struct TypeSlot {
 pub(crate) struct RegistrySnapshot {
     pub by_type: HashMap<TypeId, Arc<TypeSlot>>,
     pub global_middlewares: Arc<[(SubscriptionId, ErasedMiddleware)]>,
+    pub global_has_async_middleware: bool,
 }
 
 struct MutableTypeSlot {
@@ -151,6 +154,7 @@ impl MutableTypeSlot {
     fn to_snapshot_slot(&self) -> Arc<TypeSlot> {
         let mut sync_listeners: Vec<SyncListenerEntry> = Vec::new();
         let mut async_listeners: Vec<AsyncListenerEntry> = Vec::new();
+        let mut has_async_middleware = false;
         for listener in &self.listeners {
             match &listener.kind {
                 ListenerKind::Sync(handler) => sync_listeners.push(SyncListenerEntry {
@@ -174,10 +178,18 @@ impl MutableTypeSlot {
         sync_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
         async_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
 
+        for middleware in &self.middlewares {
+            if matches!(middleware.middleware, TypedMiddlewareEntry::Async(_)) {
+                has_async_middleware = true;
+                break;
+            }
+        }
+
         Arc::new(TypeSlot {
             sync_listeners: sync_listeners.into(),
             async_listeners: async_listeners.into(),
             middlewares: self.middlewares.clone().into(),
+            has_async_middleware,
             sync_gate: Arc::clone(&self.sync_gate),
             async_semaphore: self.async_semaphore.as_ref().map(Arc::clone),
         })
@@ -293,9 +305,14 @@ impl MutableRegistry {
         for (type_id, slot) in &self.slots {
             by_type.insert(*type_id, slot.to_snapshot_slot());
         }
+        let global_has_async_middleware = self
+            .global_middlewares
+            .iter()
+            .any(|(_, middleware)| matches!(middleware, ErasedMiddleware::Async(_)));
         RegistrySnapshot {
             by_type,
             global_middlewares: self.global_middlewares.clone().into(),
+            global_has_async_middleware,
         }
     }
 
@@ -574,42 +591,82 @@ async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static 
     let mut once_removed = Vec::new();
 
     // Async lane: schedule async handlers without waiting for sync gate.
-    if dispatch_ctx.spawn_async_handlers {
+    if dispatch_ctx.spawn_async_handlers && !slot.async_listeners.is_empty() {
         let tracker = Arc::clone(dispatch_ctx.tracker);
         let handler_timeout = dispatch_ctx.handler_timeout;
         let semaphore = slot.async_semaphore.as_ref().map(Arc::clone);
-        for listener in slot.async_listeners.iter() {
-            if !should_fire_once(listener.once, listener.fired.as_ref()) {
-                continue;
-            }
-            if listener.once {
-                once_removed.push(listener.id);
-            }
 
-            let listener_meta = AsyncListenerMeta {
-                subscription_id: listener.id,
-                subscription_policy: listener.subscription_policy,
-                listener_name: listener.name,
-            };
-            let handler = Arc::clone(&listener.handler);
-            let event = Arc::clone(event);
-            let notify = dispatch_ctx.notify_tx.clone();
-            let semaphore = semaphore.as_ref().map(Arc::clone);
-            tracker.spawn_tracked(async move {
-                let task = async {
-                    if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
-                        let _ = notify.send(ControlNotification::Failure(failure));
-                    }
+        if slot.async_listeners.len() == 1 {
+            let listener = &slot.async_listeners[0];
+            if should_fire_once(listener.once, listener.fired.as_ref()) {
+                if listener.once {
+                    once_removed.push(listener.id);
+                }
+
+                let listener_meta = AsyncListenerMeta {
+                    subscription_id: listener.id,
+                    subscription_policy: listener.subscription_policy,
+                    listener_name: listener.name,
                 };
+                let handler = Arc::clone(&listener.handler);
+                let event = Arc::clone(event);
+                let notify = dispatch_ctx.notify_tx.clone();
+                tracker.spawn_tracked(async move {
+                    let task = async {
+                        if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
+                            let _ = notify.send(ControlNotification::Failure(failure));
+                        }
+                    };
 
-                if let Some(semaphore) = semaphore {
-                    if let Ok(_permit) = semaphore.acquire().await {
+                    if let Some(semaphore) = semaphore {
+                        if let Ok(_permit) = semaphore.acquire().await {
+                            task.await;
+                        }
+                    } else {
                         task.await;
                     }
-                } else {
-                    task.await;
+                });
+            }
+        } else {
+            let mut async_batch = FuturesUnordered::new();
+
+            for listener in slot.async_listeners.iter() {
+                if !should_fire_once(listener.once, listener.fired.as_ref()) {
+                    continue;
                 }
-            });
+                if listener.once {
+                    once_removed.push(listener.id);
+                }
+
+                let listener_meta = AsyncListenerMeta {
+                    subscription_id: listener.id,
+                    subscription_policy: listener.subscription_policy,
+                    listener_name: listener.name,
+                };
+                let handler = Arc::clone(&listener.handler);
+                let event = Arc::clone(event);
+                let semaphore = semaphore.as_ref().map(Arc::clone);
+                async_batch.push(async move {
+                    let task = async { execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await };
+
+                    if let Some(semaphore) = semaphore {
+                        if let Ok(_permit) = semaphore.acquire().await { task.await } else { None }
+                    } else {
+                        task.await
+                    }
+                });
+            }
+
+            if !async_batch.is_empty() {
+                let notify = dispatch_ctx.notify_tx.clone();
+                tracker.spawn_tracked(async move {
+                    while let Some(failure) = async_batch.next().await {
+                        if let Some(failure) = failure {
+                            let _ = notify.send(ControlNotification::Failure(failure));
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -651,7 +708,7 @@ async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static 
 
 pub(crate) async fn dispatch_with_snapshot(
     snapshot: &RegistrySnapshot,
-    event_type: TypeId,
+    slot: Option<&Arc<TypeSlot>>,
     event: EventType,
     event_name: &'static str,
     dispatch_ctx: &DispatchContext<'_>,
@@ -659,7 +716,6 @@ pub(crate) async fn dispatch_with_snapshot(
     #[cfg(feature = "metrics")]
     counter!("eventbus.publish", "event" => event_name).increment(1);
 
-    let slot = snapshot.by_type.get(&event_type);
     if snapshot.global_middlewares.is_empty() {
         let Some(slot) = slot else {
             return Ok(Vec::new());
@@ -696,6 +752,104 @@ pub(crate) async fn dispatch_with_snapshot(
     }
 
     Ok(dispatch_slot(slot.as_ref(), &event, event_name, dispatch_ctx).await)
+}
+
+pub(crate) async fn dispatch_sync_only_with_snapshot<E>(
+    snapshot: &RegistrySnapshot,
+    slot: Option<&Arc<TypeSlot>>,
+    event: &E,
+    event_name: &'static str,
+    notify_tx: &mpsc::UnboundedSender<ControlNotification>,
+) -> Result<Vec<SubscriptionId>, EventBusError>
+where
+    E: Any + Send + Sync + Clone + 'static,
+{
+    #[cfg(feature = "metrics")]
+    counter!("eventbus.publish", "event" => event_name).increment(1);
+
+    let event_any = event as &(dyn Any + Send + Sync);
+
+    if snapshot.global_middlewares.is_empty() {
+        let Some(slot) = slot else {
+            return Ok(Vec::new());
+        };
+        if slot.middlewares.is_empty() && slot.sync_listeners.is_empty() {
+            return Ok(Vec::new());
+        }
+    } else {
+        for (_id, mw) in snapshot.global_middlewares.iter() {
+            let decision = match mw {
+                ErasedMiddleware::Sync(f) => f(event_name, event_any),
+                ErasedMiddleware::Async(_) => {
+                    debug_assert!(false, "sync-only path entered with async global middleware");
+                    return Err(EventBusError::MiddlewareRejected(
+                        "internal dispatch invariant violated: async global middleware in sync-only path".to_string(),
+                    ));
+                }
+            };
+            if let MiddlewareDecision::Reject(reason) = decision {
+                return Err(EventBusError::MiddlewareRejected(reason));
+            }
+        }
+    }
+
+    let Some(slot) = slot else {
+        return Ok(Vec::new());
+    };
+
+    if !slot.middlewares.is_empty() {
+        for slot_mw in slot.middlewares.iter() {
+            let decision = match &slot_mw.middleware {
+                TypedMiddlewareEntry::Sync(mw) => mw(event_name, event_any),
+                TypedMiddlewareEntry::Async(_) => {
+                    debug_assert!(false, "sync-only path entered with async typed middleware");
+                    return Err(EventBusError::MiddlewareRejected(
+                        "internal dispatch invariant violated: async typed middleware in sync-only path".to_string(),
+                    ));
+                }
+            };
+            if let MiddlewareDecision::Reject(reason) = decision {
+                return Err(EventBusError::MiddlewareRejected(reason));
+            }
+        }
+    }
+
+    if slot.sync_listeners.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut once_removed = Vec::new();
+    let mut failure_event: Option<EventType> = None;
+    let _guard = slot.sync_gate.lock().await;
+    for listener in slot.sync_listeners.iter() {
+        if !should_fire_once(listener.once, listener.fired.as_ref()) {
+            continue;
+        }
+        if listener.once {
+            once_removed.push(listener.id);
+        }
+
+        #[cfg(feature = "metrics")]
+        let _timer = TimerGuard::start("eventbus.handler.duration", event_name, listener.name);
+
+        let result = catch_unwind(AssertUnwindSafe(|| (listener.handler)(event_any)))
+            .unwrap_or_else(|panic_payload| Err(extract_panic_message(panic_payload).into()));
+
+        if let Err(err) = result {
+            let event_payload = failure_event.get_or_insert_with(|| Arc::new(event.clone()) as EventType).clone();
+            let _ = notify_tx.send(ControlNotification::Failure(ListenerFailure {
+                event_name,
+                subscription_id: listener.id,
+                attempts: 1,
+                error: err.to_string(),
+                dead_letter: listener.subscription_policy.dead_letter,
+                event: event_payload,
+                listener_name: listener.name,
+            }));
+        }
+    }
+
+    Ok(once_removed)
 }
 
 pub(crate) fn dead_letter_from_failure(failure: &ListenerFailure) -> Option<DeadLetter> {

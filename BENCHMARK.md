@@ -25,6 +25,9 @@ cargo bench --bench comparison
 
 - `comparison_async_single_listener`: one async no-op listener
 - `comparison_async_fanout_10`: ten async no-op listeners
+- `comparison_async_fanout_25`: twenty-five async no-op listeners
+- `comparison_async_fanout_50`: fifty async no-op listeners
+- `comparison_mixed_fanout_multi_type`: mixed publish stream across two event types with fanout
 - `comparison_contention_4_publishers`: four concurrent publishers, one async no-op listener
 
 ## Latest Measurements (median-ish criterion time window)
@@ -48,6 +51,40 @@ Notes:
     - ~39% in `comparison_async_single_listener` (1.96 us -> 1.19 us)
     - ~53% in `comparison_async_fanout_10` (19.16 us -> 8.93 us)
     - ~82% in `comparison_contention_4_publishers` (1.83 us -> 0.33 us)
+
+## Throughput Optimization Update (0.3.6)
+
+After introducing async fanout batching for multi-listener dispatch (with a
+single-listener fast path retained), the comparison benchmark reports:
+
+| Group                                | Case           | Before | After  | Delta |
+|--------------------------------------|----------------|-------:|-------:|------:|
+| `comparison_async_single_listener`   | `jaeb_publish` | 1.17 us | 1.19 us | ~flat |
+| `comparison_async_fanout_10`         | `jaeb_publish` | 8.75 us | 4.65 us | ~47% faster |
+| `comparison_contention_4_publishers` | `jaeb_publish` | 0.33 us | 0.33 us | ~flat |
+
+Interpretation:
+
+- The optimization targets generalized fanout throughput and substantially
+  reduces per-publish spawn overhead when multiple async listeners are
+  registered for an event type.
+- Single-listener and contention workloads remain essentially unchanged.
+
+## Additional Coverage (0.3.6)
+
+The comparison suite now also includes:
+
+- `comparison_async_fanout_25`
+- `comparison_async_fanout_50`
+- `comparison_mixed_fanout_multi_type`
+
+Latest measured JAEB times:
+
+| Group                                | Case                      | Time    |
+|--------------------------------------|---------------------------|---------:|
+| `comparison_async_fanout_25`         | `jaeb_publish`            | 12.17 us |
+| `comparison_async_fanout_50`         | `jaeb_publish`            | 22.50 us |
+| `comparison_mixed_fanout_multi_type` | `jaeb_publish_mixed`      | 1.71 us  |
 
 ## evno Contention Caveat
 

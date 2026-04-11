@@ -116,6 +116,25 @@ struct TypedAsyncOrderTracker {
     log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
+struct AlwaysFailPing;
+
+impl SyncEventHandler<Ping> for AlwaysFailPing {
+    fn handle(&self, _event: &Ping) -> HandlerResult {
+        Err("sync failure".into())
+    }
+}
+
+struct DeadLetterCounter {
+    count: Arc<AtomicUsize>,
+}
+
+impl SyncEventHandler<jaeb::DeadLetter> for DeadLetterCounter {
+    fn handle(&self, _event: &jaeb::DeadLetter) -> HandlerResult {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 impl TypedMiddleware<Ping> for TypedAsyncOrderTracker {
     async fn process(&self, _event_name: &'static str, _event: &Ping) -> MiddlewareDecision {
         self.log.lock().unwrap().push(self.id);
@@ -471,4 +490,53 @@ async fn typed_middleware_removal() {
     bus.shutdown().await.expect("shutdown");
 
     assert_eq!(count.load(Ordering::SeqCst), 1, "handler should fire once middleware is removed");
+}
+
+#[tokio::test]
+async fn sync_only_fast_path_preserves_pipeline_and_dead_letter() {
+    let bus = EventBus::new(64).expect("valid config");
+    let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
+    let dead_letters = Arc::new(AtomicUsize::new(0));
+
+    let _dl = bus
+        .subscribe_dead_letters(DeadLetterCounter {
+            count: Arc::clone(&dead_letters),
+        })
+        .await
+        .expect("subscribe dead letters");
+
+    let _global_sync = bus
+        .add_sync_middleware(OrderTracker {
+            id: "global-sync",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add global sync middleware");
+
+    let _typed_sync = bus
+        .add_typed_sync_middleware::<Ping, _>(TypedSyncOrderTracker {
+            id: "typed-sync",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add typed sync middleware");
+
+    let handler_log = Arc::clone(&log);
+    let _sub = bus
+        .subscribe::<Ping, _, _>(move |_event: &Ping| {
+            handler_log.lock().unwrap().push("handler");
+            Ok(())
+        })
+        .await
+        .expect("subscribe sync handler");
+
+    let _failing = bus.subscribe::<Ping, _, _>(AlwaysFailPing).await.expect("subscribe failing handler");
+
+    bus.publish(Ping).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(&entries[..3], ["global-sync", "typed-sync", "handler"]);
+    assert_eq!(entries.iter().filter(|entry| **entry == "global-sync").count(), 2);
+    assert_eq!(dead_letters.load(Ordering::SeqCst), 1);
 }

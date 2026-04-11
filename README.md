@@ -36,7 +36,7 @@ JAEB is not a message broker. It does **not** provide persistence, replay, or cr
 
 ```toml
 [dependencies]
-jaeb = "0.3.5"
+jaeb = "0.3.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -44,14 +44,14 @@ With metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.5", features = ["metrics"] }
+jaeb = { version = "0.3.6", features = ["metrics"] }
 ```
 
 With standalone handler macros:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.5", features = ["macros"] }
+jaeb = { version = "0.3.6", features = ["macros"] }
 ```
 
 ## Quick Start
