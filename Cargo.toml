@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"

@@ -92,6 +92,26 @@ pub(crate) struct ListenerEntry {
 }
 
 #[derive(Clone)]
+pub(crate) struct AsyncListenerEntry {
+    pub id: SubscriptionId,
+    pub handler: ErasedAsyncHandlerFn,
+    pub subscription_policy: SubscriptionPolicy,
+    pub name: Option<&'static str>,
+    pub once: bool,
+    pub fired: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SyncListenerEntry {
+    pub id: SubscriptionId,
+    pub handler: ErasedSyncHandlerFn,
+    pub subscription_policy: SubscriptionPolicy,
+    pub name: Option<&'static str>,
+    pub once: bool,
+    pub fired: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Clone)]
 pub(crate) enum TypedMiddlewareEntry {
     Async(ErasedTypedAsyncMiddlewareFn),
     Sync(ErasedTypedSyncMiddlewareFn),
@@ -105,8 +125,8 @@ pub(crate) struct TypedMiddlewareSlot {
 
 #[derive(Clone)]
 pub(crate) struct TypeSlot {
-    pub sync_listeners: Arc<[ListenerEntry]>,
-    pub async_listeners: Arc<[ListenerEntry]>,
+    pub sync_listeners: Arc<[SyncListenerEntry]>,
+    pub async_listeners: Arc<[AsyncListenerEntry]>,
     pub middlewares: Arc<[TypedMiddlewareSlot]>,
     pub sync_gate: Arc<Mutex<()>>,
     pub async_semaphore: Option<Arc<Semaphore>>,
@@ -128,12 +148,26 @@ struct MutableTypeSlot {
 
 impl MutableTypeSlot {
     fn to_snapshot_slot(&self) -> Arc<TypeSlot> {
-        let mut sync_listeners = Vec::new();
-        let mut async_listeners = Vec::new();
+        let mut sync_listeners: Vec<SyncListenerEntry> = Vec::new();
+        let mut async_listeners: Vec<AsyncListenerEntry> = Vec::new();
         for listener in &self.listeners {
-            match listener.kind {
-                ListenerKind::Sync(_) => sync_listeners.push(listener.clone()),
-                ListenerKind::Async(_) => async_listeners.push(listener.clone()),
+            match &listener.kind {
+                ListenerKind::Sync(handler) => sync_listeners.push(SyncListenerEntry {
+                    id: listener.id,
+                    handler: Arc::clone(handler),
+                    subscription_policy: listener.subscription_policy,
+                    name: listener.name,
+                    once: listener.once,
+                    fired: listener.fired.as_ref().map(Arc::clone),
+                }),
+                ListenerKind::Async(handler) => async_listeners.push(AsyncListenerEntry {
+                    id: listener.id,
+                    handler: Arc::clone(handler),
+                    subscription_policy: listener.subscription_policy,
+                    name: listener.name,
+                    once: listener.once,
+                    fired: listener.fired.as_ref().map(Arc::clone),
+                }),
             }
         }
         sync_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
@@ -311,42 +345,73 @@ pub(crate) struct ListenerFailure {
     pub listener_name: Option<&'static str>,
 }
 
+#[derive(Clone, Copy)]
+struct AsyncListenerMeta {
+    subscription_id: SubscriptionId,
+    subscription_policy: SubscriptionPolicy,
+    listener_name: Option<&'static str>,
+}
+
 pub(crate) enum ControlNotification {
     Failure(ListenerFailure),
     Flush(oneshot::Sender<()>),
 }
 
-#[derive(Clone)]
-pub(crate) struct DispatchContext {
-    pub tracker: Arc<AsyncTaskTracker>,
-    pub notify_tx: mpsc::UnboundedSender<ControlNotification>,
+pub(crate) struct DispatchContext<'a> {
+    pub tracker: &'a Arc<AsyncTaskTracker>,
+    pub notify_tx: &'a mpsc::UnboundedSender<ControlNotification>,
     pub handler_timeout: Option<Duration>,
     pub spawn_async_handlers: bool,
 }
 
-#[derive(Default)]
 pub(crate) struct AsyncTaskTracker {
     next_id: AtomicU64,
     in_flight: AtomicUsize,
-    tasks: StdMutex<HashMap<u64, Option<AbortHandle>>>,
+    tasks: Option<StdMutex<HashMap<u64, AbortHandle>>>,
     notify: Notify,
 }
 
+impl Default for AsyncTaskTracker {
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
+
 impl AsyncTaskTracker {
+    pub(crate) fn new(track_abort_handles: bool) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            in_flight: AtomicUsize::new(0),
+            tasks: track_abort_handles.then(|| StdMutex::new(HashMap::new())),
+            notify: Notify::new(),
+        }
+    }
+
     pub(crate) fn spawn_tracked<F>(self: &Arc<Self>, fut: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.in_flight.fetch_add(1, Ordering::AcqRel);
         let tracker = Arc::clone(self);
-        let handle = tokio::spawn(async move {
-            fut.await;
-            tracker.finish_task(id);
-        });
 
-        let abort_handle = handle.abort_handle();
-        self.tasks.lock().expect("tracker task lock poisoned").insert(id, Some(abort_handle));
+        if let Some(tasks) = &self.tasks {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let mut guard = tasks.lock().expect("tracker task lock poisoned");
+
+            // Keep the map lock across spawn so the abort handle is inserted
+            // before the task can complete and attempt removal.
+            let handle = tokio::spawn(async move {
+                fut.await;
+                tracker.finish_task(Some(id));
+            });
+
+            guard.insert(id, handle.abort_handle());
+        } else {
+            tokio::spawn(async move {
+                fut.await;
+                tracker.finish_task(None);
+            });
+        }
     }
 
     pub(crate) fn in_flight(&self) -> usize {
@@ -369,10 +434,18 @@ impl AsyncTaskTracker {
                 }
             };
             if tokio::time::timeout(timeout, wait).await.is_err() {
-                let handles: Vec<AbortHandle> = {
-                    let mut guard = self.tasks.lock().expect("tracker task lock poisoned");
-                    guard.drain().filter_map(|(_, h)| h).collect()
-                };
+                debug_assert!(
+                    self.tasks.is_some(),
+                    "shutdown timeout requires tracked abort handles to cancel in-flight tasks"
+                );
+                let handles: Vec<AbortHandle> = self
+                    .tasks
+                    .as_ref()
+                    .map(|tasks| {
+                        let mut guard = tasks.lock().expect("tracker task lock poisoned");
+                        guard.drain().map(|(_, h)| h).collect()
+                    })
+                    .unwrap_or_default();
                 for handle in &handles {
                     handle.abort();
                 }
@@ -391,20 +464,24 @@ impl AsyncTaskTracker {
         }
     }
 
-    fn finish_task(&self, id: u64) {
-        self.in_flight.fetch_sub(1, Ordering::AcqRel);
-        self.remove_abort_handle(id);
-        if self.in_flight.load(Ordering::Acquire) == 0 {
+    fn finish_task(&self, id: Option<u64>) {
+        let prev = self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        if let Some(id) = id {
+            self.remove_abort_handle(id);
+        }
+        if prev == 1 {
             self.notify.notify_waiters();
         }
     }
 
     fn remove_abort_handle(&self, id: u64) {
-        self.tasks.lock().expect("tracker task lock poisoned").remove(&id);
+        if let Some(tasks) = &self.tasks {
+            tasks.lock().expect("tracker task lock poisoned").remove(&id);
+        }
     }
 }
 
-fn sync_listener_failed(listener: &ListenerEntry, event_name: &'static str, event: &EventType, err: String) -> ListenerFailure {
+fn sync_listener_failed(listener: &SyncListenerEntry, event_name: &'static str, event: &EventType, err: String) -> ListenerFailure {
     ListenerFailure {
         event_name,
         subscription_id: listener.id,
@@ -420,7 +497,7 @@ async fn execute_async_listener(
     handler: ErasedAsyncHandlerFn,
     event: EventType,
     event_name: &'static str,
-    listener: ListenerEntry,
+    listener: AsyncListenerMeta,
     handler_timeout: Option<Duration>,
 ) -> Option<ListenerFailure> {
     let mut retries_left = listener.subscription_policy.max_retries;
@@ -452,19 +529,19 @@ async fn execute_async_listener(
                 if retries_left == 0 {
                     return Some(ListenerFailure {
                         event_name,
-                        subscription_id: listener.id,
+                        subscription_id: listener.subscription_id,
                         attempts,
                         error: error_message,
                         dead_letter: listener.subscription_policy.dead_letter,
                         event: Arc::clone(&event),
-                        listener_name: listener.name,
+                        listener_name: listener.listener_name,
                     });
                 }
 
                 retries_left -= 1;
                 warn!(
                     event = event_name,
-                    listener_id = listener.id.as_u64(),
+                    listener_id = listener.subscription_id.as_u64(),
                     attempts,
                     retries_left,
                     error = %error_message,
@@ -479,79 +556,45 @@ async fn execute_async_listener(
     }
 }
 
-fn should_fire_once(listener: &ListenerEntry) -> bool {
-    if !listener.once {
+fn should_fire_once(once: bool, fired: Option<&Arc<AtomicBool>>) -> bool {
+    if !once {
         return true;
     }
-    if let Some(flag) = &listener.fired {
+    if let Some(flag) = fired {
         flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
     } else {
         true
     }
 }
 
-pub(crate) async fn dispatch_with_snapshot(
-    snapshot: &RegistrySnapshot,
-    event_type: TypeId,
-    event: EventType,
-    event_name: &'static str,
-    dispatch_ctx: &DispatchContext,
-) -> Result<Vec<SubscriptionId>, EventBusError> {
+async fn dispatch_slot(slot: &TypeSlot, event: &EventType, event_name: &'static str, dispatch_ctx: &DispatchContext<'_>) -> Vec<SubscriptionId> {
     let mut once_removed = Vec::new();
-
-    #[cfg(feature = "metrics")]
-    counter!("eventbus.publish", "event" => event_name).increment(1);
-    if !snapshot.global_middlewares.is_empty() {
-        for (_id, mw) in snapshot.global_middlewares.iter() {
-            let decision = match mw {
-                ErasedMiddleware::Async(f) => f(event_name, Arc::clone(&event)).await,
-                ErasedMiddleware::Sync(f) => f(event_name, event.as_ref()),
-            };
-            if let MiddlewareDecision::Reject(reason) = decision {
-                return Err(EventBusError::MiddlewareRejected(reason));
-            }
-        }
-    }
-
-    let Some(slot) = snapshot.by_type.get(&event_type) else {
-        return Ok(once_removed);
-    };
-
-    if !slot.middlewares.is_empty() {
-        for slot_mw in slot.middlewares.iter() {
-            let decision = match &slot_mw.middleware {
-                TypedMiddlewareEntry::Async(mw) => mw(event_name, Arc::clone(&event)).await,
-                TypedMiddlewareEntry::Sync(mw) => mw(event_name, event.as_ref()),
-            };
-            if let MiddlewareDecision::Reject(reason) = decision {
-                return Err(EventBusError::MiddlewareRejected(reason));
-            }
-        }
-    }
 
     // Async lane: schedule async handlers without waiting for sync gate.
     if dispatch_ctx.spawn_async_handlers {
-        let tracker = Arc::clone(&dispatch_ctx.tracker);
+        let tracker = Arc::clone(dispatch_ctx.tracker);
         let handler_timeout = dispatch_ctx.handler_timeout;
+        let semaphore = slot.async_semaphore.as_ref().map(Arc::clone);
         for listener in slot.async_listeners.iter() {
-            let ListenerKind::Async(handler) = &listener.kind else {
-                continue;
-            };
-            if !should_fire_once(listener) {
+            if !should_fire_once(listener.once, listener.fired.as_ref()) {
                 continue;
             }
             if listener.once {
                 once_removed.push(listener.id);
             }
 
-            let listener = listener.clone();
-            let handler = Arc::clone(handler);
-            let event = Arc::clone(&event);
+            let listener_meta = AsyncListenerMeta {
+                subscription_id: listener.id,
+                subscription_policy: listener.subscription_policy,
+                listener_name: listener.name,
+            };
+            let handler = Arc::clone(&listener.handler);
+            let event = Arc::clone(event);
             let notify = dispatch_ctx.notify_tx.clone();
-            let semaphore = slot.async_semaphore.as_ref().map(Arc::clone);
+            let semaphore = semaphore.as_ref().map(Arc::clone);
             tracker.spawn_tracked(async move {
                 let task = async {
-                    if let Some(failure) = execute_async_listener(handler, event, event_name, listener, handler_timeout).await {
+                    if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
                         let _ = notify.send(ControlNotification::Failure(failure));
                     }
                 };
@@ -568,16 +611,13 @@ pub(crate) async fn dispatch_with_snapshot(
     }
 
     if slot.sync_listeners.is_empty() {
-        return Ok(once_removed);
+        return once_removed;
     }
 
     // Sync lane: serialized FIFO for sync handlers only.
     let _guard = slot.sync_gate.lock().await;
     for listener in slot.sync_listeners.iter() {
-        let ListenerKind::Sync(handler) = &listener.kind else {
-            continue;
-        };
-        if !should_fire_once(listener) {
+        if !should_fire_once(listener.once, listener.fired.as_ref()) {
             continue;
         }
         if listener.once {
@@ -589,7 +629,7 @@ pub(crate) async fn dispatch_with_snapshot(
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             // Safe because we only pass shared references to listener code.
-            handler(event.as_ref())
+            (listener.handler)(event.as_ref())
         }))
         .unwrap_or_else(|panic_payload| Err(extract_panic_message(panic_payload).into()));
 
@@ -597,13 +637,62 @@ pub(crate) async fn dispatch_with_snapshot(
             let _ = dispatch_ctx.notify_tx.send(ControlNotification::Failure(sync_listener_failed(
                 listener,
                 event_name,
-                &event,
+                event,
                 err.to_string(),
             )));
         }
     }
 
-    Ok(once_removed)
+    once_removed
+}
+
+pub(crate) async fn dispatch_with_snapshot(
+    snapshot: &RegistrySnapshot,
+    event_type: TypeId,
+    event: EventType,
+    event_name: &'static str,
+    dispatch_ctx: &DispatchContext<'_>,
+) -> Result<Vec<SubscriptionId>, EventBusError> {
+    #[cfg(feature = "metrics")]
+    counter!("eventbus.publish", "event" => event_name).increment(1);
+
+    let slot = snapshot.by_type.get(&event_type);
+    if snapshot.global_middlewares.is_empty() {
+        let Some(slot) = slot else {
+            return Ok(Vec::new());
+        };
+        if slot.middlewares.is_empty() {
+            return Ok(dispatch_slot(slot.as_ref(), &event, event_name, dispatch_ctx).await);
+        }
+    } else {
+        for (_id, mw) in snapshot.global_middlewares.iter() {
+            let decision = match mw {
+                ErasedMiddleware::Async(f) => f(event_name, Arc::clone(&event)).await,
+                ErasedMiddleware::Sync(f) => f(event_name, event.as_ref()),
+            };
+            if let MiddlewareDecision::Reject(reason) = decision {
+                return Err(EventBusError::MiddlewareRejected(reason));
+            }
+        }
+    }
+
+    let Some(slot) = slot else {
+        return Ok(Vec::new());
+    };
+
+    if !slot.middlewares.is_empty() {
+        for slot_mw in slot.middlewares.iter() {
+            let decision = match &slot_mw.middleware {
+                TypedMiddlewareEntry::Async(mw) => mw(event_name, Arc::clone(&event)).await,
+                TypedMiddlewareEntry::Sync(mw) => mw(event_name, event.as_ref()),
+            };
+            if let MiddlewareDecision::Reject(reason) = decision {
+                return Err(EventBusError::MiddlewareRejected(reason));
+            }
+        }
+    }
+
+    Ok(dispatch_slot(slot.as_ref(), &event, event_name, dispatch_ctx).await)
 }
 
 pub(crate) fn dead_letter_from_failure(failure: &ListenerFailure) -> Option<DeadLetter> {
@@ -642,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn tracker_does_not_leak_handles_for_fast_tasks() {
-        let tracker = Arc::new(AsyncTaskTracker::default());
+        let tracker = Arc::new(AsyncTaskTracker::new(true));
         let barrier = Arc::new(Barrier::new(2));
 
         tracker.spawn_tracked({
@@ -656,7 +745,12 @@ mod tests {
         let timed_out = tracker.shutdown(Some(std::time::Duration::from_secs(1))).await;
         assert!(!timed_out, "tracker shutdown should complete without timeout");
 
-        let guard = tracker.tasks.lock().expect("tracker task lock poisoned");
+        let guard = tracker
+            .tasks
+            .as_ref()
+            .expect("tracker should track abort handles in this test")
+            .lock()
+            .expect("tracker task lock poisoned");
         assert!(guard.is_empty(), "tracker task map should be empty after completion");
     }
 }

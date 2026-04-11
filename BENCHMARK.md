@@ -31,23 +31,23 @@ cargo bench --bench comparison
 
 | Group                                | Case                      |    Time |
 |--------------------------------------|---------------------------|--------:|
-| `comparison_async_single_listener`   | `jaeb_publish`            | 1.39 us |
-| `comparison_async_single_listener`   | `eventbuzz_publish_event` | 0.94 us |
-| `comparison_async_single_listener`   | `evno_emit`               | 0.56 us |
-| `comparison_async_fanout_10`         | `jaeb_publish`            | 10.64 us |
-| `comparison_async_fanout_10`         | `eventbuzz_publish_event` | 6.87 us |
-| `comparison_async_fanout_10`         | `evno_emit`               | 4.64 us |
-| `comparison_contention_4_publishers` | `jaeb_publish`            | 0.45 us |
-| `comparison_contention_4_publishers` | `eventbuzz_publish_event` | 0.26 us |
+| `comparison_async_single_listener`   | `jaeb_publish`            | 1.19 us |
+| `comparison_async_single_listener`   | `eventbuzz_publish_event` | 0.93 us |
+| `comparison_async_single_listener`   | `evno_emit`               | 0.60 us |
+| `comparison_async_fanout_10`         | `jaeb_publish`            | 8.93 us |
+| `comparison_async_fanout_10`         | `eventbuzz_publish_event` | 6.76 us |
+| `comparison_async_fanout_10`         | `evno_emit`               | 5.02 us |
+| `comparison_contention_4_publishers` | `jaeb_publish`            | 0.33 us |
+| `comparison_contention_4_publishers` | `eventbuzz_publish_event` | 0.25 us |
 
 Notes:
 
 - Criterion reports a confidence interval, not a single exact scalar. Values above are rounded from the reported central range.
 - These numbers are for relative orientation only, not absolute SLA guarantees.
-- Relative to the prior run documented in this file, `jaeb` improved by roughly:
-    - ~29% in `comparison_async_single_listener`
-    - ~45% in `comparison_async_fanout_10`
-    - ~75% in `comparison_contention_4_publishers`
+- Relative to the initial (pre-optimization) measurements documented in `CHANGELOG.md`, `jaeb` improved by roughly:
+    - ~39% in `comparison_async_single_listener` (1.96 us -> 1.19 us)
+    - ~53% in `comparison_async_fanout_10` (19.16 us -> 8.93 us)
+    - ~82% in `comparison_contention_4_publishers` (1.83 us -> 0.33 us)
 
 ## evno Contention Caveat
 

@@ -36,7 +36,7 @@ JAEB is not a message broker. It does **not** provide persistence, replay, or cr
 
 ```toml
 [dependencies]
-jaeb = "0.3.4"
+jaeb = "0.3.5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -44,14 +44,14 @@ With metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.4", features = ["metrics"] }
+jaeb = { version = "0.3.5", features = ["metrics"] }
 ```
 
 With standalone handler macros:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.4", features = ["macros"] }
+jaeb = { version = "0.3.5", features = ["macros"] }
 ```
 
 ## Quick Start
@@ -216,46 +216,18 @@ Use [`summer-jaeb`](summer-jaeb) and [`summer-jaeb-macros`](summer-jaeb-macros) 
 
 Macro support includes:
 
-- retry attributes (`retries`, `retry_strategy`, `retry_base_ms`, `retry_max_ms`)
-- `dead_letter` toggle
-- `priority` attribute
-- `name` override
+- `retries`
+- `retry_strategy`
+- `retry_base_ms`
+- `retry_max_ms`
+- `dead_letter`
+- `priority`
+- `name`
 
 ## Standalone Macros
 
 Enable the `macros` feature to use `#[handler]` and `register_handlers!` without
-summer-rs:
-
-```rust
-# #[cfg(feature = "macros")]
-# mod macros_example {
-    use jaeb::{handler, register_handlers, EventBus, EventBusError, HandlerResult};
-
-    #[derive(Clone)]
-    struct UserCreated {
-        id: u64,
-    }
-
-    #[handler]
-    async fn on_user_created(event: &UserCreated) -> HandlerResult {
-        println!("user {}", event.id);
-        Ok(())
-    }
-
-    #[tokio::main]
-    async fn main() -> Result<(), EventBusError> {
-        let bus = EventBus::new(64)?;
-        register_handlers!(bus, on_user_created)?; // explicit list
-        // register_handlers!(bus)?;               // auto-discover all #[handler]s
-        bus.publish(UserCreated { id: 1 }).await?;
-        bus.shutdown().await
-    }
-    #
-}
-#
-# #[cfg(not(feature = "macros"))]
-# fn main() {}
-```
+summer-rs.
 
 The `#[handler]` macro generates a struct named `<FunctionName>Handler` and an
 async `register(&EventBus)` method. Policy attributes are supported:

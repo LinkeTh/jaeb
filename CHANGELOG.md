@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-04-11
+
+### Changed
+
+- Reduced async publish-path overhead in `AsyncTaskTracker` by disabling
+  abort-handle map bookkeeping when `shutdown_timeout` is not configured,
+  while preserving timeout-based shutdown abort semantics when it is configured.
+- Reduced per-listener async dispatch capture size by introducing lightweight
+  listener metadata for retry/dead-letter handling in the spawn path.
+- Split snapshot listener storage into typed `AsyncListenerEntry` and
+  `SyncListenerEntry`, eliminating per-dispatch enum matching.
+- Added fast-path in dispatch that skips middleware iteration when none
+  are registered.
+- Eliminated per-publish `DispatchContext` allocation overhead by switching
+  from owned `Arc`/sender fields to borrowed references, removing 4 atomic
+  operations (2 clone + 2 drop) per publish call.
+
+### Fixed
+
+- Fixed TOCTOU race in `AsyncTaskTracker::finish_task` — replaced
+  separate load + compare with `fetch_sub` return-value check.
+
 ## [0.3.4] - 2026-04-11
 
 ### Added
@@ -58,8 +80,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BENCHMARK.md` with benchmark methodology, latest measurements, and caveats.
 - New `examples/axum-integration` showcasing REST endpoints that publish domain
   events and consume dead letters.
-- Proc-macro evaluation document at `docs/PROC_MACRO_EVALUATION.md` describing
-  current summer-rs coupling and standalone options.
 
 ### Changed
 

@@ -158,19 +158,19 @@ struct Inner {
 }
 
 impl Inner {
-    fn full_dispatch_context(&self) -> DispatchContext {
+    fn full_dispatch_context(&self) -> DispatchContext<'_> {
         DispatchContext {
-            tracker: Arc::clone(&self.tracker),
-            notify_tx: self.notify_tx.clone(),
+            tracker: &self.tracker,
+            notify_tx: &self.notify_tx,
             handler_timeout: self.handler_timeout,
             spawn_async_handlers: true,
         }
     }
 
-    fn sync_only_dispatch_context(&self) -> DispatchContext {
+    fn sync_only_dispatch_context(&self) -> DispatchContext<'_> {
         DispatchContext {
-            tracker: Arc::clone(&self.tracker),
-            notify_tx: self.notify_tx.clone(),
+            tracker: &self.tracker,
+            notify_tx: &self.notify_tx,
             handler_timeout: self.handler_timeout,
             spawn_async_handlers: false,
         }
@@ -231,7 +231,7 @@ impl EventBus {
 
     fn from_config(config: BusConfig) -> Self {
         let (notify_tx, notify_rx) = mpsc::unbounded_channel();
-        let tracker = Arc::new(AsyncTaskTracker::default());
+        let tracker = Arc::new(AsyncTaskTracker::new(config.shutdown_timeout.is_some()));
         let inner = Arc::new(Inner {
             snapshot: ArcSwap::from_pointee(RegistrySnapshot::default()),
             registry: Mutex::new(MutableRegistry::new(config.max_concurrent_async)),
@@ -557,7 +557,7 @@ impl EventBus {
         event_type: TypeId,
         event: Arc<dyn Any + Send + Sync>,
         event_name: &'static str,
-        dispatch_ctx: &DispatchContext,
+        dispatch_ctx: &DispatchContext<'_>,
     ) -> Result<(), EventBusError> {
         let snapshot = self.inner.snapshot.load_full();
         let once_removed = dispatch_with_snapshot(&snapshot, event_type, event, event_name, dispatch_ctx).await?;
