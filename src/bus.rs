@@ -42,6 +42,8 @@ impl Inner {
             notify_tx: &self.notify_tx,
             handler_timeout: self.handler_timeout,
             spawn_async_handlers: true,
+            #[cfg(feature = "trace")]
+            parent_span: tracing::Span::current(),
         }
     }
 
@@ -51,6 +53,8 @@ impl Inner {
             notify_tx: &self.notify_tx,
             handler_timeout: self.handler_timeout,
             spawn_async_handlers: false,
+            #[cfg(feature = "trace")]
+            parent_span: tracing::Span::current(),
         }
     }
 }
@@ -280,6 +284,12 @@ async fn control_loop(inner: std::sync::Weak<Inner>, mut notify_rx: mpsc::Unboun
                 if let Some(dead_letter) = dead_letter_from_failure(&failure) {
                     let bus = EventBus { inner };
                     let dead_letter_type = std::any::type_name::<DeadLetter>();
+                    // Note: the `parent_span` captured by `sync_only_dispatch_context()` is the
+                    // control loop's ambient span, not the original publisher's span. This is
+                    // acceptable because dead-letter dispatch only invokes sync handlers (which
+                    // run inline and do not use the propagated span). If async dead-letter
+                    // handlers are ever supported, the original publisher's span should be
+                    // threaded through `ListenerFailure` for full trace lineage.
                     let dispatch_ctx = bus.inner.sync_only_dispatch_context();
                     let snapshot = bus.inner.snapshot.load_full();
                     let slot = snapshot.by_type.get(&TypeId::of::<DeadLetter>());

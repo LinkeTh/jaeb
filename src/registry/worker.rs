@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use tokio::sync::{Semaphore, mpsc};
 
+#[cfg(feature = "trace")]
+use tracing::Instrument;
+
 use super::dispatch::{AsyncListenerMeta, execute_async_listener};
 use super::tracker::AsyncTaskTracker;
 use super::types::{ControlNotification, ErasedAsyncHandlerFn, EventType};
@@ -32,6 +35,8 @@ pub(crate) struct WorkItem {
     pub handler_timeout: Option<Duration>,
     pub notify_tx: mpsc::UnboundedSender<ControlNotification>,
     pub concurrency_semaphore: Option<Arc<Semaphore>>,
+    #[cfg(feature = "trace")]
+    pub parent_span: tracing::Span,
     _guard: ExternalWorkGuard,
 }
 
@@ -43,6 +48,8 @@ pub(crate) struct WorkItemData {
     pub handler_timeout: Option<Duration>,
     pub notify_tx: mpsc::UnboundedSender<ControlNotification>,
     pub concurrency_semaphore: Option<Arc<Semaphore>>,
+    #[cfg(feature = "trace")]
+    pub parent_span: tracing::Span,
 }
 
 impl WorkItem {
@@ -55,6 +62,8 @@ impl WorkItem {
             handler_timeout: data.handler_timeout,
             notify_tx: data.notify_tx,
             concurrency_semaphore: data.concurrency_semaphore,
+            #[cfg(feature = "trace")]
+            parent_span: data.parent_span,
             _guard: ExternalWorkGuard::new(tracker),
         }
     }
@@ -86,17 +95,24 @@ impl AsyncSlotWorker {
 async fn worker_loop(mut rx: mpsc::UnboundedReceiver<WorkItem>) {
     while let Some(item) = rx.recv().await {
         let task = async {
-            if let Some(failure) = execute_async_listener(item.handler, item.event, item.event_name, item.meta, item.handler_timeout).await {
-                let _ = item.notify_tx.send(ControlNotification::Failure(failure));
+            let inner = async {
+                if let Some(failure) = execute_async_listener(item.handler, item.event, item.event_name, item.meta, item.handler_timeout).await {
+                    let _ = item.notify_tx.send(ControlNotification::Failure(failure));
+                }
+            };
+
+            if let Some(semaphore) = item.concurrency_semaphore {
+                if let Ok(_permit) = semaphore.acquire().await {
+                    inner.await;
+                }
+            } else {
+                inner.await;
             }
         };
 
-        if let Some(semaphore) = item.concurrency_semaphore {
-            if let Ok(_permit) = semaphore.acquire().await {
-                task.await;
-            }
-        } else {
-            task.await;
-        }
+        #[cfg(feature = "trace")]
+        let task = task.instrument(item.parent_span);
+
+        task.await;
     }
 }

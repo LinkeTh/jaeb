@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-04-12
+
+### Added
+
+- Automatic tracing span propagation for async handlers behind the `trace`
+  feature gate. The bus captures `Span::current()` at publish time and
+  instruments spawned async handler futures so they inherit the caller's trace
+  context without any event-payload changes. Works for both `publish` and
+  `try_publish`, and covers the persistent worker path.
+- `tests/trace_propagation.rs` — 5 tests covering `publish`, `try_publish`,
+  sync handler baseline, worker path, and no-span graceful degradation.
+- `examples/observability-stack` — full Docker Compose example integrating
+  Prometheus, Loki, Tempo, and Grafana with pre-built dashboards.
+
 ## [0.3.8] - 2026-04-12
 
 ### Added

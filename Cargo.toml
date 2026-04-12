@@ -1,13 +1,13 @@
 [package]
 name = "jaeb"
-version = "0.3.8"
+version = "0.3.10"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"
 license = "MIT"
 repository = "https://github.com/LinkeTh/jaeb"
 keywords = ["event-bus", "tokio", "async", "pubsub", "snapshot"]
-categories = ["asynchronous", "concurrency", "event-driven", "pub-sub"]
+categories = ["asynchronous", "concurrency"]
 readme = "README.md"
 rust-version = "1.94"
 
@@ -37,6 +37,7 @@ members = [
     "examples/macro-handlers-auto",
     "examples/jaeb-visualizer",
     "examples/axum-integration",
+    "examples/observability-stack",
     "summer-jaeb-macros",
     "summer-jaeb",
 ]
@@ -66,6 +67,7 @@ eventador = { version = "0.0.18", features = ["async"] }
 metrics-util = { version = "0.20.1", default-features = false, features = ["debugging"] }
 proptest = "1.9.0"
 tracing-test = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 [[bench]]
 name = "throughput"

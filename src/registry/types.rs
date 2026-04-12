@@ -117,4 +117,9 @@ pub(crate) struct DispatchContext<'a> {
     pub notify_tx: &'a mpsc::UnboundedSender<ControlNotification>,
     pub handler_timeout: Option<Duration>,
     pub spawn_async_handlers: bool,
+    /// When the `trace` feature is enabled, this captures the caller's tracing
+    /// span at publish time so spawned async handlers inherit the correct parent
+    /// context automatically.
+    #[cfg(feature = "trace")]
+    pub parent_span: tracing::Span,
 }

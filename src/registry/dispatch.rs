@@ -13,7 +13,7 @@ use futures_util::{
 use tokio::sync::mpsc;
 
 #[cfg(feature = "trace")]
-use tracing::{error, warn};
+use tracing::{Instrument, error, warn};
 
 #[cfg(feature = "metrics")]
 use metrics::counter;
@@ -202,6 +202,8 @@ pub(crate) async fn dispatch_slot(
                             handler_timeout,
                             notify_tx: dispatch_ctx.notify_tx.clone(),
                             concurrency_semaphore: semaphore,
+                            #[cfg(feature = "trace")]
+                            parent_span: dispatch_ctx.parent_span.clone(),
                         },
                         Arc::clone(dispatch_ctx.tracker),
                     ));
@@ -210,20 +212,27 @@ pub(crate) async fn dispatch_slot(
                     let handler = Arc::clone(&listener.handler);
                     let event = Arc::clone(event);
                     let notify = dispatch_ctx.notify_tx.clone();
-                    tracker.spawn_tracked(async move {
-                        let task = async {
-                            if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
-                                let _ = notify.send(ControlNotification::Failure(failure));
-                            }
-                        };
+                    #[cfg(feature = "trace")]
+                    let parent_span = dispatch_ctx.parent_span.clone();
+                    tracker.spawn_tracked({
+                        let fut = async move {
+                            let task = async {
+                                if let Some(failure) = execute_async_listener(handler, event, event_name, listener_meta, handler_timeout).await {
+                                    let _ = notify.send(ControlNotification::Failure(failure));
+                                }
+                            };
 
-                        if let Some(semaphore) = semaphore {
-                            if let Ok(_permit) = semaphore.acquire().await {
+                            if let Some(semaphore) = semaphore {
+                                if let Ok(_permit) = semaphore.acquire().await {
+                                    task.await;
+                                }
+                            } else {
                                 task.await;
                             }
-                        } else {
-                            task.await;
-                        }
+                        };
+                        #[cfg(feature = "trace")]
+                        let fut = fut.instrument(parent_span);
+                        fut
                     });
                 }
             }
@@ -260,12 +269,19 @@ pub(crate) async fn dispatch_slot(
             if !async_batch.is_empty() {
                 let notify = dispatch_ctx.notify_tx.clone();
                 let tracker = Arc::clone(dispatch_ctx.tracker);
-                tracker.spawn_tracked(async move {
-                    while let Some(failure) = async_batch.next().await {
-                        if let Some(failure) = failure {
-                            let _ = notify.send(ControlNotification::Failure(failure));
+                #[cfg(feature = "trace")]
+                let parent_span = dispatch_ctx.parent_span.clone();
+                tracker.spawn_tracked({
+                    let fut = async move {
+                        while let Some(failure) = async_batch.next().await {
+                            if let Some(failure) = failure {
+                                let _ = notify.send(ControlNotification::Failure(failure));
+                            }
                         }
-                    }
+                    };
+                    #[cfg(feature = "trace")]
+                    let fut = fut.instrument(parent_span);
+                    fut
                 });
             }
         }

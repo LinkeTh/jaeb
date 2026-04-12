@@ -155,6 +155,10 @@ impl EventBus {
         let slot = slot.cloned();
 
         let bus = self.clone();
+        // Capture the caller's span *before* spawning so the dispatched task
+        // inherits the correct trace context (tokio::spawn breaks the span chain).
+        #[cfg(feature = "trace")]
+        let caller_span = tracing::Span::current();
         tokio::spawn(async move {
             let _keep = permit;
             let slot = slot.as_ref();
@@ -164,7 +168,14 @@ impl EventBus {
                     tracing::error!(error = %_err, "event_bus.try_publish.dispatch_failed");
                 }
             } else {
-                let dispatch_ctx = bus.inner.full_dispatch_context();
+                let dispatch_ctx = DispatchContext {
+                    tracker: &bus.inner.tracker,
+                    notify_tx: &bus.inner.notify_tx,
+                    handler_timeout: bus.inner.handler_timeout,
+                    spawn_async_handlers: true,
+                    #[cfg(feature = "trace")]
+                    parent_span: caller_span,
+                };
                 if let Err(_err) = bus
                     .publish_erased(snapshot.as_ref(), slot, Arc::new(event), std::any::type_name::<E>(), &dispatch_ctx)
                     .await
