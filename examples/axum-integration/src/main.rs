@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
@@ -10,12 +11,20 @@ use jaeb::{DeadLetter, EventBus, EventBusError, EventHandler, HandlerResult, Sub
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+// ---------------------------------------------------------------------------
+// Domain events
+// ---------------------------------------------------------------------------
+
 #[derive(Clone, Debug)]
 struct OrderCreated {
     order_id: String,
     customer_email: String,
     total_cents: u64,
 }
+
+// ---------------------------------------------------------------------------
+// HTTP request / response types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct CreateOrderRequest {
@@ -40,16 +49,69 @@ struct ApiError {
     error: String,
 }
 
+// ---------------------------------------------------------------------------
+// Application services
+//
+// In a real application these would hold connection pools, SMTP clients, etc.
+// Here they are stubs that log to illustrate the dependency-injection pattern:
+// construct once, share via Arc, inject into whichever handlers need them.
+// ---------------------------------------------------------------------------
+
+struct DbPool;
+
+impl DbPool {
+    fn is_connected(&self) -> bool {
+        true // stub: would ping the real pool
+    }
+
+    fn update_inventory(&self, order_id: &str) {
+        info!(order_id, "db: inventory row updated");
+    }
+
+    fn record_audit(&self, order_id: &str, total_cents: u64) {
+        info!(order_id, total_cents, "db: audit row inserted");
+    }
+}
+
+struct Mailer;
+
+impl Mailer {
+    fn is_available(&self) -> bool {
+        true // stub: would check SMTP connectivity
+    }
+
+    fn send(&self, to: &str, subject: &str) {
+        info!(to, subject, "mailer: email queued");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared axum state
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
 struct AppState {
     bus: EventBus,
+    db: Arc<DbPool>,
+    mailer: Arc<Mailer>,
 }
 
-struct NotificationHandler;
+// ---------------------------------------------------------------------------
+// Event handlers
+//
+// Each handler struct holds only the dependencies it actually needs.
+// Dependencies are injected at startup (in `register_handlers`) and stored
+// as Arc fields — zero overhead at dispatch time.
+// ---------------------------------------------------------------------------
+
+struct NotificationHandler {
+    mailer: Arc<Mailer>,
+}
 
 impl EventHandler<OrderCreated> for NotificationHandler {
     async fn handle(&self, event: &OrderCreated) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(10)).await;
+        self.mailer.send(&event.customer_email, &format!("Order {} confirmed", event.order_id));
         info!(
             order_id = %event.order_id,
             customer_email = %event.customer_email,
@@ -59,20 +121,26 @@ impl EventHandler<OrderCreated> for NotificationHandler {
     }
 }
 
-struct InventoryProjectionHandler;
+struct InventoryProjectionHandler {
+    db: Arc<DbPool>,
+}
 
 impl EventHandler<OrderCreated> for InventoryProjectionHandler {
     async fn handle(&self, event: &OrderCreated) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(5)).await;
+        self.db.update_inventory(&event.order_id);
         info!(order_id = %event.order_id, "inventory projection updated");
         Ok(())
     }
 }
 
-struct AuditLogHandler;
+struct AuditLogHandler {
+    db: Arc<DbPool>,
+}
 
 impl SyncEventHandler<OrderCreated> for AuditLogHandler {
     fn handle(&self, event: &OrderCreated) -> HandlerResult {
+        self.db.record_audit(&event.order_id, event.total_cents);
         info!(
             order_id = %event.order_id,
             total_cents = event.total_cents,
@@ -97,6 +165,10 @@ impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Server entry point
+// ---------------------------------------------------------------------------
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -110,9 +182,19 @@ async fn main() {
         .build()
         .expect("valid bus config");
 
-    register_handlers(&bus).await.expect("register handlers");
+    // Construct shared services once; clone the Arc into each handler that
+    // needs them at registration time.
+    let db = Arc::new(DbPool);
+    let mailer = Arc::new(Mailer);
 
-    let state = AppState { bus: bus.clone() };
+    register_handlers(&bus, &db, &mailer).await.expect("register handlers");
+
+    let state = AppState {
+        bus: bus.clone(),
+        db,
+        mailer,
+    };
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/orders", post(create_order))
@@ -141,21 +223,32 @@ async fn main() {
     }
 }
 
-async fn register_handlers(bus: &EventBus) -> Result<(), EventBusError> {
+// ---------------------------------------------------------------------------
+// Handler registration
+//
+// Each handler is constructed with its dependencies here, at startup.
+// The bus receives a fully-formed handler object; at dispatch time it simply
+// calls `handler.handle(event)` with no extra allocation.
+// ---------------------------------------------------------------------------
+
+async fn register_handlers(bus: &EventBus, db: &Arc<DbPool>, mailer: &Arc<Mailer>) -> Result<(), EventBusError> {
     let _ = bus
-        .subscribe_with_policy::<OrderCreated, _, _>(NotificationHandler, SubscriptionPolicy::default().with_priority(20).with_max_retries(2))
+        .subscribe_with_policy::<OrderCreated, _, _>(
+            NotificationHandler { mailer: mailer.clone() },
+            SubscriptionPolicy::default().with_priority(20).with_max_retries(2),
+        )
         .await?;
 
     let _ = bus
         .subscribe_with_policy::<OrderCreated, _, _>(
-            InventoryProjectionHandler,
+            InventoryProjectionHandler { db: db.clone() },
             SubscriptionPolicy::default().with_priority(10).with_max_retries(1),
         )
         .await?;
 
     let _ = bus
         .subscribe_with_policy::<OrderCreated, _, _>(
-            AuditLogHandler,
+            AuditLogHandler { db: db.clone() },
             SyncSubscriptionPolicy::default().with_priority(50).with_dead_letter(false),
         )
         .await?;
@@ -164,8 +257,15 @@ async fn register_handlers(bus: &EventBus) -> Result<(), EventBusError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Axum route handlers
+// ---------------------------------------------------------------------------
+
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let healthy = state.bus.is_healthy().await;
+    let bus_healthy = state.bus.is_healthy().await;
+    let db_connected = state.db.is_connected();
+    let mailer_available = state.mailer.is_available();
+    let healthy = bus_healthy && db_connected && mailer_available;
     (StatusCode::OK, Json(HealthResponse { healthy }))
 }
 
