@@ -11,6 +11,9 @@ use crate::sim::SimEvent;
 pub struct SimEnvelopeEvent {
     pub seq: u64,
     pub event_type_idx: usize,
+    /// Stamped by the publisher immediately before `bus.publish().await`.
+    /// Used by handlers to compute end-to-end latency (queue wait + dispatch + execution).
+    pub published_at: Instant,
 }
 
 pub type ListenerLookup = Arc<HashMap<String, usize>>;
@@ -28,6 +31,7 @@ impl jaeb::EventHandler<SimEnvelopeEvent> for MockAsyncHandler {
         let cfg = self.cfg.clone();
         let seq = event.seq;
         let event_type_idx = event.event_type_idx;
+        let published_at = event.published_at;
         async move {
             if event_type_idx != cfg.event_type_idx as usize {
                 return Ok(());
@@ -54,7 +58,8 @@ impl jaeb::EventHandler<SimEnvelopeEvent> for MockAsyncHandler {
                 return Err("simulated failure".into());
             }
 
-            let elapsed = start.elapsed().as_millis() as u64;
+            // End-to-end: time from before publish().await until handler finishes.
+            let elapsed = published_at.elapsed().as_millis() as u64;
             let _ = tx.send(SimEvent::HandlerCompleted {
                 listener: cfg.name,
                 listener_idx,
@@ -84,13 +89,12 @@ impl jaeb::SyncEventHandler<SimEnvelopeEvent> for MockSyncHandler {
             return Ok(());
         }
 
-        let start = Instant::now();
         let _ = self.tx.send(SimEvent::HandlerStarted {
             listener: self.cfg.name.clone(),
             listener_idx: self.listener_idx,
             event_type_idx: event.event_type_idx,
             seq: event.seq,
-            at: start,
+            at: Instant::now(),
         });
 
         std::thread::sleep(Duration::from_millis(self.cfg.processing_ms));
@@ -105,7 +109,8 @@ impl jaeb::SyncEventHandler<SimEnvelopeEvent> for MockSyncHandler {
             return Err("simulated failure".into());
         }
 
-        let elapsed = start.elapsed().as_millis() as u64;
+        // End-to-end: time from before publish().await until handler finishes.
+        let elapsed = event.published_at.elapsed().as_millis() as u64;
         let _ = self.tx.send(SimEvent::HandlerCompleted {
             listener: self.cfg.name.clone(),
             listener_idx: self.listener_idx,

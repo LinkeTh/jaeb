@@ -18,12 +18,13 @@ pub struct VisualizationState {
     // Global sampled data (ring buffers, sampled every 500ms)
     pub throughput_history: VecDeque<u64>,
     pub backpressure_history: VecDeque<u64>,
+    /// Sampled handler-level in-flight count (HandlerStarted minus completions/failures).
+    pub in_flight_history: VecDeque<i64>,
+    /// Sampled bus_in_flight_async count (spawned async handler tasks still alive).
+    pub async_tasks_history: VecDeque<usize>,
     // Snapshot counters for computing deltas
     pub last_sample_published: u64,
     pub last_sample_bp: u64,
-
-    // Channel pressure
-    pub buffer_size: usize,
 
     // Handler panels
     pub handler_metrics: Vec<HandlerViz>,
@@ -61,9 +62,10 @@ impl VisualizationState {
             backpressure_hits: 0,
             throughput_history: VecDeque::with_capacity(MAX_SPARKLINE_SAMPLES),
             backpressure_history: VecDeque::with_capacity(MAX_SPARKLINE_SAMPLES),
+            in_flight_history: VecDeque::with_capacity(MAX_SPARKLINE_SAMPLES),
+            async_tasks_history: VecDeque::with_capacity(MAX_SPARKLINE_SAMPLES),
             last_sample_published: 0,
             last_sample_bp: 0,
-            buffer_size,
             handler_metrics: listeners
                 .iter()
                 .enumerate()
@@ -135,18 +137,6 @@ impl VisualizationState {
         }
     }
 
-    pub fn pressure_ratio(&self) -> f64 {
-        let capacity = if self.bus_queue_capacity == 0 {
-            self.buffer_size
-        } else {
-            self.bus_queue_capacity
-        };
-        if capacity == 0 {
-            return 0.0;
-        }
-        (self.bus_publish_in_flight as f64 / capacity as f64).min(1.0)
-    }
-
     /// Called periodically (every 500ms) to sample throughput and latency deltas.
     pub fn sample_throughput(&mut self) {
         let pub_delta = self.total_published - self.last_sample_published;
@@ -162,6 +152,16 @@ impl VisualizationState {
         self.backpressure_history.push_back(bp_delta);
         if self.backpressure_history.len() > MAX_SPARKLINE_SAMPLES {
             self.backpressure_history.pop_front();
+        }
+
+        self.in_flight_history.push_back(self.in_flight);
+        if self.in_flight_history.len() > MAX_SPARKLINE_SAMPLES {
+            self.in_flight_history.pop_front();
+        }
+
+        self.async_tasks_history.push_back(self.bus_in_flight_async);
+        if self.async_tasks_history.len() > MAX_SPARKLINE_SAMPLES {
+            self.async_tasks_history.pop_front();
         }
 
         for handler in &mut self.handler_metrics {

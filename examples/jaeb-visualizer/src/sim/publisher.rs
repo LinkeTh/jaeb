@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use jaeb::{EventBus, EventBusError};
+use jaeb::EventBus;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
@@ -52,7 +52,7 @@ pub async fn run_publish_loop(
 
                 seq += 1;
                 event_type_counters[idx] += 1;
-                if publish_event(&bus, idx, seq, &tx) {
+                if publish_event(&bus, idx, seq, &tx).await {
                     total_published += 1;
                 }
 
@@ -63,7 +63,7 @@ pub async fn run_publish_loop(
                             for _ in 0..5 {
                                 seq += 1;
                                 event_type_counters[idx] += 1;
-                                if publish_event(&bus, idx, seq, &tx) {
+                                if publish_event(&bus, idx, seq, &tx).await {
                                     total_published += 1;
                                 }
                             }
@@ -73,7 +73,7 @@ pub async fn run_publish_loop(
                         if rand::random::<f64>() < 0.25 {
                             seq += 1;
                             event_type_counters[idx] += 1;
-                            if publish_event(&bus, idx, seq, &tx) {
+                            if publish_event(&bus, idx, seq, &tx).await {
                                 total_published += 1;
                             }
                         }
@@ -87,8 +87,17 @@ pub async fn run_publish_loop(
     total_published
 }
 
-fn publish_event(bus: &EventBus, event_type_idx: usize, seq: u64, tx: &mpsc::UnboundedSender<SimEvent>) -> bool {
-    match bus.try_publish(SimEnvelopeEvent { seq, event_type_idx }) {
+async fn publish_event(bus: &EventBus, event_type_idx: usize, seq: u64, tx: &mpsc::UnboundedSender<SimEvent>) -> bool {
+    let published_at = Instant::now();
+    let res = bus
+        .publish(SimEnvelopeEvent {
+            seq,
+            event_type_idx,
+            published_at,
+        })
+        .await;
+
+    match res {
         Ok(()) => {
             let _ = tx.send(SimEvent::Published {
                 event_type_idx,
@@ -97,11 +106,7 @@ fn publish_event(bus: &EventBus, event_type_idx: usize, seq: u64, tx: &mpsc::Unb
             });
             true
         }
-        Err(EventBusError::ChannelFull) => {
-            let _ = tx.send(SimEvent::BackpressureHit { at: Instant::now() });
-            true
-        }
-        Err(EventBusError::Stopped) => false,
+        Err(jaeb::EventBusError::Stopped) => false,
         Err(_) => true,
     }
 }

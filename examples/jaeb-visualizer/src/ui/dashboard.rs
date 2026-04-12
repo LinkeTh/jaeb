@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Widget};
 
 use crate::metrics::VisualizationState;
 use crate::ui::palette;
-use crate::ui::widgets::{latency_chart, pressure, throughput_chart};
+use crate::ui::widgets::{inflight_chart, latency_chart, throughput_chart};
 
 pub struct DashboardState {
     pub dead_letter_scroll: usize,
@@ -131,9 +131,9 @@ fn counter_line(label: &str, value: u64, color: ratatui::style::Color) -> Line<'
 }
 
 fn render_right_panel(area: Rect, buf: &mut Buffer, viz: &VisualizationState) {
-    let [pressure_area, latency_area] = Layout::vertical([Constraint::Length(4), Constraint::Min(4)]).areas(area);
-    pressure::render_pressure(pressure_area, buf, viz);
+    let [latency_area, inflight_area] = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).areas(area);
     render_latency_summary(latency_area, buf, viz);
+    inflight_chart::render_inflight(inflight_area, buf, viz);
 }
 
 fn render_latency_summary(area: Rect, buf: &mut Buffer, viz: &VisualizationState) {
