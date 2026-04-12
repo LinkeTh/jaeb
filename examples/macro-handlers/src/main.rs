@@ -1,12 +1,12 @@
 //! Demonstrates `#[handler]` and `#[dead_letter_handler]` with the builder
 //! pattern, including handlers that receive injected `Dep<T>` dependencies.
 //!
-//! `#[handler]` generates a struct that implements [`HandlerDescriptor`],
-//! registered via [`EventBusBuilder::handler`].
+//! `#[handler]` generates a struct that implements `HandlerDescriptor`,
+//! registered via `EventBusBuilder::handler`.
 //!
 //! `#[dead_letter_handler]` generates a struct that implements
-//! [`DeadLetterDescriptor`], registered via
-//! [`EventBusBuilder::dead_letter`].
+//! `DeadLetterDescriptor`, registered via
+//! `EventBusBuilder::dead_letter`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,7 +24,7 @@ struct Payment {
 struct AuditLog(Arc<AtomicUsize>);
 
 /// Async handler with a `Dep<T>` parameter.  The `AuditLog` is resolved from
-/// the [`Deps`] container at bus build time and cloned into each invocation.
+/// the `Deps` container at bus build time and cloned into each invocation.
 #[handler]
 async fn process_payment(event: &Payment, Dep(log): Dep<AuditLog>) -> HandlerResult {
     println!("processing payment {}", event.id);

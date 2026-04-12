@@ -18,7 +18,7 @@ use codegen::{
 use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, parse_dep_params};
 
 /// Marks a free function as a jaeb event handler and generates a companion
-/// handler struct that implements [`HandlerDescriptor`](::jaeb::HandlerDescriptor).
+/// handler struct that implements `HandlerDescriptor`.
 ///
 /// The macro emits:
 /// - A `#[doc(hidden)]` struct named `<FunctionNamePascalCase>Handler`.
@@ -69,8 +69,8 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 ///
 /// # Dependency injection with `Dep<T>`
 ///
-/// Handlers can declare [`Dep<T>`](::jaeb::Dep) parameters (position 1 and
-/// onward) to receive dependencies resolved from the [`Deps`](::jaeb::Deps)
+/// Handlers can declare `Dep<T>` parameters (position 1 and onward) to receive
+/// dependencies resolved from the `Deps`
 /// container at build time. Each `T` is cloned per invocation, so use
 /// `Arc<T>` for non-`Clone` types.
 ///
@@ -94,11 +94,11 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 /// ```
 ///
 /// A missing dependency causes `build()` to return
-/// [`EventBusError::MissingDependency`](::jaeb::EventBusError::MissingDependency).
+/// `EventBusError::MissingDependency`.
 ///
 /// # Dead-letter handlers
 ///
-/// Handlers for [`DeadLetter`](::jaeb::DeadLetter) events **must** use
+/// Handlers for `DeadLetter` events **must** use
 /// [`#[dead_letter_handler]`](dead_letter_handler) instead. Using `#[handler]`
 /// on a function that takes `&DeadLetter` is a compile-time error.
 #[proc_macro_attribute]
@@ -114,7 +114,7 @@ pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Marks a free function as a jaeb dead-letter handler and generates a
 /// companion handler struct that implements
-/// [`DeadLetterDescriptor`](::jaeb::DeadLetterDescriptor).
+/// `DeadLetterDescriptor`.
 ///
 /// The function **must** be synchronous and take `&DeadLetter` as its first
 /// parameter. Subscription-policy attributes (`retries`, `retry_strategy`,
@@ -140,7 +140,7 @@ pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Dependency injection with `Dep<T>`
 ///
-/// Like `#[handler]`, dead-letter handlers can declare [`Dep<T>`](::jaeb::Dep)
+/// Like `#[handler]`, dead-letter handlers can declare `Dep<T>`
 /// parameters to receive build-time dependencies:
 ///
 /// ```rust,ignore
