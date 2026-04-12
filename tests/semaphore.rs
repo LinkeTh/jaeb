@@ -35,6 +35,7 @@ async fn semaphore_limited_bus_shuts_down_cleanly() {
         .max_concurrent_async(1)
         .shutdown_timeout(Duration::from_millis(100))
         .build()
+        .await
         .expect("valid config");
 
     let count = Arc::new(AtomicUsize::new(0));
@@ -59,7 +60,12 @@ async fn semaphore_limited_bus_shuts_down_cleanly() {
 /// under normal (non-shutdown) conditions.
 #[tokio::test]
 async fn semaphore_limited_handlers_execute_normally() {
-    let bus = EventBus::builder().buffer_size(64).max_concurrent_async(2).build().expect("valid config");
+    let bus = EventBus::builder()
+        .buffer_size(64)
+        .max_concurrent_async(2)
+        .build()
+        .await
+        .expect("valid config");
 
     let count = Arc::new(AtomicUsize::new(0));
 

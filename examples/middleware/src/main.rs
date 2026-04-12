@@ -67,7 +67,7 @@ impl SyncEventHandler<Metric> for MetricHandler {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let _ = bus.add_sync_middleware(LogAllMiddleware).await.expect("add global middleware failed");
     let _ = bus

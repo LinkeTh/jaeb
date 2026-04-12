@@ -37,7 +37,7 @@ impl EventHandler<PriorityEvent> for OrderedAsync {
 
 #[tokio::test]
 async fn sync_priority_orders_high_to_low() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let order = Arc::new(Mutex::new(Vec::new()));
 
     let low = SyncSubscriptionPolicy::default().with_priority(-10);
@@ -86,7 +86,7 @@ async fn sync_priority_orders_high_to_low() {
 
 #[tokio::test]
 async fn sync_equal_priority_keeps_fifo_order() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let order = Arc::new(Mutex::new(Vec::new()));
 
     let p = SyncSubscriptionPolicy::default().with_priority(7);
@@ -133,7 +133,12 @@ async fn sync_equal_priority_keeps_fifo_order() {
 
 #[tokio::test]
 async fn async_priority_orders_spawn_sequence() {
-    let bus = EventBus::builder().buffer_size(64).max_concurrent_async(1).build().expect("valid config");
+    let bus = EventBus::builder()
+        .buffer_size(64)
+        .max_concurrent_async(1)
+        .build()
+        .await
+        .expect("valid config");
 
     let order = Arc::new(Mutex::new(Vec::new()));
     let hits = Arc::new(AtomicUsize::new(0));

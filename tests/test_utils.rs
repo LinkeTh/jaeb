@@ -12,7 +12,7 @@ struct Pong(String);
 
 #[tokio::test]
 async fn test_bus_captures_events() {
-    let bus = TestBus::new().expect("create TestBus");
+    let bus = TestBus::new().await.expect("create TestBus");
 
     bus.capture::<Ping>().await.expect("capture Ping");
 
@@ -28,7 +28,7 @@ async fn test_bus_captures_events() {
 
 #[tokio::test]
 async fn test_bus_multiple_types() {
-    let bus = TestBus::new().expect("create TestBus");
+    let bus = TestBus::new().await.expect("create TestBus");
 
     bus.capture::<Ping>().await.expect("capture Ping");
     bus.capture::<Pong>().await.expect("capture Pong");
@@ -45,7 +45,7 @@ async fn test_bus_multiple_types() {
 
 #[tokio::test]
 async fn test_bus_empty_before_publish() {
-    let bus = TestBus::new().expect("create TestBus");
+    let bus = TestBus::new().await.expect("create TestBus");
 
     bus.capture::<Ping>().await.expect("capture Ping");
 
@@ -61,7 +61,7 @@ async fn test_bus_empty_before_publish() {
 
 #[tokio::test]
 async fn test_bus_assert_count() {
-    let bus = TestBus::new().expect("create TestBus");
+    let bus = TestBus::new().await.expect("create TestBus");
 
     bus.capture::<Ping>().await.expect("capture Ping");
 
@@ -77,7 +77,7 @@ async fn test_bus_assert_count() {
 #[tokio::test]
 #[should_panic(expected = "expected 5 events, got 2")]
 async fn test_bus_assert_count_panics_on_mismatch() {
-    let bus = TestBus::new().expect("create TestBus");
+    let bus = TestBus::new().await.expect("create TestBus");
 
     bus.capture::<Ping>().await.expect("capture Ping");
 
@@ -89,7 +89,7 @@ async fn test_bus_assert_count_panics_on_mismatch() {
 
 #[tokio::test]
 async fn test_bus_capture_idempotent() {
-    let bus = TestBus::new().expect("create TestBus");
+    let bus = TestBus::new().await.expect("create TestBus");
 
     bus.capture::<Ping>().await.expect("capture 1");
     bus.capture::<Ping>().await.expect("capture 2 (idempotent)");
@@ -104,7 +104,7 @@ async fn test_bus_capture_idempotent() {
 
 #[tokio::test]
 async fn test_bus_builder() {
-    let bus = TestBus::builder().buffer_size(32).build().expect("build TestBus");
+    let bus = TestBus::builder().buffer_size(32).build().await.expect("build TestBus");
 
     bus.capture::<Ping>().await.expect("capture");
     bus.inner().publish(Ping(7)).await.expect("publish");

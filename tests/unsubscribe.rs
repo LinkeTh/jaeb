@@ -24,7 +24,7 @@ impl SyncEventHandler<Tick> for Counter {
 
 #[tokio::test]
 async fn unsubscribe_stops_delivery() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -42,7 +42,7 @@ async fn unsubscribe_stops_delivery() {
 
 #[tokio::test]
 async fn unsubscribe_by_id_stops_delivery() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -63,7 +63,7 @@ async fn unsubscribe_by_id_stops_delivery() {
 
 #[tokio::test]
 async fn unsubscribe_unknown_id_returns_false() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
 
     // Subscribe and immediately unsubscribe to obtain a valid-but-removed id.
     let sub = bus
@@ -84,7 +84,7 @@ async fn unsubscribe_unknown_id_returns_false() {
 
 #[tokio::test]
 async fn double_unsubscribe_returns_false_second_time() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -106,7 +106,7 @@ async fn double_unsubscribe_returns_false_second_time() {
 /// copy-on-write (`Arc<Vec<Listener>>`) so both operations are safe.
 #[tokio::test]
 async fn concurrent_publish_and_unsubscribe_is_safe() {
-    let bus = EventBus::new(256).expect("valid config");
+    let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // Register several listeners.

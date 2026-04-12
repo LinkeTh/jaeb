@@ -46,6 +46,7 @@ async fn main() {
             .buffer_size(64)
             .shutdown_timeout(Duration::from_secs(2))
             .build()
+            .await
             .expect("valid config");
 
         let _ = bus.subscribe::<QuickJob, _, _>(QuickHandler).await.expect("subscribe failed");
@@ -63,6 +64,7 @@ async fn main() {
             .buffer_size(64)
             .shutdown_timeout(Duration::from_millis(200))
             .build()
+            .await
             .expect("valid config");
 
         let _ = bus.subscribe::<SlowJob, _, _>(VerySlowHandler).await.expect("subscribe failed");
@@ -75,7 +77,7 @@ async fn main() {
     }
 
     // After shutdown, further publishes return Stopped.
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     bus.shutdown().await.expect("shutdown failed");
     match bus.publish(QuickJob).await {
         Err(EventBusError::Stopped) => println!("post-shutdown publish: Stopped (expected)"),

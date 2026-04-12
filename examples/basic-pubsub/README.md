@@ -13,7 +13,7 @@ cargo run -p basic-pubsub
 
 | Concept | Where |
 |---|---|
-| `EventBus::new(buffer)` | Creates a bus with a fixed-size publish buffer |
+| `EventBus::builder().buffer_size(...).build().await` | Creates a bus with a fixed-size publish buffer |
 | `bus.subscribe` | Registers an `EventHandler` implementation |
 | `bus.publish` | Dispatches an event; returns after async tasks are spawned |
 | `bus.shutdown` | Drains in-flight tasks and stops the bus |

@@ -43,7 +43,7 @@ impl SyncEventHandler<OrderPlaced> for SecondHandler {
 async fn main() {
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let _ = bus
         .subscribe::<OrderPlaced, _, _>(FirstHandler(Arc::clone(&counter)))

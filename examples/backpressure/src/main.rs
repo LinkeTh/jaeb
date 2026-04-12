@@ -31,9 +31,9 @@ impl EventHandler<Task> for SlowHandler {
 #[tokio::main]
 async fn main() {
     // Small buffer of 2 permits.
-    let bus = EventBus::builder().buffer_size(2).build().expect("valid config");
+    let bus = EventBus::builder().buffer_size(2).build().await.expect("valid config");
 
-    let _ = bus.subscribe::<Task, _, _>(SlowHandler).await.expect("subscribe failed");
+    let _ = bus.subscribe(SlowHandler).await.expect("subscribe failed");
 
     // try_publish is non-blocking — it spawns dispatch and returns immediately.
     bus.try_publish(Task { id: 1 }).expect("try_publish 1 failed");

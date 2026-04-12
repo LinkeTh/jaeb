@@ -23,7 +23,7 @@ impl EventHandler<StressEvent> for SlowAsyncCounter {
 
 #[tokio::test]
 async fn hundred_concurrent_publishers() {
-    let bus = EventBus::new(1024).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
@@ -59,7 +59,7 @@ async fn hundred_concurrent_publishers() {
 
 #[tokio::test]
 async fn five_hundred_listeners_single_type() {
-    let bus = EventBus::new(1024).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     for _ in 0..500 {
@@ -81,7 +81,7 @@ async fn five_hundred_listeners_single_type() {
 
 #[tokio::test]
 async fn hundred_thousand_events_throughput() {
-    let bus = EventBus::new(2048).expect("valid config");
+    let bus = EventBus::builder().buffer_size(2048).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
@@ -107,7 +107,7 @@ async fn hundred_thousand_events_throughput() {
 
 #[tokio::test]
 async fn mixed_sync_async_high_contention() {
-    let bus = EventBus::new(2048).expect("valid config");
+    let bus = EventBus::builder().buffer_size(2048).build().await.expect("valid config");
     let sync_hits = Arc::new(AtomicUsize::new(0));
     let async_hits = Arc::new(AtomicUsize::new(0));
 
@@ -163,7 +163,7 @@ async fn mixed_sync_async_high_contention() {
 
 #[tokio::test]
 async fn subscribe_unsubscribe_churn_during_publish() {
-    let bus = EventBus::new(1024).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
     let delivered = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -218,7 +218,7 @@ async fn subscribe_unsubscribe_churn_during_publish() {
 
 #[tokio::test]
 async fn backpressure_fairness_under_contention() {
-    let bus = EventBus::new(1).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1).build().await.expect("valid config");
     let handled = Arc::new(AtomicUsize::new(0));
 
     let _sub = bus
@@ -260,7 +260,7 @@ async fn backpressure_fairness_under_contention() {
 
 #[tokio::test]
 async fn concurrent_stats_access_under_load() {
-    let bus = EventBus::new(1024).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
     let handled = Arc::new(AtomicUsize::new(0));
 
     let handled_for_handler = Arc::clone(&handled);
@@ -301,7 +301,7 @@ async fn concurrent_stats_access_under_load() {
 
 #[tokio::test]
 async fn memory_no_listener_accumulation() {
-    let bus = EventBus::new(256).expect("valid config");
+    let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
 
     for _ in 0..10_000 {
         let sub = bus
@@ -325,6 +325,7 @@ async fn shutdown_with_many_inflight_async() {
         .buffer_size(2048)
         .shutdown_timeout(Duration::from_millis(30))
         .build()
+        .await
         .expect("valid config");
 
     let completed = Arc::new(AtomicUsize::new(0));
@@ -354,7 +355,7 @@ async fn shutdown_with_many_inflight_async() {
 
 #[tokio::test]
 async fn subscription_id_uniqueness_under_contention() {
-    let bus = EventBus::new(1024).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
     let ids = Arc::new(tokio::sync::Mutex::new(HashSet::<u64>::new()));
 
     let mut tasks = tokio::task::JoinSet::new();

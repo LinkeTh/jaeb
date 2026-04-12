@@ -6,23 +6,26 @@ mod validate;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
-use syn::parse::{Parse, ParseStream};
-use syn::punctuated::Punctuated;
-use syn::{Expr, FnArg, ItemFn, Path, ReturnType, Token, parse_macro_input};
+use quote::{format_ident, quote};
+use syn::{FnArg, ItemFn, ReturnType, parse_macro_input};
 
 use attrs::HandlerAttrs;
-use codegen::{gen_async_handler_impl, gen_inventory_submit, gen_register_impl, gen_registrar_impl, gen_sync_handler_impl, handler_struct_ident};
-use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type};
+use codegen::{
+    gen_async_handler_impl, gen_async_handler_impl_resolved, gen_dead_letter_descriptor_impl, gen_dead_letter_descriptor_impl_with_deps,
+    gen_handler_descriptor_impl, gen_handler_descriptor_impl_with_deps, gen_resolved_struct, gen_sync_handler_impl, gen_sync_handler_impl_resolved,
+    handler_struct_ident, resolved_struct_ident,
+};
+use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, parse_dep_params};
 
-/// Marks a free function as a JAEB handler and generates a companion handler struct.
+/// Marks a free function as a jaeb event handler and generates a companion
+/// handler struct that implements [`HandlerDescriptor`](::jaeb::HandlerDescriptor).
 ///
-/// The generated struct is named `<FunctionNamePascalCase>Handler` and provides:
-/// - `impl EventHandler<E>` for async functions
-/// - `impl SyncEventHandler<E>` for sync functions
-/// - `async fn register(&EventBus)` using the selected subscription strategy
+/// The macro emits:
+/// - A `#[doc(hidden)]` struct named `<FunctionNamePascalCase>Handler`.
+/// - A same-name `const` matching the original function name, so you can pass
+///   the handler to the builder using the function name directly.
 ///
-/// # Async
+/// # Async handler
 ///
 /// ```rust,ignore
 /// #[handler]
@@ -30,11 +33,13 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type};
 ///     Ok(())
 /// }
 ///
-/// // Generates `OnOrderHandler`
-/// OnOrderHandler::register(&bus).await?;
+/// let bus = EventBus::builder()
+///     .handler(on_order)   // pass the function name directly
+///     .build()
+///     .await?;
 /// ```
 ///
-/// # Sync
+/// # Sync handler
 ///
 /// ```rust,ignore
 /// #[handler]
@@ -42,8 +47,10 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type};
 ///     Ok(())
 /// }
 ///
-/// // Generates `AuditHandler`
-/// AuditHandler::register(&bus).await?;
+/// let bus = EventBus::builder()
+///     .handler(audit)
+///     .build()
+///     .await?;
 /// ```
 ///
 /// # Policy attributes
@@ -54,20 +61,46 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type};
 ///     Ok(())
 /// }
 ///
-/// // register() uses subscribe_with_policy with the generated policy.
-/// FlakyHandler::register(&bus).await?;
+/// let bus = EventBus::builder()
+///     .handler(flaky)
+///     .build()
+///     .await?;
 /// ```
 ///
-/// # Dead letter listener
+/// # Dependency injection with `Dep<T>`
 ///
-/// When the event type is `DeadLetter`, `register()` uses `subscribe_dead_letters`.
+/// Handlers can declare [`Dep<T>`](::jaeb::Dep) parameters (position 1 and
+/// onward) to receive dependencies resolved from the [`Deps`](::jaeb::Deps)
+/// container at build time. Each `T` is cloned per invocation, so use
+/// `Arc<T>` for non-`Clone` types.
+///
+/// Two syntax forms are supported:
+/// - `Dep(name): Dep<T>` — destructured; `name` binds directly to the inner `T`.
+/// - `name: Dep<T>` — plain identifier; `name` is the whole `Dep<T>` wrapper
+///   (access inner value via `name.0`).
 ///
 /// ```rust,ignore
 /// #[handler]
-/// fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+/// async fn process_order(event: &OrderPlaced, Dep(db): Dep<Arc<DbPool>>) -> HandlerResult {
+///     db.save(event).await?;
 ///     Ok(())
 /// }
+///
+/// let bus = EventBus::builder()
+///     .handler(process_order)
+///     .deps(Deps::new().insert(Arc::new(db_pool)))
+///     .build()
+///     .await?;
 /// ```
+///
+/// A missing dependency causes `build()` to return
+/// [`EventBusError::MissingDependency`](::jaeb::EventBusError::MissingDependency).
+///
+/// # Dead-letter handlers
+///
+/// Handlers for [`DeadLetter`](::jaeb::DeadLetter) events **must** use
+/// [`#[dead_letter_handler]`](dead_letter_handler) instead. Using `#[handler]`
+/// on a function that takes `&DeadLetter` is a compile-time error.
 #[proc_macro_attribute]
 pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attrs = parse_macro_input!(attr as HandlerAttrs);
@@ -79,21 +112,53 @@ pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// Registers multiple `#[handler]` functions in one call.
+/// Marks a free function as a jaeb dead-letter handler and generates a
+/// companion handler struct that implements
+/// [`DeadLetterDescriptor`](::jaeb::DeadLetterDescriptor).
 ///
-/// Usage:
+/// The function **must** be synchronous and take `&DeadLetter` as its first
+/// parameter. Subscription-policy attributes (`retries`, `retry_strategy`,
+/// etc.) are not supported.
+///
+/// The macro emits:
+/// - A `#[doc(hidden)]` struct named `<FunctionNamePascalCase>Handler`.
+/// - A same-name `const` matching the original function name, so you can pass
+///   the handler to the builder using the function name directly.
 ///
 /// ```rust,ignore
-/// register_handlers!(bus, on_order, audit_log, on_dead_letter)?;
-/// register_handlers!(bus)?; // auto-discover all #[handler] functions
+/// #[dead_letter_handler]
+/// fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+///     eprintln!("dead letter: {:?}", event.event_name);
+///     Ok(())
+/// }
+///
+/// let bus = EventBus::builder()
+///     .dead_letter(on_dead_letter)   // pass the function name directly
+///     .build()
+///     .await?;
 /// ```
 ///
-/// Expands to sequential `Handler::register(&bus).await?` calls and returns
-/// `Result<(), EventBusError>`.
-#[proc_macro]
-pub fn register_handlers(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as RegisterHandlersInput);
-    expand_register_handlers(input).into()
+/// # Dependency injection with `Dep<T>`
+///
+/// Like `#[handler]`, dead-letter handlers can declare [`Dep<T>`](::jaeb::Dep)
+/// parameters to receive build-time dependencies:
+///
+/// ```rust,ignore
+/// #[dead_letter_handler]
+/// fn log_dead_letter(event: &DeadLetter, Dep(log): Dep<Arc<AuditLog>>) -> HandlerResult {
+///     log.record(event);
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn dead_letter_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attrs = parse_macro_input!(attr as HandlerAttrs);
+    let func = parse_macro_input!(item as ItemFn);
+
+    match expand_dead_letter_handler(attrs, func) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
 }
 
 fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2> {
@@ -124,13 +189,6 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
         return Err(syn::Error::new_spanned(ty, "#[handler] function must return `HandlerResult`"));
     }
 
-    if func.sig.inputs.len() > 1 {
-        return Err(syn::Error::new_spanned(
-            &func.sig,
-            "#[handler] only supports one parameter: `event: &EventType`",
-        ));
-    }
-
     let is_async = func.sig.asyncness.is_some();
     let fn_name = &func.sig.ident;
     let fn_name_str = fn_name.to_string();
@@ -143,21 +201,16 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
     let event_ty = extract_ref_type(&event_pat_ty.ty)
         .ok_or_else(|| syn::Error::new_spanned(&event_pat_ty.ty, "event parameter must be a reference: `event: &EventType`"))?;
 
-    let is_dead_letter = is_dead_letter_type(event_ty);
-
-    if is_dead_letter && is_async {
+    if is_dead_letter_type(event_ty) {
         return Err(syn::Error::new_spanned(
             &func.sig,
-            "DeadLetter listeners must be synchronous — remove `async` (subscribe_dead_letters requires SyncEventHandler)",
+            "use `#[dead_letter_handler]` for DeadLetter handlers — `#[handler]` cannot be used with `&DeadLetter`",
         ));
     }
 
-    if is_dead_letter && attrs.has_subscription_policy() {
-        return Err(syn::Error::new_spanned(
-            &func.sig,
-            "subscription policy attributes (retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority) are not supported on DeadLetter listeners",
-        ));
-    }
+    // Parse optional Dep<T> parameters (position 1+).
+    let dep_params = parse_dep_params(&func.sig.inputs)?;
+    let has_deps = !dep_params.is_empty();
 
     if (attrs.retry_base_ms.is_some() || attrs.retry_max_ms.is_some()) && attrs.retry_strategy.is_none() {
         return Err(syn::Error::new_spanned(
@@ -209,84 +262,191 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
     };
 
     let handler_ident = handler_struct_ident(fn_name);
-    let handler_impl = if is_async {
-        gen_async_handler_impl(&handler_ident, event_ty, fn_name, handler_name)
-    } else {
-        gen_sync_handler_impl(&handler_ident, event_ty, fn_name, handler_name)
-    };
-    let register_impl = gen_register_impl(&handler_ident, event_ty, &attrs, is_dead_letter, is_async);
-    let registrar_impl = gen_registrar_impl(&handler_ident);
-    let inventory_submit = gen_inventory_submit(&handler_ident);
+    // Preserve the original function's visibility so the const and struct match it.
+    let vis = &func.vis;
 
-    Ok(quote! {
-        #[allow(dead_code)]
-        #func
+    // Rename the inner function to avoid a name clash between the emitted
+    // function and the same-name const we generate below.  The inner function
+    // is forced to private visibility because it is an implementation detail;
+    // the public surface is the const and the struct.
+    let inner_fn_ident = format_ident!("__jaeb_{}", fn_name);
+    let mut inner_func = func.clone();
+    inner_func.sig.ident = inner_fn_ident.clone();
+    inner_func.vis = syn::Visibility::Inherited;
 
-        pub struct #handler_ident;
-
-        #handler_impl
-
-        #register_impl
-
-        #registrar_impl
-
-        #inventory_submit
-    })
-}
-
-struct RegisterHandlersInput {
-    bus_expr: Expr,
-    handlers: Punctuated<Path, Token![,]>,
-}
-
-impl Parse for RegisterHandlersInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let bus_expr: Expr = input.parse()?;
-
-        if input.is_empty() {
-            return Ok(Self {
-                bus_expr,
-                handlers: Punctuated::new(),
-            });
-        }
-
-        input.parse::<Token![,]>()?;
-        let handlers = Punctuated::<Path, Token![,]>::parse_terminated(input)?;
-
-        Ok(Self { bus_expr, handlers })
-    }
-}
-
-fn expand_register_handlers(input: RegisterHandlersInput) -> TokenStream2 {
-    let RegisterHandlersInput { bus_expr, handlers } = input;
-
-    if handlers.is_empty() {
-        return quote! {
-            {
-                let __jaeb_bus_ref = &(#bus_expr);
-                ::jaeb::macros_support::register_all(__jaeb_bus_ref).await?;
-                ::core::result::Result::<(), ::jaeb::EventBusError>::Ok(())
-            }
+    if has_deps {
+        let resolved_ident = resolved_struct_ident(fn_name);
+        let resolved_struct = gen_resolved_struct(&resolved_ident, &dep_params);
+        let handler_impl = if is_async {
+            gen_async_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name)
+        } else {
+            gen_sync_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name)
         };
+        let descriptor_impl = gen_handler_descriptor_impl_with_deps(&handler_ident, &resolved_ident, event_ty, &attrs, is_async, &dep_params);
+
+        Ok(quote! {
+            #[allow(dead_code)]
+            #inner_func
+
+            #resolved_struct
+
+            #handler_impl
+
+            #[doc(hidden)]
+            #vis struct #handler_ident;
+
+            #descriptor_impl
+
+            #[allow(non_upper_case_globals)]
+            #vis const #fn_name: #handler_ident = #handler_ident;
+        })
+    } else {
+        let handler_impl = if is_async {
+            gen_async_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name)
+        } else {
+            gen_sync_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name)
+        };
+        let descriptor_impl = gen_handler_descriptor_impl(&handler_ident, event_ty, &attrs, is_async);
+
+        Ok(quote! {
+            #[allow(dead_code)]
+            #inner_func
+
+            #[doc(hidden)]
+            #vis struct #handler_ident;
+
+            #handler_impl
+
+            #descriptor_impl
+
+            #[allow(non_upper_case_globals)]
+            #vis const #fn_name: #handler_ident = #handler_ident;
+        })
+    }
+}
+
+fn expand_dead_letter_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2> {
+    if func.sig.inputs.first().is_some_and(|arg| matches!(arg, FnArg::Receiver(_))) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[dead_letter_handler] can only be applied to free functions, not methods",
+        ));
     }
 
-    let register_calls = handlers.iter().map(|fn_path| {
-        let mut struct_path = fn_path.clone();
-        if let Some(last_seg) = struct_path.segments.last_mut() {
-            let handler_ident = handler_struct_ident(&last_seg.ident);
-            last_seg.ident = handler_ident;
-        }
+    if func.sig.inputs.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[dead_letter_handler] function must have one parameter: `event: &DeadLetter`",
+        ));
+    }
 
-        quote! {
-            let _ = #struct_path::register(__jaeb_bus_ref).await?;
-        }
-    });
+    if matches!(func.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[dead_letter_handler] function must have an explicit return type (-> HandlerResult)",
+        ));
+    }
 
-    quote! {
-        {
-            let __jaeb_bus_ref = &(#bus_expr);
-            #(#register_calls)*
-            ::core::result::Result::<(), ::jaeb::EventBusError>::Ok(())
-        }
+    if let ReturnType::Type(_, ref ty) = func.sig.output
+        && !is_handler_result_type(ty)
+    {
+        return Err(syn::Error::new_spanned(ty, "#[dead_letter_handler] function must return `HandlerResult`"));
+    }
+
+    if func.sig.asyncness.is_some() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[dead_letter_handler] must be synchronous — remove `async` (dead-letter handlers implement SyncEventHandler)",
+        ));
+    }
+
+    if attrs.has_subscription_policy() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "subscription policy attributes (retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority) are not supported on dead-letter handlers",
+        ));
+    }
+
+    let fn_name = &func.sig.ident;
+    let fn_name_str = fn_name.to_string();
+
+    let first_param = func.sig.inputs.first().expect("validated non-empty");
+    let FnArg::Typed(event_pat_ty) = first_param else {
+        return Err(syn::Error::new_spanned(first_param, "first parameter must be the event (not `self`)"));
+    };
+
+    let event_ty = extract_ref_type(&event_pat_ty.ty)
+        .ok_or_else(|| syn::Error::new_spanned(&event_pat_ty.ty, "event parameter must be a reference: `event: &DeadLetter`"))?;
+
+    if !is_dead_letter_type(event_ty) {
+        return Err(syn::Error::new_spanned(
+            &event_pat_ty.ty,
+            "#[dead_letter_handler] first parameter must be `&DeadLetter`",
+        ));
+    }
+
+    // Parse optional Dep<T> parameters (position 1+).
+    let dep_params = parse_dep_params(&func.sig.inputs)?;
+    let has_deps = !dep_params.is_empty();
+
+    let handler_name: Option<&str> = match &attrs.name {
+        Some(n) if n.is_empty() => None,
+        Some(n) => Some(n.as_str()),
+        None => Some(fn_name_str.as_str()),
+    };
+
+    let handler_ident = handler_struct_ident(fn_name);
+    // Preserve the original function's visibility so the const and struct match it.
+    let vis = &func.vis;
+
+    // Rename the inner function to avoid a name clash between the emitted
+    // function and the same-name const we generate below.  The inner function
+    // is forced to private visibility because it is an implementation detail;
+    // the public surface is the const and the struct.
+    let inner_fn_ident = format_ident!("__jaeb_{}", fn_name);
+    let mut inner_func = func.clone();
+    inner_func.sig.ident = inner_fn_ident.clone();
+    inner_func.vis = syn::Visibility::Inherited;
+
+    if has_deps {
+        let resolved_ident = resolved_struct_ident(fn_name);
+        let resolved_struct = gen_resolved_struct(&resolved_ident, &dep_params);
+        let sync_impl = gen_sync_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name);
+        let descriptor_impl = gen_dead_letter_descriptor_impl_with_deps(&handler_ident, &resolved_ident, &dep_params);
+
+        Ok(quote! {
+            #[allow(dead_code)]
+            #inner_func
+
+            #resolved_struct
+
+            #sync_impl
+
+            #[doc(hidden)]
+            #vis struct #handler_ident;
+
+            #descriptor_impl
+
+            #[allow(non_upper_case_globals)]
+            #vis const #fn_name: #handler_ident = #handler_ident;
+        })
+    } else {
+        let sync_impl = gen_sync_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name);
+        let descriptor_impl = gen_dead_letter_descriptor_impl(&handler_ident);
+
+        Ok(quote! {
+            #[allow(dead_code)]
+            #inner_func
+
+            #[doc(hidden)]
+            #vis struct #handler_ident;
+
+            #sync_impl
+
+            #descriptor_impl
+
+            #[allow(non_upper_case_globals)]
+            #vis const #fn_name: #handler_ident = #handler_ident;
+        })
     }
 }

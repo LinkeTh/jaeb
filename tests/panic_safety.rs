@@ -49,7 +49,7 @@ impl SyncEventHandler<Safe> for SafeCounter {
 /// NOTE: this test will print a panic backtrace to stderr — that is expected.
 #[tokio::test]
 async fn panicking_handler_does_not_crash_bus() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(PanicHandler).await.expect("subscribe panic handler");
@@ -74,7 +74,7 @@ async fn panicking_handler_does_not_crash_bus() {
 /// NOTE: this test will print a panic backtrace to stderr — that is expected.
 #[tokio::test]
 async fn async_panicking_handler_does_not_crash_bus() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(AsyncPanicHandler).await.expect("subscribe async panic handler");

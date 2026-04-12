@@ -261,18 +261,6 @@ pub trait IntoSubscriptionPolicy<M>: sealed::Sealed {
     fn into_subscription_policy(self) -> SubscriptionPolicy;
 }
 
-#[allow(dead_code)]
-#[deprecated(since = "0.3.3", note = "renamed to SubscriptionPolicy")]
-pub type FailurePolicy = SubscriptionPolicy;
-
-#[allow(dead_code)]
-#[deprecated(since = "0.3.3", note = "renamed to SyncSubscriptionPolicy")]
-pub type NoRetryPolicy = SyncSubscriptionPolicy;
-
-#[allow(unused_imports)]
-#[deprecated(since = "0.3.3", note = "renamed to IntoSubscriptionPolicy")]
-pub use IntoSubscriptionPolicy as IntoFailurePolicy;
-
 impl IntoSubscriptionPolicy<crate::handler::AsyncMode> for SubscriptionPolicy {
     fn into_subscription_policy(self) -> SubscriptionPolicy {
         self
@@ -340,14 +328,6 @@ pub struct DeadLetter {
     pub handler_name: Option<&'static str>,
 }
 
-impl DeadLetter {
-    /// Deprecated accessor for `handler_name`.
-    #[deprecated(since = "0.3.6", note = "renamed to handler_name")]
-    pub fn listener_name(&self) -> Option<&'static str> {
-        self.handler_name
-    }
-}
-
 /// Marker trait for all publishable event types.
 ///
 /// Any type that is `Send + Sync + 'static` automatically implements `Event`
@@ -374,11 +354,6 @@ pub struct HandlerInfo {
     /// Human-readable name, if the handler provides one.
     pub name: Option<&'static str>,
 }
-
-#[allow(dead_code)]
-#[deprecated(since = "0.3.6", note = "renamed to HandlerInfo")]
-pub type ListenerInfo = HandlerInfo;
-
 /// A point-in-time snapshot of the event bus internal state.
 ///
 /// Obtained via [`EventBus::stats()`](crate::EventBus::stats).

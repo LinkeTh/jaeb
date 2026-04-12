@@ -60,7 +60,7 @@ impl EventHandler<Work> for VerySlowAsync {
 
 #[tokio::test]
 async fn shutdown_stops_new_operations() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     tokio::time::timeout(Duration::from_secs(2), bus.shutdown())
         .await
         .expect("shutdown timed out")
@@ -78,7 +78,7 @@ async fn shutdown_stops_new_operations() {
 
 #[tokio::test]
 async fn unsubscribe_after_shutdown_returns_stopped() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let sum = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
@@ -95,7 +95,7 @@ async fn unsubscribe_after_shutdown_returns_stopped() {
 
 #[tokio::test]
 async fn shutdown_drains_queued_publishes() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let sum = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
@@ -117,7 +117,7 @@ async fn shutdown_drains_queued_publishes() {
 
 #[tokio::test]
 async fn shutdown_waits_for_inflight_async_handlers() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let done = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SlowAsync { done: Arc::clone(&done) }).await.expect("subscribe");
@@ -140,6 +140,7 @@ async fn shutdown_returns_timeout_when_tasks_aborted() {
         .buffer_size(16)
         .shutdown_timeout(Duration::from_millis(50))
         .build()
+        .await
         .expect("valid config");
 
     let done = Arc::new(AtomicUsize::new(0));
@@ -168,6 +169,7 @@ async fn shutdown_succeeds_when_tasks_finish_before_deadline() {
         .buffer_size(16)
         .shutdown_timeout(Duration::from_secs(5))
         .build()
+        .await
         .expect("valid config");
 
     let done = Arc::new(AtomicUsize::new(0));

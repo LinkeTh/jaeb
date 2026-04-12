@@ -44,7 +44,12 @@ async fn main() {
     let in_flight = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
 
-    let bus = EventBus::builder().buffer_size(64).max_concurrent_async(2).build().expect("valid config");
+    let bus = EventBus::builder()
+        .buffer_size(64)
+        .max_concurrent_async(2)
+        .build()
+        .await
+        .expect("valid config");
 
     let _ = bus
         .subscribe::<Work, _, _>(TrackedHandler {

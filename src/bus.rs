@@ -65,8 +65,7 @@ impl Inner {
 /// refer to the same underlying runtime state and share the same listener
 /// registry, middleware pipeline, and configuration.
 ///
-/// Use [`EventBus::builder()`] for full configuration or [`EventBus::new`] for
-/// a quick default setup.
+/// Use [`EventBus::builder()`] to construct and configure a bus.
 ///
 /// # Thread safety
 ///
@@ -93,19 +92,6 @@ impl std::fmt::Debug for EventBus {
 }
 
 impl EventBus {
-    /// Create an `EventBus` with the given channel buffer size and default
-    /// settings for all other options.
-    ///
-    /// This is a convenience shorthand for
-    /// `EventBus::builder().buffer_size(buffer).build()`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EventBusError::InvalidConfig`] if `buffer` is `0`.
-    pub fn new(buffer: usize) -> Result<Self, EventBusError> {
-        Self::builder().buffer_size(buffer).build()
-    }
-
     /// Return an [`EventBusBuilder`] for constructing a customised bus.
     pub fn builder() -> EventBusBuilder {
         EventBusBuilder::new()

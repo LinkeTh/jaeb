@@ -79,7 +79,7 @@ impl Subscription {
     /// }
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::new(64).expect("valid config");
+    /// let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     /// {
     ///     let _guard = bus.subscribe::<Evt, _, _>(H).await.unwrap().into_guard();
     ///     // listener is active inside this scope

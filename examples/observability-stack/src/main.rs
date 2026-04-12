@@ -37,6 +37,7 @@ async fn main() {
         .buffer_size(256)
         .shutdown_timeout(Duration::from_secs(5))
         .build()
+        .await
         .expect("bus config valid");
 
     // ── Subscriptions ──────────────────────────────────────────────────────

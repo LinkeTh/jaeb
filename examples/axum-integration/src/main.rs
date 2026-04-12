@@ -180,6 +180,7 @@ async fn main() {
         .max_concurrent_async(64)
         .default_subscription_policy(SubscriptionPolicy::default().with_priority(0))
         .build()
+        .await
         .expect("valid bus config");
 
     // Construct shared services once; clone the Arc into each handler that

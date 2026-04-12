@@ -35,7 +35,7 @@ If you need durable messaging, consider pairing JAEB with an external queue for 
 
 ```toml
 [dependencies]
-jaeb = "0.3"
+jaeb = "0.4.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -43,7 +43,7 @@ With metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3", features = ["metrics"] }
+jaeb = { version = "0.4.0", features = ["metrics"] }
 ```
 
 ![png](grafana.png 'grafana dashboard')
@@ -52,14 +52,14 @@ With tracing:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3", features = ["trace"] }
+jaeb = { version = "0.4.0", features = ["trace"] }
 ```
 
 With standalone handler macros:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3", features = ["macros"] }
+jaeb = { version = "0.4.0", features = ["macros"] }
 ```
 
 ## ⚡ Quick Start
@@ -110,7 +110,7 @@ impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
 
 #[tokio::main]
 async fn main() -> Result<(), EventBusError> {
-    let bus = EventBus::new(64)?;
+    let bus = EventBus::builder().buffer_size(64).build().await?;
 
     let retry_policy = SubscriptionPolicy::default()
         .with_priority(10)
@@ -132,6 +132,9 @@ async fn main() -> Result<(), EventBusError> {
     Ok(())
 }
 ```
+
+Detailed usage patterns (builder descriptors, direct `subscribe*`, manual descriptors,
+`Deps`/`Dep<T>`, and trade-offs) are documented in [`USAGE.md`](USAGE.md).
 
 ## Architecture
 
@@ -190,12 +193,12 @@ Core policy types:
 - `examples/fire-once` - one-shot / fire-once handler
 - `examples/panic-safety` - panic handling behavior in handlers
 - `examples/subscription-lifecycle` - subscribe/unsubscribe lifecycle
-- `examples/jaeb-visualizer` - TUI visualizer for event bus activity
 - `examples/axum-integration` - axum REST app publishing domain events
-- `examples/macro-handlers` - standalone `#[handler]` + `register_handlers!`
-- `examples/macro-handlers-auto` - standalone `#[handler]` auto-discovery with `register_handlers!(bus)`
+- `examples/macro-handlers` - standalone `#[handler]` + `#[dead_letter_handler]` with builder
 - `examples/jaeb-demo` - full demo with tracing + metrics exporter
 - `examples/summer-jaeb-demo` - summer-rs plugin + `#[event_listener]`
+- `examples/observability-stack` - Grafana + Prometheus + Loki + Tempo demo
+- `examples/jaeb-visualizer` - TUI visualizer for event bus activity
 
 ![png](visualizer.png 'ratatui simulator')
 
@@ -209,7 +212,7 @@ cargo run -p axum-integration
 
 | Flag         | Default | Description                                                 |
 |--------------|---------|-------------------------------------------------------------|
-| `macros`     | off     | Re-exports `#[handler]` and `register_handlers!`            |
+| `macros`     | off     | Re-exports `#[handler]` and `#[dead_letter_handler]`        |
 | `metrics`    | off     | Enables Prometheus-compatible instrumentation via `metrics` |
 | `trace`      | off     | Enables `tracing` spans and events for dispatch diagnostics |
 | `test-utils` | off     | Exposes `TestBus` helpers for integration tests             |
@@ -297,11 +300,12 @@ during plugin startup — no manual registration needed.
 
 ## Standalone Macros
 
-Enable the `macros` feature to use `#[handler]` and `register_handlers!` without
-summer-rs.
+Enable the `macros` feature to use `#[handler]` and `#[dead_letter_handler]`
+without summer-rs.
 
-The `#[handler]` macro generates a struct named `<FunctionName>Handler` and an
-async `register(&EventBus)` method. Policy attributes are supported:
+`#[handler]` generates a struct named `<FunctionName>Handler` that implements
+`HandlerDescriptor`. Register it via `EventBusBuilder::handler`. Policy
+attributes are supported:
 
 - `retries`
 - `retry_strategy`
@@ -311,9 +315,19 @@ async `register(&EventBus)` method. Policy attributes are supported:
 - `priority`
 - `name`
 
+`#[dead_letter_handler]` generates a struct that implements
+`DeadLetterDescriptor`. The function must be synchronous and accept `&DeadLetter`.
+Register it via `EventBusBuilder::dead_letter`.
+
+`Dep<T>` parameters are supported for both macros and are resolved from
+`EventBusBuilder::deps(...)` at build time. Supported forms:
+
+- `Dep(name): Dep<T>`
+- `name: Dep<T>`
+
 ```rust,ignore
 use std::time::Duration;
-use jaeb::{DeadLetter, EventBus, HandlerResult, handler, register_handlers};
+use jaeb::{DeadLetter, EventBus, HandlerResult, dead_letter_handler, handler};
 
 #[derive(Clone, Debug)]
 struct Payment {
@@ -326,8 +340,8 @@ async fn process_payment(event: &Payment) -> HandlerResult {
     Ok(())
 }
 
-#[handler]
-fn log_dead_letter(event: &DeadLetter) -> HandlerResult {
+#[dead_letter_handler]
+fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
     println!(
         "dead-letter: event={}, handler={:?}, attempts={}, error={}",
         event.event_name, event.handler_name, event.attempts, event.error
@@ -337,10 +351,51 @@ fn log_dead_letter(event: &DeadLetter) -> HandlerResult {
 
 #[tokio::main]
 async fn main() -> Result<(), jaeb::EventBusError> {
-    let bus = EventBus::new(64)?;
-    register_handlers!(bus, process_payment, log_dead_letter)?;
+    let bus = EventBus::builder()
+        .buffer_size(64)
+        .handler(process_payment)
+        .dead_letter(on_dead_letter)
+        .build()
+        .await?;
     bus.publish(Payment { id: 7 }).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
+    bus.shutdown().await
+}
+```
+
+`Dep<T>` example:
+
+```rust,ignore
+use std::sync::Arc;
+use jaeb::{Dep, Deps, EventBus, HandlerResult, handler};
+
+#[derive(Clone)]
+struct AuditLog;
+
+#[derive(Clone)]
+struct Payment;
+
+#[handler]
+async fn process_with_dep(_event: &Payment, Dep(log): Dep<Arc<AuditLog>>) -> HandlerResult {
+    let _ = log;
+    Ok(())
+}
+
+#[handler]
+fn process_with_wrapper(_event: &Payment, log: Dep<Arc<AuditLog>>) -> HandlerResult {
+    let _inner: Arc<AuditLog> = log.0;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), jaeb::EventBusError> {
+    let log = Arc::new(AuditLog);
+    let bus = EventBus::builder()
+        .handler(process_with_dep)
+        .handler(process_with_wrapper)
+        .deps(Deps::new().insert(log))
+        .build()
+        .await?;
     bus.shutdown().await
 }
 ```

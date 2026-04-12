@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.3.12"
+version = "0.4.0"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"
@@ -34,7 +34,6 @@ members = [
     "examples/concurrency-limit",
     "examples/introspection",
     "examples/macro-handlers",
-    "examples/macro-handlers-auto",
     "examples/jaeb-visualizer",
     "examples/axum-integration",
     "examples/observability-stack",
@@ -43,8 +42,7 @@ members = [
 ]
 [dependencies]
 arc-swap = "1.7"
-inventory = { version = "0.3", optional = true }
-jaeb-macros = { version = "0.2", path = "jaeb-macros", optional = true }
+jaeb-macros = { version = "0.3.0", path = "jaeb-macros", optional = true }
 metrics = { version = "0.24", optional = true }
 tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -52,7 +50,7 @@ tracing = { version = "0.1", features = ["std", "log"], optional = true }
 
 [features]
 default = []
-macros = ["dep:jaeb-macros", "dep:inventory"]
+macros = ["dep:jaeb-macros"]
 metrics = ["dep:metrics"]
 test-utils = []
 trace = ["dep:tracing"]
@@ -80,3 +78,7 @@ harness = false
 [[bench]]
 name = "evno_contention"
 harness = false
+
+[[test]]
+name = "macro_dep_handlers"
+required-features = ["macros"]

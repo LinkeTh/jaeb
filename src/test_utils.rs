@@ -35,9 +35,9 @@ pub struct TestBus {
 
 impl TestBus {
     /// Create a `TestBus` with default settings.
-    pub fn new() -> Result<Self, EventBusError> {
+    pub async fn new() -> Result<Self, EventBusError> {
         Ok(Self {
-            bus: EventBus::new(256)?,
+            bus: EventBus::builder().build().await?,
             buffers: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -197,15 +197,10 @@ impl TestBusBuilder {
         self
     }
 
-    #[deprecated(since = "0.3.3", note = "renamed to default_subscription_policy")]
-    pub fn default_failure_policy(self, policy: SubscriptionPolicy) -> Self {
-        self.default_subscription_policy(policy)
-    }
-
     /// Build and return the [`TestBus`].
-    pub fn build(self) -> Result<TestBus, EventBusError> {
+    pub async fn build(self) -> Result<TestBus, EventBusError> {
         Ok(TestBus {
-            bus: self.inner.build()?,
+            bus: self.inner.build().await?,
             buffers: Arc::new(Mutex::new(HashMap::new())),
         })
     }

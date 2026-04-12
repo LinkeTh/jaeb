@@ -49,7 +49,7 @@ impl EventHandler<EventA> for SlowAsyncHandler {
 
 #[tokio::test]
 async fn stats_empty_bus() {
-    let bus = EventBus::new(128).expect("valid config");
+    let bus = EventBus::builder().buffer_size(128).build().await.expect("valid config");
 
     let stats = bus.stats().await.expect("stats");
     assert_eq!(stats.total_subscriptions, 0);
@@ -66,7 +66,7 @@ async fn stats_empty_bus() {
 
 #[tokio::test]
 async fn stats_after_subscriptions() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let _sub_a = bus.subscribe(SyncHandlerA).await.expect("subscribe a");
     let _sub_b = bus.subscribe(SyncHandlerB).await.expect("subscribe b");
@@ -104,6 +104,7 @@ async fn stats_in_flight_async() {
         .buffer_size(64)
         .shutdown_timeout(Duration::from_millis(100))
         .build()
+        .await
         .expect("valid config");
     let started = Arc::new(AtomicBool::new(false));
 
@@ -138,7 +139,7 @@ async fn stats_in_flight_async() {
 
 #[tokio::test]
 async fn stats_shutdown_called() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let stats = bus.stats().await.expect("stats before shutdown");
     assert!(!stats.shutdown_called);
@@ -152,7 +153,7 @@ async fn stats_shutdown_called() {
 
 #[tokio::test]
 async fn stats_after_unsubscribe() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let sub = bus.subscribe(SyncHandlerA).await.expect("subscribe");
 

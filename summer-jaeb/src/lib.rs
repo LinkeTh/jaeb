@@ -211,7 +211,7 @@ impl Plugin for SummerJaeb {
             builder = builder.shutdown_timeout(Duration::from_secs(secs));
         }
 
-        let bus = match builder.build() {
+        let bus = match builder.build().await {
             Ok(bus) => bus,
             Err(err) => {
                 // A bad configuration (e.g. buffer_size = 0) is a fatal

@@ -25,7 +25,7 @@ impl SyncEventHandler<Signal> for Counter {
 
 #[tokio::test]
 async fn cloned_bus_shares_state() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // Subscribe on the original handle.

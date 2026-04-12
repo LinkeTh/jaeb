@@ -1,14 +1,25 @@
-//! Code generation for handler structs, trait impls, and registration methods.
+//! Code generation for handler structs, trait impls, and descriptor impls.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{Ident, Type};
 
 use crate::attrs::HandlerAttrs;
+use crate::validate::DepParam;
+
+// ── Naming helpers ────────────────────────────────────────────────────────────
 
 pub(crate) fn handler_struct_ident(fn_name: &Ident) -> Ident {
     format_ident!("{}Handler", to_pascal_case(&fn_name.to_string()))
 }
+
+/// Generate the private `__<PascalCase>Resolved` struct ident used when a
+/// handler has `Dep<T>` parameters.
+pub(crate) fn resolved_struct_ident(fn_name: &Ident) -> Ident {
+    format_ident!("__{}Resolved", to_pascal_case(&fn_name.to_string()))
+}
+
+// ── Handler trait impls (no deps — handler struct IS the handler) ─────────────
 
 pub(crate) fn gen_async_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, handler_name: Option<&str>) -> TokenStream2 {
     let name_method = gen_name_method(handler_name);
@@ -38,12 +49,111 @@ pub(crate) fn gen_sync_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_n
     }
 }
 
-pub(crate) fn gen_register_impl(handler_ident: &Ident, event_ty: &Type, attrs: &HandlerAttrs, is_dead_letter: bool, is_async: bool) -> TokenStream2 {
-    let register_call = if is_dead_letter {
-        quote! {
-            bus.subscribe_dead_letters(#handler_ident).await
+// ── Resolved struct + handler trait impls (with deps) ────────────────────────
+
+/// Generate the private `__FooResolved` struct that holds resolved `Dep<T>` field
+/// values and implements the handler trait.  Used when the handler function has
+/// one or more `Dep<T>` parameters.
+pub(crate) fn gen_resolved_struct(resolved_ident: &Ident, dep_params: &[DepParam]) -> TokenStream2 {
+    let fields: Vec<TokenStream2> = dep_params
+        .iter()
+        .map(|dp| {
+            let name = &dp.name;
+            let ty = &dp.inner_ty;
+            quote! { #name: #ty }
+        })
+        .collect();
+
+    // Emit a static assertion that each dep type implements Clone.  This
+    // produces a diagnostic pointing at the generated code rather than at
+    // the impl — not perfect, but better than a confusing "method `clone`
+    // not found" error from inside the handler impl.
+    let clone_assertions: Vec<TokenStream2> = dep_params
+        .iter()
+        .map(|dp| {
+            let ty = &dp.inner_ty;
+            quote! {
+                const _: fn() = || {
+                    fn _assert_clone<T: ::core::clone::Clone>() {}
+                    _assert_clone::<#ty>();
+                };
+            }
+        })
+        .collect();
+
+    quote! {
+        #[doc(hidden)]
+        struct #resolved_ident {
+            #(#fields,)*
         }
-    } else if attrs.has_subscription_policy() {
+
+        #(#clone_assertions)*
+    }
+}
+
+/// `EventHandler<E>` impl on the resolved struct — passes cloned dep values as
+/// `::jaeb::Dep(...)` to the original inner function.
+pub(crate) fn gen_async_handler_impl_resolved(
+    resolved_ident: &Ident,
+    event_ty: &Type,
+    inner_fn_ident: &Ident,
+    dep_params: &[DepParam],
+    handler_name: Option<&str>,
+) -> TokenStream2 {
+    let call_args: Vec<TokenStream2> = dep_params
+        .iter()
+        .map(|dp| {
+            let name = &dp.name;
+            quote! { ::jaeb::Dep(self.#name.clone()) }
+        })
+        .collect();
+    let name_method = gen_name_method(handler_name);
+
+    quote! {
+        impl ::jaeb::EventHandler<#event_ty> for #resolved_ident {
+            async fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
+                #inner_fn_ident(event, #(#call_args),*).await
+            }
+
+            #name_method
+        }
+    }
+}
+
+/// `SyncEventHandler<E>` impl on the resolved struct.
+pub(crate) fn gen_sync_handler_impl_resolved(
+    resolved_ident: &Ident,
+    event_ty: &Type,
+    inner_fn_ident: &Ident,
+    dep_params: &[DepParam],
+    handler_name: Option<&str>,
+) -> TokenStream2 {
+    let call_args: Vec<TokenStream2> = dep_params
+        .iter()
+        .map(|dp| {
+            let name = &dp.name;
+            quote! { ::jaeb::Dep(self.#name.clone()) }
+        })
+        .collect();
+    let name_method = gen_name_method(handler_name);
+
+    quote! {
+        impl ::jaeb::SyncEventHandler<#event_ty> for #resolved_ident {
+            fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
+                #inner_fn_ident(event, #(#call_args),*)
+            }
+
+            #name_method
+        }
+    }
+}
+
+// ── HandlerDescriptor / DeadLetterDescriptor impls ───────────────────────────
+
+/// `impl HandlerDescriptor` for a handler **without** `Dep<T>` parameters.
+/// The descriptor subscribes itself (the unit struct) directly.
+pub(crate) fn gen_handler_descriptor_impl(handler_ident: &Ident, event_ty: &Type, attrs: &HandlerAttrs, is_async: bool) -> TokenStream2 {
+    let subscribe_call = if attrs.has_subscription_policy() {
         let policy = gen_subscription_policy(attrs, is_async);
         quote! {
             bus.subscribe_with_policy::<#event_ty, _, _>(#handler_ident, #policy).await
@@ -55,41 +165,146 @@ pub(crate) fn gen_register_impl(handler_ident: &Ident, event_ty: &Type, attrs: &
     };
 
     quote! {
-        impl #handler_ident {
-            pub async fn register(bus: &::jaeb::EventBus) -> ::core::result::Result<::jaeb::Subscription, ::jaeb::EventBusError> {
-                #register_call
-            }
-        }
-    }
-}
-
-pub(crate) fn gen_registrar_impl(handler_ident: &Ident) -> TokenStream2 {
-    quote! {
-        impl ::jaeb::macros_support::HandlerRegistrar for #handler_ident {
+        impl ::jaeb::HandlerDescriptor for #handler_ident {
             fn register<'a>(
-                &self,
+                &'a self,
                 bus: &'a ::jaeb::EventBus,
+                _deps: &'a ::jaeb::Deps,
             ) -> ::core::pin::Pin<
                 ::std::boxed::Box<
                     dyn ::core::future::Future<
                             Output = ::core::result::Result<::jaeb::Subscription, ::jaeb::EventBusError>,
-                        > + Send
+                        > + ::core::marker::Send
                         + 'a,
                 >,
             > {
-                ::std::boxed::Box::pin(#handler_ident::register(bus))
+                ::std::boxed::Box::pin(async move { #subscribe_call })
             }
         }
     }
 }
 
-pub(crate) fn gen_inventory_submit(handler_ident: &Ident) -> TokenStream2 {
+/// `impl HandlerDescriptor` for a handler **with** `Dep<T>` parameters.
+/// The descriptor resolves each dependency from `Deps` at build time,
+/// constructs the `__FooResolved` struct, and subscribes it.
+pub(crate) fn gen_handler_descriptor_impl_with_deps(
+    handler_ident: &Ident,
+    resolved_ident: &Ident,
+    event_ty: &Type,
+    attrs: &HandlerAttrs,
+    is_async: bool,
+    dep_params: &[DepParam],
+) -> TokenStream2 {
+    let dep_resolutions: Vec<TokenStream2> = dep_params
+        .iter()
+        .map(|dp| {
+            let name = &dp.name;
+            let ty = &dp.inner_ty;
+            quote! {
+                let #name = deps.get_required::<#ty>()?.clone();
+            }
+        })
+        .collect();
+
+    let field_names: Vec<&Ident> = dep_params.iter().map(|dp| &dp.name).collect();
+
+    let subscribe_call = if attrs.has_subscription_policy() {
+        let policy = gen_subscription_policy(attrs, is_async);
+        quote! {
+            bus.subscribe_with_policy::<#event_ty, _, _>(handler, #policy).await
+        }
+    } else {
+        quote! {
+            bus.subscribe::<#event_ty, _, _>(handler).await
+        }
+    };
+
     quote! {
-        ::jaeb::macros_support::_private::inventory::submit! {
-            &#handler_ident as &dyn ::jaeb::macros_support::HandlerRegistrar
+        impl ::jaeb::HandlerDescriptor for #handler_ident {
+            fn register<'a>(
+                &'a self,
+                bus: &'a ::jaeb::EventBus,
+                deps: &'a ::jaeb::Deps,
+            ) -> ::core::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::core::future::Future<
+                            Output = ::core::result::Result<::jaeb::Subscription, ::jaeb::EventBusError>,
+                        > + ::core::marker::Send
+                        + 'a,
+                >,
+            > {
+                ::std::boxed::Box::pin(async move {
+                    #(#dep_resolutions)*
+                    let handler = #resolved_ident { #(#field_names,)* };
+                    #subscribe_call
+                })
+            }
         }
     }
 }
+
+/// `impl DeadLetterDescriptor` for a dead-letter handler **without** deps.
+pub(crate) fn gen_dead_letter_descriptor_impl(handler_ident: &Ident) -> TokenStream2 {
+    quote! {
+        impl ::jaeb::DeadLetterDescriptor for #handler_ident {
+            fn register_dead_letter<'a>(
+                &'a self,
+                bus: &'a ::jaeb::EventBus,
+                _deps: &'a ::jaeb::Deps,
+            ) -> ::core::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::core::future::Future<
+                            Output = ::core::result::Result<::jaeb::Subscription, ::jaeb::EventBusError>,
+                        > + ::core::marker::Send
+                        + 'a,
+                >,
+            > {
+                ::std::boxed::Box::pin(async move { bus.subscribe_dead_letters(#handler_ident).await })
+            }
+        }
+    }
+}
+
+/// `impl DeadLetterDescriptor` for a dead-letter handler **with** `Dep<T>` parameters.
+pub(crate) fn gen_dead_letter_descriptor_impl_with_deps(handler_ident: &Ident, resolved_ident: &Ident, dep_params: &[DepParam]) -> TokenStream2 {
+    let dep_resolutions: Vec<TokenStream2> = dep_params
+        .iter()
+        .map(|dp| {
+            let name = &dp.name;
+            let ty = &dp.inner_ty;
+            quote! {
+                let #name = deps.get_required::<#ty>()?.clone();
+            }
+        })
+        .collect();
+
+    let field_names: Vec<&Ident> = dep_params.iter().map(|dp| &dp.name).collect();
+
+    quote! {
+        impl ::jaeb::DeadLetterDescriptor for #handler_ident {
+            fn register_dead_letter<'a>(
+                &'a self,
+                bus: &'a ::jaeb::EventBus,
+                deps: &'a ::jaeb::Deps,
+            ) -> ::core::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::core::future::Future<
+                            Output = ::core::result::Result<::jaeb::Subscription, ::jaeb::EventBusError>,
+                        > + ::core::marker::Send
+                        + 'a,
+                >,
+            > {
+                ::std::boxed::Box::pin(async move {
+                    #(#dep_resolutions)*
+                    let handler = #resolved_ident { #(#field_names,)* };
+                    bus.subscribe_dead_letters(handler).await
+                })
+            }
+        }
+    }
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
 
 fn gen_name_method(handler_name: Option<&str>) -> TokenStream2 {
     match handler_name {
@@ -114,11 +329,9 @@ fn gen_subscription_policy(attrs: &HandlerAttrs, is_async: bool) -> TokenStream2
     }
 
     if let Some(ref strategy) = attrs.retry_strategy {
-        let base_ms = attrs.retry_base_ms.unwrap_or(0);
-        let max_ms = attrs.retry_max_ms.unwrap_or(0);
-
         match strategy.as_str() {
             "fixed" => {
+                let base_ms = attrs.retry_base_ms.expect("retry_base_ms validated by attrs parser");
                 chain = quote! {
                     #chain.with_retry_strategy(::jaeb::RetryStrategy::Fixed(
                         ::core::time::Duration::from_millis(#base_ms),
@@ -126,6 +339,8 @@ fn gen_subscription_policy(attrs: &HandlerAttrs, is_async: bool) -> TokenStream2
                 };
             }
             "exponential" => {
+                let base_ms = attrs.retry_base_ms.expect("retry_base_ms validated by attrs parser");
+                let max_ms = attrs.retry_max_ms.expect("retry_max_ms validated by attrs parser");
                 chain = quote! {
                     #chain.with_retry_strategy(::jaeb::RetryStrategy::Exponential {
                         base: ::core::time::Duration::from_millis(#base_ms),
@@ -134,6 +349,8 @@ fn gen_subscription_policy(attrs: &HandlerAttrs, is_async: bool) -> TokenStream2
                 };
             }
             "exponential_jitter" => {
+                let base_ms = attrs.retry_base_ms.expect("retry_base_ms validated by attrs parser");
+                let max_ms = attrs.retry_max_ms.expect("retry_max_ms validated by attrs parser");
                 chain = quote! {
                     #chain.with_retry_strategy(::jaeb::RetryStrategy::ExponentialWithJitter {
                         base: ::core::time::Duration::from_millis(#base_ms),
@@ -141,7 +358,7 @@ fn gen_subscription_policy(attrs: &HandlerAttrs, is_async: bool) -> TokenStream2
                     })
                 };
             }
-            _ => {}
+            _ => unreachable!("retry strategy validated by attrs parser"),
         }
     }
 

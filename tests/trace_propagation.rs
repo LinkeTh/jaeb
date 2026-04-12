@@ -66,7 +66,7 @@ async fn async_handler_inherits_publish_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 
@@ -113,7 +113,7 @@ async fn sync_handler_sees_publish_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let captured = Arc::new(std::sync::Mutex::new(None));
 
     let _ = bus
@@ -148,7 +148,7 @@ async fn async_handler_works_without_active_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 
@@ -186,7 +186,7 @@ async fn try_publish_propagates_caller_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 
@@ -236,7 +236,7 @@ async fn worker_path_propagates_caller_span() {
     // A non-once async handler with a single listener triggers the persistent
     // worker fast path (the slot has exactly one async listener, not marked
     // `once`, so it goes through `AsyncSlotWorker`).
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 

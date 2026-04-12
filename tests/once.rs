@@ -24,7 +24,7 @@ impl SyncEventHandler<Ping> for SyncCounter {
 
 #[tokio::test]
 async fn once_sync_handler_fires_once() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _sub = bus
@@ -56,7 +56,7 @@ impl EventHandler<Ping> for AsyncCounter {
 
 #[tokio::test]
 async fn once_async_handler_fires_once() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _sub = bus
@@ -95,7 +95,7 @@ impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
 
 #[tokio::test]
 async fn once_handler_failure_emits_dead_letter_and_removes() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let dl_count = Arc::new(AtomicUsize::new(0));
 
     let _dl_sub = bus
@@ -129,7 +129,7 @@ async fn once_handler_failure_emits_dead_letter_and_removes() {
 
 #[tokio::test]
 async fn once_handler_unsubscribe_after_removal_returns_false() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus
@@ -153,7 +153,7 @@ async fn once_handler_unsubscribe_after_removal_returns_false() {
 
 #[tokio::test]
 async fn once_handler_visible_in_stats_until_fired() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _sub = bus

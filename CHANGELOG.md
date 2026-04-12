@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-12
+
+### Added
+
+- `Deps` / `Dep<T>` dependency injection container (`src/deps.rs`) for supplying
+  typed values to handlers at build time without touching the publish hot path.
+- `HandlerDescriptor` trait: implemented by handler types to register themselves
+  on an `EventBus` via `EventBusBuilder::handler`. Generated automatically by
+  `#[handler]`.
+- `DeadLetterDescriptor` trait: implemented by dead-letter handler types for
+  registration via `EventBusBuilder::dead_letter`. Generated automatically by
+  `#[dead_letter_handler]`.
+- `EventBusBuilder::handler`, `::dead_letter`, `::deps` methods.
+- New `#[dead_letter_handler]` proc macro (replaces the old `#[handler]`
+  auto-detect behaviour for `&DeadLetter` functions). Must be sync; policy attrs
+  are a compile-time error.
+- `#[handler]` and `#[dead_letter_handler]` support `Dep<T>` parameters for
+  build-time dependency injection.
+  - Supported syntax forms: `Dep(name): Dep<T>` (destructured) and
+    `name: Dep<T>` (plain identifier).
+  - Multiple `Dep<T>` parameters are supported.
+  - Missing dependencies return `EventBusError::MissingDependency` at build
+    time.
+- `EventBusError::MissingDependency(String)` variant.
+- `tests/builder_handlers.rs` — integration tests for descriptor and DI
+  registration.
+- `tests/macro_dep_handlers.rs` — integration tests for macro handlers with
+  `Dep<T>`.
+
+### Changed
+
+- **Breaking:** `EventBus::new()` removed. Construct buses exclusively via
+  `EventBus::builder().build().await`.
+- **Breaking:** `EventBusBuilder::build()` is now `async`.
+- **Breaking:** `#[handler]` now generates `impl HandlerDescriptor` instead of
+  an inherent `register(&EventBus)` method and `HandlerRegistrar` impl. Register
+  via `.handler(MyHandler)` on the builder, not `MyHandler::register(&bus).await`.
+- **Breaking:** `#[handler]` on a `&DeadLetter` function is now a **compile-time
+  error** — use `#[dead_letter_handler]` instead.
+- **Breaking:** `register_handlers!` macro removed.
+- `jaeb-macros` updated for descriptor registration + `Dep<T>` support.
+- `examples/macro-handlers` rewritten to use builder + `#[handler]` +
+  `#[dead_letter_handler]`.
+- `examples/macro-handlers-auto` deleted (auto-discovery via inventory removed).
+
+### Removed
+
+- `EventBus::new()` (use `EventBus::builder().build().await`).
+- `macros_support` module and `HandlerRegistrar` trait.
+- `register_handlers!` macro.
+- `inventory` dependency from the root crate.
+
 ## [0.3.12] - 2026-04-12
 
 ### Added

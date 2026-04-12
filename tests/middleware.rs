@@ -148,7 +148,7 @@ impl TypedMiddleware<Ping> for TypedAsyncOrderTracker {
 
 #[tokio::test]
 async fn middleware_continues_handlers_fire() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_sync_middleware(AllowAll).await.expect("add middleware");
@@ -162,7 +162,7 @@ async fn middleware_continues_handlers_fire() {
 
 #[tokio::test]
 async fn middleware_rejects_handlers_do_not_fire() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_sync_middleware(RejectAll("blocked".into())).await.expect("add middleware");
@@ -180,7 +180,7 @@ async fn middleware_rejects_handlers_do_not_fire() {
 
 #[tokio::test]
 async fn middleware_ordering_fifo() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
     let count = Arc::new(AtomicUsize::new(0));
 
@@ -212,7 +212,7 @@ async fn middleware_ordering_fifo() {
 
 #[tokio::test]
 async fn middleware_removal() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let mw_sub = bus.add_sync_middleware(RejectAll("blocked".into())).await.expect("add middleware");
@@ -253,7 +253,7 @@ async fn middleware_with_downcast() {
         }
     }
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _mw = bus.add_sync_middleware(OnlyAllowImportant).await.expect("add middleware");
 
     // ImportantEvent(5) should pass.
@@ -280,7 +280,7 @@ async fn async_middleware_works() {
         }
     }
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_middleware(AsyncAllow).await.expect("add async middleware");
@@ -301,7 +301,7 @@ async fn async_middleware_rejects() {
         }
     }
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _mw = bus.add_middleware(AsyncReject).await.expect("add async middleware");
 
     let err = bus.publish(Ping).await.unwrap_err();
@@ -312,7 +312,7 @@ async fn async_middleware_rejects() {
 
 #[tokio::test]
 async fn typed_middleware_runs_for_matching_event_only() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let typed_hits = Arc::new(AtomicUsize::new(0));
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
@@ -342,7 +342,7 @@ async fn typed_middleware_runs_for_matching_event_only() {
 
 #[tokio::test]
 async fn typed_sync_middleware_rejects_before_handlers() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _typed = bus
@@ -361,7 +361,7 @@ async fn typed_sync_middleware_rejects_before_handlers() {
 
 #[tokio::test]
 async fn typed_async_middleware_rejects_before_handlers() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _typed = bus
@@ -380,7 +380,7 @@ async fn typed_async_middleware_rejects_before_handlers() {
 
 #[tokio::test]
 async fn typed_middleware_runs_after_global_middleware_in_order() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
 
     let _global_sync = bus
@@ -433,7 +433,7 @@ async fn typed_middleware_runs_after_global_middleware_in_order() {
 
 #[tokio::test]
 async fn typed_middleware_ordering_fifo() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
 
     let _typed_a = bus
@@ -470,7 +470,7 @@ async fn typed_middleware_ordering_fifo() {
 
 #[tokio::test]
 async fn typed_middleware_removal() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let typed_sub = bus
@@ -494,7 +494,7 @@ async fn typed_middleware_removal() {
 
 #[tokio::test]
 async fn sync_only_fast_path_preserves_pipeline_and_dead_letter() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
     let dead_letters = Arc::new(AtomicUsize::new(0));
 

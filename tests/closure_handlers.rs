@@ -32,7 +32,7 @@ impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
 
 #[tokio::test]
 async fn sync_closure_receives_event() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
@@ -52,7 +52,7 @@ async fn sync_closure_receives_event() {
 
 #[tokio::test]
 async fn async_closure_receives_event() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
@@ -75,7 +75,7 @@ async fn async_closure_receives_event() {
 
 #[tokio::test]
 async fn closure_with_subscription_policy_emits_dead_letter() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let dead_letters = Arc::new(AtomicUsize::new(0));
 
     let _dl = bus
@@ -99,7 +99,7 @@ async fn closure_with_subscription_policy_emits_dead_letter() {
 
 #[tokio::test]
 async fn closure_once_listener_fires_once() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
@@ -123,7 +123,7 @@ async fn closure_once_listener_fires_once() {
 
 #[tokio::test]
 async fn multiple_closure_handlers_same_event_type() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let a = Arc::new(AtomicUsize::new(0));
     let b = Arc::new(AtomicUsize::new(0));
 
@@ -154,7 +154,7 @@ async fn multiple_closure_handlers_same_event_type() {
 
 #[tokio::test]
 async fn closure_and_struct_handler_same_event_type() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let struct_count = Arc::new(AtomicUsize::new(0));
     let closure_count = Arc::new(AtomicUsize::new(0));
 
@@ -191,7 +191,7 @@ async fn typed_middleware_rejects_closure_handler() {
         }
     }
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _typed = bus.add_typed_sync_middleware::<Ping, _>(RejectPing).await.expect("add typed middleware");

@@ -158,7 +158,7 @@ impl SyncEventHandler<EdgeEvent> for SpawnSubscribeDuringDispatch {
 
 #[tokio::test]
 async fn middleware_panic_is_caught() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_sync_middleware(PanicSyncMiddleware).await.expect("add middleware");
@@ -179,7 +179,7 @@ async fn middleware_panic_is_caught() {
 
 #[tokio::test]
 async fn async_middleware_panic_is_caught() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_middleware(PanicAsyncMiddleware).await.expect("add middleware");
@@ -200,7 +200,7 @@ async fn async_middleware_panic_is_caught() {
 
 #[tokio::test]
 async fn middleware_plus_once_handler() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let middleware_hits = Arc::new(AtomicUsize::new(0));
     let handler_hits = Arc::new(AtomicUsize::new(0));
 
@@ -236,7 +236,7 @@ async fn middleware_plus_once_handler() {
 
 #[tokio::test]
 async fn dead_letter_from_retry_exhaustion() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let dead_letters = Arc::new(AtomicUsize::new(0));
@@ -279,7 +279,7 @@ async fn dead_letter_from_retry_exhaustion() {
 
 #[tokio::test]
 async fn dead_letter_during_shutdown_drain() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let dead_letters = Arc::new(AtomicUsize::new(0));
     let dl_attempts = Arc::new(AtomicUsize::new(0));
@@ -318,6 +318,7 @@ async fn retry_handler_during_shutdown_times_out_cleanly() {
         .buffer_size(64)
         .shutdown_timeout(Duration::from_millis(30))
         .build()
+        .await
         .expect("valid config");
 
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -351,7 +352,7 @@ async fn retry_handler_during_shutdown_times_out_cleanly() {
 
 #[tokio::test]
 async fn subscribe_during_active_dispatch_uses_next_snapshot() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let initial_hits = Arc::new(AtomicUsize::new(0));
     let new_hits = Arc::new(AtomicUsize::new(0));
     let (subscribed_tx, subscribed_rx) = tokio::sync::oneshot::channel();
@@ -395,7 +396,7 @@ async fn subscribe_during_active_dispatch_uses_next_snapshot() {
 
 #[tokio::test]
 async fn handler_panic_during_retry_is_reported() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let dead_letters = Arc::new(AtomicUsize::new(0));
@@ -432,7 +433,7 @@ async fn handler_panic_during_retry_is_reported() {
 
 #[tokio::test]
 async fn dead_letter_listener_panic_does_not_recurse() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let _failing_dead_letter = bus.subscribe_dead_letters(PanicDeadLetterHandler).await.expect("subscribe dead letters");
 
@@ -450,7 +451,7 @@ async fn dead_letter_listener_panic_does_not_recurse() {
 
 #[tokio::test]
 async fn zero_max_retries_means_no_retry() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     let policy = SubscriptionPolicy::default().with_max_retries(0).with_dead_letter(false);
@@ -473,7 +474,7 @@ async fn zero_max_retries_means_no_retry() {
 
 #[tokio::test]
 async fn publish_after_all_listeners_unsubscribed() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus
@@ -490,7 +491,7 @@ async fn publish_after_all_listeners_unsubscribed() {
 
 #[tokio::test]
 async fn middleware_rejects_then_accepts() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus
@@ -516,7 +517,7 @@ async fn middleware_rejects_then_accepts() {
 
 #[tokio::test]
 async fn builder_default_values_are_sane() {
-    let bus = EventBus::builder().build().expect("default builder should build");
+    let bus = EventBus::builder().build().await.expect("default builder should build");
     let stats = bus.stats().await.expect("stats");
 
     assert_eq!(stats.queue_capacity, 256);
@@ -530,7 +531,7 @@ async fn builder_default_values_are_sane() {
 
 #[tokio::test]
 async fn try_publish_on_full_channel() {
-    let bus = EventBus::new(1).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1).build().await.expect("valid config");
 
     let _slow = bus
         .subscribe::<EdgeEvent, _, _>(|event: EdgeEvent| async move {
@@ -550,7 +551,7 @@ async fn try_publish_on_full_channel() {
 
 #[tokio::test]
 async fn multiple_event_types_independent() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let edge_count = Arc::new(AtomicUsize::new(0));
     let other_count = Arc::new(AtomicUsize::new(0));
@@ -582,7 +583,7 @@ async fn multiple_event_types_independent() {
 
 #[tokio::test]
 async fn subscription_id_uniqueness_under_concurrency() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let ids = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -612,7 +613,7 @@ async fn subscription_id_uniqueness_under_concurrency() {
 
 #[tokio::test]
 async fn concurrent_stats_access_is_safe() {
-    let bus = EventBus::new(128).expect("valid config");
+    let bus = EventBus::builder().buffer_size(128).build().await.expect("valid config");
     let total = Arc::new(AtomicUsize::new(0));
 
     let total_for_handler = Arc::clone(&total);

@@ -54,7 +54,7 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     let shutdown_timeout = Duration::from_millis(config.bus.shutdown_timeout_ms);
     builder = builder.shutdown_timeout(shutdown_timeout);
 
-    let bus = builder.build().expect("failed to build EventBus");
+    let bus = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(builder.build())).expect("failed to build EventBus");
 
     let bus_clone = bus.clone();
     let tx_clone = tx.clone();

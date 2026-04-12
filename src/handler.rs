@@ -1,9 +1,12 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use crate::error::HandlerResult;
+use crate::deps::Deps;
+use crate::error::{EventBusError, HandlerResult};
 use crate::registry::{ErasedAsyncHandlerFn, ErasedSyncHandlerFn, EventType, ListenerEntry, ListenerKind};
+use crate::subscription::Subscription;
 use crate::types::Event;
 
 /// Trait for **asynchronous** event handlers.
@@ -294,4 +297,110 @@ where
             is_sync: false,
         }
     }
+}
+
+// ── HandlerDescriptor / DeadLetterDescriptor ──────────────────────────────────
+
+/// Trait for types that can register themselves as a handler on an [`EventBus`](crate::EventBus)
+/// using dependencies supplied by a [`Deps`] container.
+///
+/// This is the primary extension point for the builder-first registration
+/// pattern. Types implementing this trait are passed to
+/// [`EventBusBuilder::handler`](crate::EventBusBuilder::handler) and are
+/// registered during [`build`](crate::EventBusBuilder::build).
+///
+/// # Manual implementation
+///
+/// You rarely need to implement this by hand — the `#[handler]` macro (feature
+/// `macros`) generates the implementation automatically. A manual implementation
+/// looks like:
+///
+/// ```rust,ignore
+/// use std::pin::Pin;
+/// use std::sync::Arc;
+/// use jaeb::{Deps, EventBus, EventHandler, HandlerDescriptor, HandlerResult, Subscription, EventBusError};
+///
+/// #[derive(Clone)]
+/// struct OrderPlaced { pub id: u64 }
+///
+/// struct NotifyHandler;
+///
+/// impl EventHandler<OrderPlaced> for NotifyHandler {
+///     async fn handle(&self, event: &OrderPlaced) -> HandlerResult { Ok(()) }
+/// }
+///
+/// impl HandlerDescriptor for NotifyHandler {
+///     fn register<'a>(
+///         &'a self,
+///         bus: &'a EventBus,
+///         _deps: &'a Deps,
+///     ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+///         Box::pin(async move {
+///             bus.subscribe::<OrderPlaced, _, _>(NotifyHandler).await
+///         })
+///     }
+/// }
+/// ```
+pub trait HandlerDescriptor: Send + Sync + 'static {
+    /// Register this handler on `bus`, resolving any dependencies from `deps`.
+    ///
+    /// Called once per descriptor during [`EventBusBuilder::build`](crate::EventBusBuilder::build).
+    /// The returned [`Subscription`] is kept alive by the bus registry.
+    fn register<'a>(
+        &'a self,
+        bus: &'a crate::bus::EventBus,
+        deps: &'a Deps,
+    ) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>>;
+}
+
+/// Trait for types that register a **dead-letter** handler on an [`EventBus`](crate::EventBus).
+///
+/// This is a separate trait from [`HandlerDescriptor`] so that passing a
+/// dead-letter handler to [`EventBusBuilder::handler`](crate::EventBusBuilder::handler)
+/// — instead of the correct
+/// [`EventBusBuilder::dead_letter`](crate::EventBusBuilder::dead_letter) — is
+/// a **compile-time error**.
+///
+/// Dead-letter handlers must be **synchronous** (implement
+/// [`SyncEventHandler<DeadLetter>`](crate::SyncEventHandler)). The `dead_letter`
+/// flag on their subscription policy is forced to `false` to prevent infinite
+/// recursion.
+///
+/// # Manual implementation
+///
+/// ```rust,ignore
+/// use std::pin::Pin;
+/// use jaeb::{DeadLetter, DeadLetterDescriptor, Deps, EventBus, EventBusError, HandlerResult, Subscription, SyncEventHandler};
+///
+/// struct LogDeadLetters;
+///
+/// impl SyncEventHandler<DeadLetter> for LogDeadLetters {
+///     fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+///         eprintln!("dead letter: {:?}", dl);
+///         Ok(())
+///     }
+/// }
+///
+/// impl DeadLetterDescriptor for LogDeadLetters {
+///     fn register_dead_letter<'a>(
+///         &'a self,
+///         bus: &'a EventBus,
+///         _deps: &'a Deps,
+///     ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+///         Box::pin(async move {
+///             bus.subscribe_dead_letters(LogDeadLetters).await
+///         })
+///     }
+/// }
+/// ```
+pub trait DeadLetterDescriptor: Send + Sync + 'static {
+    /// Register this dead-letter handler on `bus`, resolving any dependencies
+    /// from `deps`.
+    ///
+    /// Called once per descriptor during [`EventBusBuilder::build`](crate::EventBusBuilder::build).
+    fn register_dead_letter<'a>(
+        &'a self,
+        bus: &'a crate::bus::EventBus,
+        deps: &'a Deps,
+    ) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>>;
 }

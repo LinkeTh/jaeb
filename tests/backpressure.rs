@@ -26,7 +26,7 @@ impl EventHandler<Msg> for SlowHandler {
 
 #[tokio::test]
 async fn try_publish_reports_channel_full() {
-    let bus = EventBus::new(1).expect("valid config");
+    let bus = EventBus::builder().buffer_size(1).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -41,7 +41,7 @@ async fn try_publish_reports_channel_full() {
 
 #[tokio::test]
 async fn try_publish_after_shutdown_returns_stopped() {
-    let bus = EventBus::new(16).expect("valid config");
+    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
     bus.shutdown().await.expect("shutdown");
 
     let err = bus.try_publish(Msg).expect_err("try_publish after shutdown");
@@ -52,7 +52,7 @@ async fn try_publish_after_shutdown_returns_stopped() {
 /// (the blocking variant) eventually succeeds once in-flight work completes.
 #[tokio::test]
 async fn publish_succeeds_after_channel_drains() {
-    let bus = EventBus::new(2).expect("valid config");
+    let bus = EventBus::builder().buffer_size(2).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(SlowHandler { count: Arc::clone(&count) }).await.expect("subscribe");

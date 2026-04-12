@@ -48,17 +48,14 @@ impl SyncEventHandler<DeadLetter> for DeadLetterSink {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     let policy = SubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(true);
 
-    let _ = bus
-        .subscribe_with_policy::<Payment, _, _>(OnPayment, policy)
-        .await
-        .expect("subscribe handler failed");
+    let _ = bus.subscribe_with_policy(OnPayment, policy).await.expect("subscribe handler failed");
 
     // subscribe_dead_letters forces dead_letter=false to prevent recursion.
     let _ = bus

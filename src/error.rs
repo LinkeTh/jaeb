@@ -60,6 +60,15 @@ pub enum EventBusError {
     InvalidConfig(ConfigError),
     /// A middleware rejected the event before it reached any listener.
     MiddlewareRejected(String),
+    /// A required dependency was not found in the [`Deps`](crate::Deps) container.
+    ///
+    /// The contained string is the fully-qualified type name of the missing
+    /// dependency, suitable for diagnostic messages.
+    ///
+    /// Returned by [`Deps::get_required`](crate::Deps::get_required) and by
+    /// [`EventBusBuilder::build`](crate::EventBusBuilder::build) when a
+    /// registered handler cannot resolve one of its dependencies.
+    MissingDependency(String),
 }
 
 impl fmt::Display for EventBusError {
@@ -70,6 +79,7 @@ impl fmt::Display for EventBusError {
             Self::ShutdownTimeout => write!(f, "shutdown timed out waiting for in-flight tasks"),
             Self::InvalidConfig(err) => write!(f, "invalid event bus configuration: {err}"),
             Self::MiddlewareRejected(reason) => write!(f, "middleware rejected event: {reason}"),
+            Self::MissingDependency(type_name) => write!(f, "missing dependency: {type_name}"),
         }
     }
 }
@@ -78,7 +88,7 @@ impl std::error::Error for EventBusError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidConfig(err) => Some(err),
-            Self::Stopped | Self::ChannelFull | Self::ShutdownTimeout | Self::MiddlewareRejected(_) => None,
+            Self::Stopped | Self::ChannelFull | Self::ShutdownTimeout | Self::MiddlewareRejected(_) | Self::MissingDependency(_) => None,
         }
     }
 }

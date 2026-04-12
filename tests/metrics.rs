@@ -78,7 +78,7 @@ async fn publish_increments_event_counter() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _sub = bus
         .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
         .await
@@ -100,7 +100,7 @@ async fn listener_dispatch_records_histogram_values() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _sub = bus
         .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
         .await
@@ -122,7 +122,7 @@ async fn retry_metrics_error_counter_tracks_terminal_failure() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let policy = SubscriptionPolicy::default().with_max_retries(2).with_dead_letter(false);
 
     let _sub = bus
@@ -144,7 +144,7 @@ async fn dead_letter_publication_is_counted() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let dead_letter_hits = Arc::new(AtomicUsize::new(0));
 
     let _dl = bus
@@ -175,7 +175,7 @@ async fn dead_letter_counter_fires_on_creation() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _sub = bus
         .subscribe::<DeadLetterMetricEvent, _, _>(|_event: &DeadLetterMetricEvent| Err::<(), _>("boom".into()))
         .await
@@ -195,7 +195,7 @@ async fn dead_letter_counter_does_not_fire_when_disabled() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let policy = SubscriptionPolicy::default().with_dead_letter(false);
     let _sub = bus
         .subscribe_with_policy::<DeadLetterMetricEvent, _, _>(|_event: DeadLetterMetricEvent| async move { Err::<(), _>("boom".into()) }, policy)
@@ -226,7 +226,7 @@ async fn dead_letter_counter_includes_handler_label_when_named() {
         }
     }
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _sub = bus.subscribe::<DeadLetterMetricEvent, _, _>(NamedFailHandler).await.expect("subscribe");
 
     bus.publish(DeadLetterMetricEvent).await.expect("publish");
@@ -247,7 +247,7 @@ async fn metrics_snapshot_after_shutdown_contains_recorded_values() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let _sub = bus
         .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
         .await
@@ -267,7 +267,7 @@ async fn concurrent_publish_metrics_coherent() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::new(256).expect("valid config");
+    let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
     let _sub = bus
         .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
         .await

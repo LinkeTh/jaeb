@@ -71,7 +71,7 @@ fn bench_async_single_listener(c: &mut Criterion) {
 
     group.bench_function("jaeb_publish", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
 
             let start = std::time::Instant::now();
@@ -158,7 +158,7 @@ fn bench_async_fanout_10(c: &mut Criterion) {
 
     group.bench_function("jaeb_publish", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             for _ in 0..10 {
                 let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
             }
@@ -257,7 +257,7 @@ fn bench_async_fanout_25(c: &mut Criterion) {
 
     group.bench_function("jaeb_publish", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             for _ in 0..25 {
                 let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
             }
@@ -354,7 +354,7 @@ fn bench_async_fanout_50(c: &mut Criterion) {
 
     group.bench_function("jaeb_publish", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             for _ in 0..50 {
                 let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
             }
@@ -451,7 +451,7 @@ fn bench_mixed_fanout_multi_type(c: &mut Criterion) {
 
     group.bench_function("jaeb_publish_mixed", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             for _ in 0..5 {
                 let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe jaeb");
             }
@@ -585,7 +585,7 @@ fn bench_contention_4_publishers(c: &mut Criterion) {
             let per = (iters as usize) / workers;
             let extra = (iters as usize) % workers;
 
-            let bus = EventBus::new(4096).expect("valid config");
+            let bus = EventBus::builder().buffer_size(4096).build().await.expect("valid config");
             let _sub = bus.subscribe::<JaebEvent, _, _>(JaebNoOp).await.expect("subscribe");
 
             let start = std::time::Instant::now();

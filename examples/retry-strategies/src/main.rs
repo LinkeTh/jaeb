@@ -38,7 +38,7 @@ impl EventHandler<Job> for FlakyHandler {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
     // Fixed: wait 50ms between each retry.
     let fixed_policy = SubscriptionPolicy::default()

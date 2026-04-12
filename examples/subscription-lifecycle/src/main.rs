@@ -25,7 +25,7 @@ impl SyncEventHandler<Tick> for Counter {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // 1. Subscribe and unsubscribe explicitly.

@@ -102,7 +102,7 @@ impl SyncEventHandler<Alpha> for AlphaSyncCounter {
 /// than blocking each other.
 #[tokio::test]
 async fn per_type_parallelism() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();
     let release = Arc::new(Notify::new());
 
@@ -151,7 +151,7 @@ async fn per_type_parallelism() {
 /// in FIFO order by the same sync lane.
 #[tokio::test]
 async fn fifo_within_event_type() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let _ = bus.subscribe(SyncAlphaRecorder { log: Arc::clone(&log) }).await.expect("subscribe");
@@ -173,7 +173,7 @@ async fn fifo_within_event_type() {
 /// stats for Beta.
 #[tokio::test]
 async fn lazy_type_slot_registration() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // Only subscribe to Alpha.
@@ -201,7 +201,7 @@ async fn lazy_type_slot_registration() {
 /// eventually remove the slot, freeing resources.
 #[tokio::test]
 async fn type_slot_cleanup_on_empty() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(AlphaSyncCounter(Arc::clone(&count))).await.expect("subscribe");
@@ -226,7 +226,7 @@ async fn type_slot_cleanup_on_empty() {
 /// of them and report success.
 #[tokio::test]
 async fn shutdown_aggregates_all_type_slots() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let alpha_count = Arc::new(AtomicUsize::new(0));
     let beta_count = Arc::new(AtomicUsize::new(0));
     let gamma_count = Arc::new(AtomicUsize::new(0));
@@ -253,7 +253,7 @@ async fn shutdown_aggregates_all_type_slots() {
 /// type slot — each receives the event.
 #[tokio::test]
 async fn multiple_listeners_share_type_slot() {
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     let sync_count = Arc::new(AtomicUsize::new(0));
     let async_count = Arc::new(AtomicUsize::new(0));
 

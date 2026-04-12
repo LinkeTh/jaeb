@@ -1,7 +1,7 @@
 # macro-handlers
 
-Demonstrates the `#[handler]` macro with full policy attributes and
-explicit handler listing in `register_handlers!`.
+Demonstrates `#[handler]` and `#[dead_letter_handler]` with builder-based
+registration and `Dep<T>` dependency injection.
 
 ## Run
 
@@ -13,10 +13,10 @@ cargo run -p macro-handlers
 
 | Concept | Where |
 |---|---|
-| `#[handler]` with policy attrs | `retries`, `retry_strategy`, `retry_base_ms`, `dead_letter`, `name` on `process_payment` |
-| Dead-letter handler via macro | `#[handler]` on a sync `fn` with `&DeadLetter` arg; auto-detected and wired via `subscribe_dead_letters` |
-| `register_handlers!(bus, fn1, fn2)` | Explicit handler listing — only the named functions are subscribed |
-| Full failure pipeline | `process_payment` always fails → 2 retries → dead letter → `log_dead_letter` fires |
+| `#[handler]` and `#[dead_letter_handler]` | `process_payment` and `on_dead_letter` |
+| `Dep<T>` injection via builder | `.deps(Deps::new().insert(...))` passed to both handlers |
+| Builder descriptor registration | `.handler(process_payment)` and `.dead_letter(on_dead_letter)` |
+| Full failure pipeline | `process_payment` always fails → retries → dead letter → `on_dead_letter` fires |
 
 ## Expected output
 

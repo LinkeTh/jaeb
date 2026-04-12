@@ -187,7 +187,7 @@ async fn main() {
 
     init_prometheus(&3000);
 
-    let bus = EventBus::new(64).expect("valid config");
+    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
     subscribe_listeners(&bus).await;
 
     checkout(42, &bus).await;

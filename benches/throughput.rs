@@ -55,7 +55,7 @@ fn bench_publish_sync(c: &mut Criterion) {
 
     c.bench_function("publish_sync_1_handler", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<LightEvent, _, _>(NoOpSync).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -72,7 +72,7 @@ fn bench_publish_async(c: &mut Criterion) {
 
     c.bench_function("publish_async_1_handler", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<LightEvent, _, _>(NoOpAsync).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -90,7 +90,7 @@ fn bench_fanout(c: &mut Criterion) {
     for n in [1usize, 5, 10, 50] {
         c.bench_function(&format!("fanout_sync_{n}_handlers"), |b| {
             b.to_async(&rt).iter_custom(|iters| async move {
-                let bus = EventBus::new(1024).expect("valid config");
+                let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
                 let counter = Arc::new(AtomicUsize::new(0));
                 for _ in 0..n {
                     let _sub = bus.subscribe::<LightEvent, _, _>(CountingSync(counter.clone())).await.unwrap();
@@ -111,7 +111,7 @@ fn bench_try_publish(c: &mut Criterion) {
 
     c.bench_function("try_publish_no_listeners", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(65536).expect("valid config");
+            let bus = EventBus::builder().buffer_size(65536).build().await.expect("valid config");
             let start = std::time::Instant::now();
             for i in 0..iters {
                 let _ = bus.try_publish(LightEvent(i));
@@ -128,7 +128,7 @@ fn bench_mixed_sync_async(c: &mut Criterion) {
 
     c.bench_function("mixed_1_sync_1_async", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let counter = Arc::new(AtomicUsize::new(0));
             let _sub1 = bus.subscribe::<LightEvent, _, _>(CountingSync(counter.clone())).await.unwrap();
             let _sub2 = bus.subscribe::<LightEvent, _, _>(CountingAsync(counter.clone())).await.unwrap();
@@ -148,7 +148,7 @@ fn bench_contention(c: &mut Criterion) {
 
     c.bench_function("contention_4_publishers", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(4096).expect("valid config");
+            let bus = EventBus::builder().buffer_size(4096).build().await.expect("valid config");
             let _sub = bus.subscribe::<LightEvent, _, _>(NoOpSync).await.unwrap();
             let per_task = iters / 4;
             let start = std::time::Instant::now();
@@ -210,7 +210,7 @@ fn bench_middleware_overhead(c: &mut Criterion) {
     for n in [0usize, 1, 5, 10] {
         c.bench_function(&format!("middleware_{n}_layers_sync"), |b| {
             b.to_async(&rt).iter_custom(|iters| async move {
-                let bus = EventBus::new(1024).expect("valid config");
+                let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
                 let _sub = bus.subscribe::<LightEvent, _, _>(NoOpSync).await.unwrap();
                 for _ in 0..n {
                     let _ = bus.add_middleware(PassthroughMiddleware).await.unwrap();
@@ -287,7 +287,7 @@ fn bench_event_size(c: &mut Criterion) {
     // Sync handlers — measures dispatch overhead without clone cost
     c.bench_function("event_size_8B_sync", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<SmallEvent, _, _>(NoOpSyncSmall).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -300,7 +300,7 @@ fn bench_event_size(c: &mut Criterion) {
 
     c.bench_function("event_size_256B_sync", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<MediumEvent, _, _>(NoOpSyncMedium).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -313,7 +313,7 @@ fn bench_event_size(c: &mut Criterion) {
 
     c.bench_function("event_size_4KB_sync", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<LargeEvent, _, _>(NoOpSyncLarge).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -327,7 +327,7 @@ fn bench_event_size(c: &mut Criterion) {
     // Async handlers — includes the clone cost per handler invocation
     c.bench_function("event_size_8B_async", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<SmallEvent, _, _>(NoOpAsyncSmall).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -340,7 +340,7 @@ fn bench_event_size(c: &mut Criterion) {
 
     c.bench_function("event_size_256B_async", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<MediumEvent, _, _>(NoOpAsyncMedium).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {
@@ -353,7 +353,7 @@ fn bench_event_size(c: &mut Criterion) {
 
     c.bench_function("event_size_4KB_async", |b| {
         b.to_async(&rt).iter_custom(|iters| async move {
-            let bus = EventBus::new(1024).expect("valid config");
+            let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
             let _sub = bus.subscribe::<LargeEvent, _, _>(NoOpAsyncLarge).await.unwrap();
             let start = std::time::Instant::now();
             for i in 0..iters {

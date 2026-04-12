@@ -39,7 +39,7 @@ proptest! {
     #[test]
     fn all_sync_listeners_see_every_event(listeners in 1usize..8, events in 1usize..20) {
         rt().block_on(async move {
-            let bus = EventBus::new(256).expect("valid config");
+            let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
             let hits = Arc::new(AtomicUsize::new(0));
 
             for _ in 0..listeners {
@@ -65,7 +65,7 @@ proptest! {
     #[test]
     fn priority_ordering_respected(p1 in -20i32..20, p2 in -20i32..20, p3 in -20i32..20) {
         rt().block_on(async move {
-            let bus = EventBus::new(64).expect("valid config");
+            let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
             let order = Arc::new(Mutex::new(Vec::<usize>::new()));
 
             let register = |id: usize, priority: i32, order: Arc<Mutex<Vec<usize>>>, bus: EventBus| async move {
@@ -101,7 +101,7 @@ proptest! {
     #[test]
     fn retry_count_bounded(max_retries in 0usize..5) {
         rt().block_on(async move {
-            let bus = EventBus::new(64).expect("valid config");
+            let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
             let attempts = Arc::new(AtomicUsize::new(0));
 
             let policy = SubscriptionPolicy::default()
@@ -133,7 +133,7 @@ proptest! {
     #[test]
     fn dead_letter_iff_enabled_and_failed(dead_letter_enabled in any::<bool>(), fail_count in 0usize..4, max_retries in 0usize..4) {
         rt().block_on(async move {
-            let bus = EventBus::new(64).expect("valid config");
+            let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
 
             let attempts = Arc::new(AtomicUsize::new(0));
             let dead_letters = Arc::new(AtomicUsize::new(0));
@@ -181,7 +181,7 @@ proptest! {
     #[test]
     fn once_handler_fires_at_most_once(events in 1usize..50, values in proptest::collection::vec(0u16..1000, 1..50)) {
         rt().block_on(async move {
-            let bus = EventBus::new(64).expect("valid config");
+            let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
             let hits = Arc::new(AtomicUsize::new(0));
 
             let hits_for_handler = Arc::clone(&hits);
@@ -206,7 +206,7 @@ proptest! {
     #[test]
     fn unsubscribe_prevents_future_dispatch(first_batch in 1usize..10, second_batch in 1usize..10) {
         rt().block_on(async move {
-            let bus = EventBus::new(64).expect("valid config");
+            let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
             let hits = Arc::new(AtomicUsize::new(0));
 
             let hits_for_handler = Arc::clone(&hits);
@@ -243,7 +243,7 @@ fn prop_event_payload_roundtrip_sanity() {
 
 #[tokio::test]
 async fn unsubscribe_returns_false_when_already_removed() {
-    let bus = EventBus::new(32).expect("valid config");
+    let bus = EventBus::builder().buffer_size(32).build().await.expect("valid config");
 
     let sub = bus.subscribe::<PropEvent, _, _>(|_event: &PropEvent| Ok(())).await.expect("subscribe");
 
@@ -256,7 +256,7 @@ async fn unsubscribe_returns_false_when_already_removed() {
 
 #[tokio::test]
 async fn publish_after_shutdown_is_stopped() {
-    let bus = EventBus::new(32).expect("valid config");
+    let bus = EventBus::builder().buffer_size(32).build().await.expect("valid config");
     bus.shutdown().await.expect("shutdown");
 
     let err = bus.publish(PropEvent { _value: 1 }).await.expect_err("publish after shutdown");
