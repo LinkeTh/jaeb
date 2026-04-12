@@ -78,16 +78,25 @@ async fn main() {
     let (stop_tx, stop_rx) = watch::channel(false);
 
     tokio::spawn(async move {
-        // Listen for both SIGTERM (Docker stop) and Ctrl+C (local dev).
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler failed");
+        #[cfg(unix)]
+        {
+            // Listen for both SIGTERM (Docker stop) and Ctrl+C (local dev).
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler failed");
 
-        tokio::select! {
-            _ = sigterm.recv() => {
-                info!("SIGTERM received, stopping simulation");
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("SIGTERM received, stopping simulation");
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Ctrl+C received, stopping simulation");
+                }
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Ctrl+C received, stopping simulation");
-            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.expect("Ctrl+C handler failed");
+            info!("Ctrl+C received, stopping simulation");
         }
 
         let _ = stop_tx.send(true);

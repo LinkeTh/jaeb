@@ -170,6 +170,78 @@ async fn dead_letter_publication_is_counted() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dead_letter_counter_fires_on_creation() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+
+    let bus = EventBus::new(64).expect("valid config");
+    let _sub = bus
+        .subscribe::<DeadLetterMetricEvent, _, _>(|_event: &DeadLetterMetricEvent| Err::<(), _>("boom".into()))
+        .await
+        .expect("subscribe failing handler");
+
+    bus.publish(DeadLetterMetricEvent).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    let value = counter_value(&snapshot, "eventbus.dead_letter", &[("event", type_name::<DeadLetterMetricEvent>())]);
+    assert_eq!(value, 1, "dead letter counter must fire exactly once");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dead_letter_counter_does_not_fire_when_disabled() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+
+    let bus = EventBus::new(64).expect("valid config");
+    let policy = SubscriptionPolicy::default().with_dead_letter(false);
+    let _sub = bus
+        .subscribe_with_policy::<DeadLetterMetricEvent, _, _>(|_event: DeadLetterMetricEvent| async move { Err::<(), _>("boom".into()) }, policy)
+        .await
+        .expect("subscribe");
+
+    bus.publish(DeadLetterMetricEvent).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    let value = counter_value(&snapshot, "eventbus.dead_letter", &[("event", type_name::<DeadLetterMetricEvent>())]);
+    assert_eq!(value, 0, "dead letter counter must not fire when dead_letter=false");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dead_letter_counter_includes_handler_label_when_named() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+
+    struct NamedFailHandler;
+    impl SyncEventHandler<DeadLetterMetricEvent> for NamedFailHandler {
+        fn handle(&self, _: &DeadLetterMetricEvent) -> HandlerResult {
+            Err("always fail".into())
+        }
+        fn name(&self) -> Option<&'static str> {
+            Some("named-fail-handler")
+        }
+    }
+
+    let bus = EventBus::new(64).expect("valid config");
+    let _sub = bus.subscribe::<DeadLetterMetricEvent, _, _>(NamedFailHandler).await.expect("subscribe");
+
+    bus.publish(DeadLetterMetricEvent).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    let value = counter_value(
+        &snapshot,
+        "eventbus.dead_letter",
+        &[("event", type_name::<DeadLetterMetricEvent>()), ("handler", "named-fail-handler")],
+    );
+    assert_eq!(value, 1, "dead letter counter must include handler label when handler is named");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn metrics_snapshot_after_shutdown_contains_recorded_values() {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();

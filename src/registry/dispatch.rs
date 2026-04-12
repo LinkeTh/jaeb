@@ -507,6 +507,13 @@ pub(crate) fn dead_letter_from_failure(failure: &ListenerFailure) -> Option<Dead
 
     let dead_letter_type = std::any::type_name::<DeadLetter>();
     if failure.dead_letter && failure.event_name != dead_letter_type {
+        #[cfg(feature = "metrics")]
+        if let Some(name) = failure.handler_name {
+            counter!("eventbus.dead_letter", "event" => failure.event_name, "handler" => name).increment(1);
+        } else {
+            counter!("eventbus.dead_letter", "event" => failure.event_name).increment(1);
+        }
+
         Some(DeadLetter {
             event_name: failure.event_name,
             subscription_id: failure.subscription_id,

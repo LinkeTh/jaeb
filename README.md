@@ -205,10 +205,11 @@ cargo run -p axum-integration
 
 When `metrics` is enabled, JAEB records:
 
-- `eventbus.publish` (counter, per event type)
-- `eventbus.handler.duration` (histogram, per event type)
-- `eventbus.handler.error` (counter, per event type)
-- `eventbus.handler.join_error` (counter, per event type)
+- `eventbus.publish` (counter, labels: `event`)
+- `eventbus.handler.duration` (histogram, labels: `event`, `handler`)
+- `eventbus.handler.error` (counter, labels: `event`, `listener`)
+- `eventbus.dead_letter` (counter, labels: `event`, `handler`) — fires when a dead letter is created
+- `eventbus.handler.join_error` (counter, labels: `event`)
 
 ## summer-rs Integration
 

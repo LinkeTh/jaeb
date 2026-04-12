@@ -280,7 +280,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(jaeb_dead_letter_total[$__rate_interval])",
+          "expr": "rate(eventbus_dead_letter[$__rate_interval])",
           "legendFormat": "{{ event }} / {{ handler }}",
           "refId": "A"
         }
@@ -317,7 +317,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "increase(jaeb_dead_letter_total[1h])",
+          "expr": "increase(eventbus_dead_letter[1h])",
           "legendFormat": "{{ event }}",
           "refId": "A"
         }

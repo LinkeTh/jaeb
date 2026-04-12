@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-04-12
+
+### Added
+
+- `eventbus.dead_letter` counter (gated by `metrics` feature) emitted when a
+  dead letter is created, after the recursion guard and `dead_letter = true`
+  policy check pass. Labels: `event` (event type name), `handler` (if named).
+
+### Changed
+
+- `examples/observability-stack`: removed manual `jaeb.dead_letter.total`
+  counter from `DeadLetterSink`; the core `eventbus.dead_letter` metric is now
+  the canonical source.
+- Grafana dashboard updated to query `eventbus_dead_letter` instead of
+  `jaeb_dead_letter_total`.
+
 ## [0.3.11] - 2026-04-12
 
 ### Fixed

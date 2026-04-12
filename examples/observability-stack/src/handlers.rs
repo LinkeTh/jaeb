@@ -123,13 +123,8 @@ pub struct DeadLetterSink;
 
 impl SyncEventHandler<DeadLetter> for DeadLetterSink {
     fn handle(&self, dl: &DeadLetter) -> HandlerResult {
-        // Increment a custom Prometheus counter so dashboards track DLQ depth.
-        metrics::counter!(
-            "jaeb.dead_letter.total",
-            "event" => dl.event_name,
-            "handler" => dl.handler_name.unwrap_or("unknown"),
-        )
-        .increment(1);
+        // eventbus.dead_letter is automatically incremented by the jaeb core
+        // (metrics feature) when a dead letter is created -- no manual counter needed.
 
         tracing::warn!(
             event = dl.event_name,
