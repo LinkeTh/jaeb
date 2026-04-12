@@ -57,7 +57,7 @@ impl EventHandler<PaymentProcessed> for PaymentLedgerHandler {
     async fn handle(&self, event: &PaymentProcessed) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(20)).await;
         // Deterministic pseudo-failure keyed on order_id length.
-        if !event.success && event.order_id.len() % 3 == 0 {
+        if !event.success && event.order_id.len().is_multiple_of(3) {
             return Err("ledger write timeout".into());
         }
         info!(order_id = %event.order_id, success = event.success, "ledger updated");
