@@ -35,7 +35,7 @@ If you need durable messaging, consider pairing JAEB with an external queue for 
 
 ```toml
 [dependencies]
-jaeb = "0.3.7"
+jaeb = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -44,6 +44,13 @@ With metrics instrumentation:
 ```toml
 [dependencies]
 jaeb = { version = "0.3", features = ["metrics"] }
+```
+
+With tracing:
+
+```toml
+[dependencies]
+jaeb = { version = "0.3", features = ["trace"] }
 ```
 
 With standalone handler macros:
