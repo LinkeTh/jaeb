@@ -43,14 +43,14 @@ With metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.7", features = ["metrics"] }
+jaeb = { version = "0.3", features = ["metrics"] }
 ```
 
 With standalone handler macros:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.3.7", features = ["macros"] }
+jaeb = { version = "0.3", features = ["macros"] }
 ```
 
 ## ⚡ Quick Start

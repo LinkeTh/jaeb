@@ -1,0 +1,21 @@
+# Build artifacts — largest offender, often several GB
+target/
+
+# Git history
+.git/
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI / local tooling
+.github/
+.opencode/
+
+# Docker Compose files aren't needed in the context
+**/docker-compose*.yml

@@ -13,7 +13,7 @@ services:
   # ── Rust app ─────────────────────────────────────────────────────────────
   app:
     build:
-      context: ../..
+      context: ../../..
       dockerfile: examples/observability-stack/Dockerfile
     environment:
       LOKI_URL: "http://loki:3100"
@@ -74,7 +74,7 @@ services:
     image: grafana/tempo:2.7.2
     volumes:
       - ./tempo/tempo-config.yml:/etc/tempo/tempo-config.yml:ro
-      - tempo_data:/tmp/tempo
+      - tempo_data:/var/tempo
     command: -config.file=/etc/tempo/tempo-config.yml
     ports:
       - "3200:3200"   # Tempo HTTP query API

@@ -42,7 +42,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(eventbus_publish_total[$__rate_interval])",
+          "expr": "rate(eventbus_publish[$__rate_interval])",
           "legendFormat": "{{ event }}",
           "refId": "A"
         }
@@ -79,7 +79,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "increase(eventbus_publish_total[1h])",
+          "expr": "increase(eventbus_publish[1h])",
           "legendFormat": "{{ event }}",
           "refId": "A"
         }
@@ -121,19 +121,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, rate(eventbus_handler_duration_bucket{handler=~\"$handler\"}[$__rate_interval]))",
+          "expr": "eventbus_handler_duration{handler=~\"$handler\",quantile=\"0.5\"}",
           "legendFormat": "p50 {{ handler }}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(eventbus_handler_duration_bucket{handler=~\"$handler\"}[$__rate_interval]))",
+          "expr": "eventbus_handler_duration{handler=~\"$handler\",quantile=\"0.95\"}",
           "legendFormat": "p95 {{ handler }}",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, rate(eventbus_handler_duration_bucket{handler=~\"$handler\"}[$__rate_interval]))",
+          "expr": "eventbus_handler_duration{handler=~\"$handler\",quantile=\"0.99\"}",
           "legendFormat": "p99 {{ handler }}",
           "refId": "C"
         }
@@ -145,37 +145,36 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "scheme", "schemeName": "Oranges" },
+          "color": { "mode": "palette-classic" },
           "custom": {
-            "fillOpacity": 80,
-            "scaleDistribution": { "type": "linear" }
-          }
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
       "id": 4,
       "options": {
-        "calculate": true,
-        "calculation": { "xBuckets": { "mode": "size" } },
-        "cellGap": 1,
-        "color": { "exponent": 0.5, "fill": "dark-orange", "mode": "scheme", "scale": "exponential", "scheme": "Oranges", "steps": 64 },
-        "exemplars": { "color": "rgba(255,0,255,0.7)" },
-        "filterValues": { "le": 1e-9 },
-        "tooltip": { "show": true, "yHistogram": false },
-        "yAxis": { "unit": "s" }
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(eventbus_handler_duration_bucket[$__rate_interval])) by (le)",
-          "format": "heatmap",
-          "legendFormat": "{{ le }}",
+          "expr": "rate(eventbus_handler_duration_count{handler=~\"$handler\"}[$__rate_interval])",
+          "legendFormat": "{{ handler }}",
           "refId": "A"
         }
       ],
-      "title": "Handler Duration Heatmap",
-      "type": "heatmap"
+      "title": "Handler Throughput (invocations/s)",
+      "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -204,7 +203,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(eventbus_handler_error_total[$__rate_interval])",
+          "expr": "rate(eventbus_handler_error[$__rate_interval])",
           "legendFormat": "{{ event }} / {{ listener }}",
           "refId": "A"
         }
@@ -239,12 +238,12 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(eventbus_handler_join_error_total[$__rate_interval])",
-          "legendFormat": "{{ event }}",
+          "expr": "rate(eventbus_handler_duration_count{handler=~\"$handler\"}[$__rate_interval])",
+          "legendFormat": "{{ event }} / {{ handler }}",
           "refId": "A"
         }
       ],
-      "title": "Handler Join Error Rate (panics/aborts)",
+      "title": "Handler Completion Rate",
       "type": "timeseries"
     },
     {
@@ -356,7 +355,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(eventbus_handler_error_total[5m])) by (event)",
+          "expr": "sum(rate(eventbus_handler_error[5m])) by (event)",
           "legendFormat": "{{ event }}",
           "refId": "A"
         }
@@ -398,7 +397,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(eventbus_publish_total{event=\"OrderCreated\"}[$__rate_interval])",
+          "expr": "rate(eventbus_publish{event=~\".*OrderCreated.*\"}[$__rate_interval])",
           "legendFormat": "OrderCreated publish rate",
           "refId": "A"
         }
@@ -435,7 +434,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(eventbus_handler_error_total[$__rate_interval])) / (sum(rate(eventbus_handler_error_total[$__rate_interval])) + sum(rate(eventbus_handler_duration_count[$__rate_interval])))",
+          "expr": "sum(rate(eventbus_handler_error[$__rate_interval])) / (sum(rate(eventbus_handler_error[$__rate_interval])) + sum(rate(eventbus_handler_duration_count[$__rate_interval])))",
           "legendFormat": "error ratio",
           "refId": "A"
         }
@@ -452,11 +451,11 @@
       {
         "current": { "selected": false, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "definition": "label_values(eventbus_handler_duration_bucket, handler)",
+        "definition": "label_values(eventbus_handler_duration, handler)",
         "includeAll": true,
         "multi": true,
         "name": "handler",
-        "query": { "query": "label_values(eventbus_handler_duration_bucket, handler)", "refId": "handler" },
+        "query": { "query": "label_values(eventbus_handler_duration, handler)", "refId": "handler" },
         "refresh": 2,
         "type": "query"
       }
@@ -467,5 +466,5 @@
   "timezone": "",
   "title": "jaeb Overview",
   "uid": "jaeb-overview",
-  "version": 1
+  "version": 2
 }

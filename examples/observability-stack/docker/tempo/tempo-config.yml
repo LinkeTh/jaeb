@@ -29,12 +29,12 @@ storage:
   trace:
     backend: local
     local:
-      path: /tmp/tempo/blocks
+      path: /var/tempo/blocks
     pool:
       max_workers: 100
       queue_depth: 10000
     wal:
-      path: /tmp/tempo/wal
+      path: /var/tempo/wal
 
 overrides:
   defaults:
@@ -47,7 +47,7 @@ metrics_generator:
       source: tempo
       cluster: docker-compose
   storage:
-    path: /tmp/tempo/generator/wal
+    path: /var/tempo/generator/wal
     remote_write:
       - url: http://prometheus:9090/api/v1/write
         send_exemplars: true
