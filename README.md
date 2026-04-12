@@ -46,6 +46,8 @@ With metrics instrumentation:
 jaeb = { version = "0.3", features = ["metrics"] }
 ```
 
+![png](grafana.png 'grafana dashboard')
+
 With tracing:
 
 ```toml
@@ -194,6 +196,8 @@ Core policy types:
 - `examples/macro-handlers-auto` - standalone `#[handler]` auto-discovery with `register_handlers!(bus)`
 - `examples/jaeb-demo` - full demo with tracing + metrics exporter
 - `examples/summer-jaeb-demo` - summer-rs plugin + `#[event_listener]`
+
+![png](visualizer.png 'ratatui simulator')
 
 Run an example:
 
