@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use jaeb::{EventBus, HandlerResult, SyncEventHandler};
 
@@ -115,27 +116,38 @@ async fn concurrent_publish_and_unsubscribe_is_safe() {
         subs.push(sub);
     }
 
+    let mut tasks = tokio::task::JoinSet::new();
+
     // Spawn concurrent publishers.
     let bus_pub = bus.clone();
-    let publish_handle = tokio::spawn(async move {
-        for _ in 0..50 {
-            // Ignore errors — some may race with shutdown/unsubscribe.
+    tasks.spawn(async move {
+        for _ in 0..100 {
             let _ = bus_pub.publish(Tick).await;
+            tokio::task::yield_now().await;
         }
     });
 
     // Concurrently unsubscribe half the listeners.
     let bus_unsub = bus.clone();
-    let unsub_handle = tokio::spawn(async move {
+    tasks.spawn(async move {
         for sub in subs.drain(..5) {
             let _ = bus_unsub.unsubscribe(sub.id()).await;
+            tokio::task::yield_now().await;
         }
     });
 
-    // Both tasks should complete without panic or deadlock.
-    let (pub_result, unsub_result) = tokio::join!(publish_handle, unsub_handle);
-    pub_result.expect("publish task should not panic");
-    unsub_result.expect("unsubscribe task should not panic");
+    // All tasks should complete promptly and without panic.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(result) = tasks.join_next().await {
+            result.expect("concurrent task should not panic");
+        }
+    })
+    .await
+    .expect("concurrent publish/unsubscribe timed out");
+
+    // Bus remains operational after the race.
+    bus.publish(Tick).await.expect("publish after race should succeed");
+    assert!(bus.is_healthy().await, "bus should remain healthy after race");
 
     // The counter should have been incremented some number of times — we
     // don't assert an exact count because the ordering is non-deterministic.

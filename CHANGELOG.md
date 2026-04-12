@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-04-12
+
+### Added
+
+- Added grouped integration suites for production-hardening coverage:
+  `tests/edge_cases.rs`, `tests/proptest_dispatch.rs`, `tests/metrics.rs`, and `tests/stress.rs`.
+- Added property-based dispatch invariants via `proptest` for listener
+  delivery, ordering, retries, dead-letter behavior, once semantics, and
+  unsubscribe guarantees.
+- Added metrics-feature integration tests using `metrics-util` debugging
+  recorder snapshots.
+
+### Changed
+
+- Hardened middleware dispatch against panics in global and typed middleware
+  (sync and async), converting panic conditions into
+  `EventBusError::MiddlewareRejected` instead of unwinding.
+- Stabilized timing-sensitive tests in `tests/snapshot.rs`,
+  `tests/unsubscribe.rs`, `tests/retry.rs`, and `tests/shutdown.rs` by
+  removing brittle timing assumptions and adding deterministic coordination/
+  wider timing tolerances.
+- Ensured metrics publication counters are recorded consistently across
+  publish-path fast paths and regular middleware paths.
+
 ## [0.3.7] - 2026-04-11
 
 ### Changed

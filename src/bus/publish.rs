@@ -2,6 +2,9 @@ use std::any::{Any, TypeId};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+#[cfg(feature = "metrics")]
+use metrics::counter;
+
 use crate::error::EventBusError;
 use crate::registry::{DispatchContext, RegistrySnapshot, TypeSlot, dispatch_slot, dispatch_sync_only_with_snapshot, dispatch_with_snapshot};
 use crate::types::Event;
@@ -19,6 +22,9 @@ impl EventBus {
     ) -> Result<(), EventBusError> {
         // Fast path: no middleware at all — skip dispatch_with_snapshot indirection.
         let once_removed = if snapshot.global_middlewares.is_empty() && slot.is_none_or(|s| s.middlewares.is_empty()) {
+            #[cfg(feature = "metrics")]
+            counter!("eventbus.publish", "event" => event_name).increment(1);
+
             match slot {
                 None => Vec::new(),
                 Some(s) => dispatch_slot(s.as_ref(), &event, event_name, dispatch_ctx).await,

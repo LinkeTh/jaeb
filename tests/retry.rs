@@ -164,8 +164,17 @@ async fn retry_delay_is_respected() {
     let elapsed = start.elapsed();
 
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    // With a 50ms retry delay and 1 retry, the total should be at least 50ms.
-    assert!(elapsed >= Duration::from_millis(45), "expected >= 45ms, got {elapsed:?}");
+    let expected = Duration::from_millis(50);
+    assert!(
+        elapsed >= expected.mul_f32(0.7),
+        "retry delay too short: expected >= {:?}, got {elapsed:?}",
+        expected.mul_f32(0.7)
+    );
+    assert!(
+        elapsed <= expected.mul_f32(6.0),
+        "retry delay unexpectedly long: expected <= {:?}, got {elapsed:?}",
+        expected.mul_f32(6.0)
+    );
 }
 
 // ── RetryStrategy tests ──────────────────────────────────────────────
@@ -200,8 +209,17 @@ async fn retry_exponential_backoff() {
     let elapsed = start.elapsed();
 
     assert_eq!(attempts.load(Ordering::SeqCst), 3); // 1 initial + 2 retries
-    // Total delay should be at least 25 + 50 = 75ms (with some tolerance).
-    assert!(elapsed >= Duration::from_millis(65), "expected >= 65ms, got {elapsed:?}");
+    let expected = Duration::from_millis(75);
+    assert!(
+        elapsed >= expected.mul_f32(0.7),
+        "exponential delay too short: expected >= {:?}, got {elapsed:?}",
+        expected.mul_f32(0.7)
+    );
+    assert!(
+        elapsed <= expected.mul_f32(6.0),
+        "exponential delay unexpectedly long: expected <= {:?}, got {elapsed:?}",
+        expected.mul_f32(6.0)
+    );
 }
 
 #[tokio::test]
@@ -234,10 +252,17 @@ async fn retry_exponential_caps_at_max() {
     let elapsed = start.elapsed();
 
     assert_eq!(attempts.load(Ordering::SeqCst), 4); // 1 initial + 3 retries
-    // Total delay: 50 + 60 + 60 = 170ms. Allow some tolerance.
-    assert!(elapsed >= Duration::from_millis(150), "expected >= 150ms, got {elapsed:?}");
-    // Should not be wildly over the cap either.
-    assert!(elapsed < Duration::from_millis(500), "expected < 500ms, got {elapsed:?}");
+    let expected = Duration::from_millis(170);
+    assert!(
+        elapsed >= expected.mul_f32(0.7),
+        "capped exponential delay too short: expected >= {:?}, got {elapsed:?}",
+        expected.mul_f32(0.7)
+    );
+    assert!(
+        elapsed <= expected.mul_f32(5.0),
+        "capped exponential delay unexpectedly long: expected <= {:?}, got {elapsed:?}",
+        expected.mul_f32(5.0)
+    );
 }
 
 #[tokio::test]

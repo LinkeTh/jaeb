@@ -61,7 +61,10 @@ impl EventHandler<Work> for VerySlowAsync {
 #[tokio::test]
 async fn shutdown_stops_new_operations() {
     let bus = EventBus::new(16).expect("valid config");
-    bus.shutdown().await.expect("shutdown");
+    tokio::time::timeout(Duration::from_secs(2), bus.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown");
 
     let reg_err = match bus.subscribe(NoOpSync).await {
         Ok(_) => panic!("subscribe after shutdown unexpectedly succeeded"),
@@ -81,7 +84,10 @@ async fn unsubscribe_after_shutdown_returns_stopped() {
     let sub = bus.subscribe(SyncAccumulator { sum: Arc::clone(&sum) }).await.expect("subscribe");
     let id = sub.id();
 
-    bus.shutdown().await.expect("shutdown");
+    tokio::time::timeout(Duration::from_secs(2), bus.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown");
 
     let err = bus.unsubscribe(id).await.expect_err("unsubscribe after shutdown");
     assert_eq!(err, EventBusError::Stopped);
@@ -100,7 +106,10 @@ async fn shutdown_drains_queued_publishes() {
     }
 
     // Shutdown should drain the queued publishes.
-    bus.shutdown().await.expect("shutdown");
+    tokio::time::timeout(Duration::from_secs(2), bus.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown");
 
     // 1+2+3+4+5 = 15
     assert_eq!(sum.load(Ordering::SeqCst), 15);
@@ -116,7 +125,10 @@ async fn shutdown_waits_for_inflight_async_handlers() {
     bus.publish(Work { value: 1 }).await.expect("publish");
 
     // Immediately shut down — the async handler is still sleeping.
-    bus.shutdown().await.expect("shutdown");
+    tokio::time::timeout(Duration::from_secs(3), bus.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown");
 
     // Shutdown should have waited for the in-flight handler.
     assert_eq!(done.load(Ordering::SeqCst), 1);
@@ -137,7 +149,9 @@ async fn shutdown_returns_timeout_when_tasks_aborted() {
     bus.publish(Work { value: 1 }).await.expect("publish");
 
     // The async handler sleeps for 5s but timeout is 50ms — tasks will be aborted.
-    let result = bus.shutdown().await;
+    let result = tokio::time::timeout(Duration::from_secs(2), bus.shutdown())
+        .await
+        .expect("shutdown call timed out");
     assert_eq!(result, Err(EventBusError::ShutdownTimeout));
 
     // The handler should not have completed.
@@ -163,7 +177,10 @@ async fn shutdown_succeeds_when_tasks_finish_before_deadline() {
 
     bus.publish(Work { value: 1 }).await.expect("publish");
 
-    bus.shutdown().await.expect("shutdown should succeed when tasks finish in time");
+    tokio::time::timeout(Duration::from_secs(3), bus.shutdown())
+        .await
+        .expect("shutdown timed out")
+        .expect("shutdown should succeed when tasks finish in time");
 
     assert_eq!(done.load(Ordering::SeqCst), 1);
 }

@@ -5,10 +5,9 @@
 
 use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::Barrier;
-use tokio::time::Instant;
+use tokio::sync::{Notify, mpsc};
 
 // ── Event types ──────────────────────────────────────────────────────
 
@@ -35,27 +34,27 @@ impl SyncEventHandler<Alpha> for SyncAlphaRecorder {
 }
 
 struct SlowAlphaHandler {
-    barrier: Arc<Barrier>,
-    reached: Arc<AtomicBool>,
+    started_tx: mpsc::UnboundedSender<&'static str>,
+    release: Arc<Notify>,
 }
 
 impl EventHandler<Alpha> for SlowAlphaHandler {
     async fn handle(&self, _event: &Alpha) -> HandlerResult {
-        self.reached.store(true, Ordering::SeqCst);
-        self.barrier.wait().await;
+        let _ = self.started_tx.send("alpha");
+        self.release.notified().await;
         Ok(())
     }
 }
 
 struct SlowBetaHandler {
-    barrier: Arc<Barrier>,
-    reached: Arc<AtomicBool>,
+    started_tx: mpsc::UnboundedSender<&'static str>,
+    release: Arc<Notify>,
 }
 
 impl EventHandler<Beta> for SlowBetaHandler {
     async fn handle(&self, _event: &Beta) -> HandlerResult {
-        self.reached.store(true, Ordering::SeqCst);
-        self.barrier.wait().await;
+        let _ = self.started_tx.send("beta");
+        self.release.notified().await;
         Ok(())
     }
 }
@@ -104,25 +103,21 @@ impl SyncEventHandler<Alpha> for AlphaSyncCounter {
 #[tokio::test]
 async fn per_type_parallelism() {
     let bus = EventBus::new(64).expect("valid config");
-
-    // Two barriers — each needs 2 waiters (handler + test).
-    let barrier_alpha = Arc::new(Barrier::new(2));
-    let barrier_beta = Arc::new(Barrier::new(2));
-    let reached_alpha = Arc::new(AtomicBool::new(false));
-    let reached_beta = Arc::new(AtomicBool::new(false));
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(Notify::new());
 
     let _ = bus
         .subscribe(SlowAlphaHandler {
-            barrier: Arc::clone(&barrier_alpha),
-            reached: Arc::clone(&reached_alpha),
+            started_tx: started_tx.clone(),
+            release: Arc::clone(&release),
         })
         .await
         .expect("subscribe alpha");
 
     let _ = bus
         .subscribe(SlowBetaHandler {
-            barrier: Arc::clone(&barrier_beta),
-            reached: Arc::clone(&reached_beta),
+            started_tx,
+            release: Arc::clone(&release),
         })
         .await
         .expect("subscribe beta");
@@ -132,26 +127,22 @@ async fn per_type_parallelism() {
     bus.publish(Alpha(1)).await.expect("publish alpha");
     bus.publish(Beta(1)).await.expect("publish beta");
 
-    // Both handlers should reach their barrier concurrently. If type slots
-    // were serialised the second handler would never start until the
-    // first barrier was released.
-    let start = Instant::now();
-    let timeout = Duration::from_secs(5);
-
-    // Spin until both handlers have reached their barrier entry point.
-    loop {
-        if reached_alpha.load(Ordering::SeqCst) && reached_beta.load(Ordering::SeqCst) {
-            break;
+    // Both handlers should start before either is released. If type slots were
+    // serialized, only one start signal would arrive here.
+    let mut seen = std::collections::HashSet::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while seen.len() < 2 {
+            let who = started_rx.recv().await.expect("start channel should remain open");
+            seen.insert(who);
         }
-        if start.elapsed() > timeout {
-            panic!("timed out waiting for both handlers to start — type slots may not be parallel");
-        }
-        tokio::task::yield_now().await;
-    }
+    })
+    .await
+    .expect("timed out waiting for both handlers to start");
 
-    // Release both barriers so handlers can complete.
-    barrier_alpha.wait().await;
-    barrier_beta.wait().await;
+    assert!(seen.contains("alpha"), "alpha handler did not start");
+    assert!(seen.contains("beta"), "beta handler did not start");
+
+    release.notify_waiters();
 
     bus.shutdown().await.expect("shutdown");
 }

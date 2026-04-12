@@ -1,13 +1,13 @@
 [package]
 name = "jaeb"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"
 license = "MIT"
 repository = "https://github.com/LinkeTh/jaeb"
 keywords = ["event-bus", "tokio", "async", "pubsub", "snapshot"]
-categories = ["asynchronous", "concurrency"]
+categories = ["asynchronous", "concurrency", "event-driven", "pub-sub"]
 readme = "README.md"
 rust-version = "1.94"
 
@@ -63,6 +63,9 @@ async-trait = "0.1"
 eventbuzz = { version = "0.2", features = ["asynchronous"] }
 evno = "1.0.2"
 eventador = { version = "0.0.18", features = ["async"] }
+metrics-util = { version = "0.20.1", default-features = false, features = ["debugging"] }
+proptest = "1.9.0"
+tracing-test = "0.2"
 
 [[bench]]
 name = "throughput"

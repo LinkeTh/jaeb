@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
-use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::{
+    FutureExt,
+    stream::{FuturesUnordered, StreamExt},
+};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "trace")]
@@ -19,7 +22,7 @@ use super::types::{
     ControlNotification, DispatchContext, ErasedAsyncHandlerFn, ErasedMiddleware, EventType, HandlerFuture, ListenerFailure, RegistrySnapshot,
     SyncListenerEntry, TypeSlot, TypedMiddlewareEntry,
 };
-use super::worker::WorkItem;
+use super::worker::{WorkItem, WorkItemData};
 use crate::error::{EventBusError, HandlerResult};
 use crate::middleware::MiddlewareDecision;
 use crate::types::{DeadLetter, SubscriptionId, SubscriptionPolicy};
@@ -35,6 +38,10 @@ fn extract_panic_message(panic_payload: Box<dyn Any + Send>) -> String {
     } else {
         "handler panicked".to_string()
     }
+}
+
+fn middleware_panic_error(panic_payload: Box<dyn Any + Send>) -> EventBusError {
+    EventBusError::MiddlewareRejected(format!("middleware panicked: {}", extract_panic_message(panic_payload)))
 }
 
 struct CatchUnwindFuture {
@@ -186,16 +193,18 @@ pub(crate) async fn dispatch_slot(
                 if !listener.once
                     && let Some(worker) = &slot.worker
                 {
-                    dispatch_ctx.tracker.track_external();
-                    worker.send(WorkItem {
-                        handler: Arc::clone(&listener.handler),
-                        event: Arc::clone(event),
-                        event_name,
-                        meta: listener_meta,
-                        handler_timeout,
-                        notify_tx: dispatch_ctx.notify_tx.clone(),
-                        concurrency_semaphore: semaphore,
-                    });
+                    worker.send(WorkItem::from_data(
+                        WorkItemData {
+                            handler: Arc::clone(&listener.handler),
+                            event: Arc::clone(event),
+                            event_name,
+                            meta: listener_meta,
+                            handler_timeout,
+                            notify_tx: dispatch_ctx.notify_tx.clone(),
+                            concurrency_semaphore: semaphore,
+                        },
+                        Arc::clone(dispatch_ctx.tracker),
+                    ));
                 } else {
                     let tracker = Arc::clone(dispatch_ctx.tracker);
                     let handler = Arc::clone(&listener.handler);
@@ -318,8 +327,14 @@ pub(crate) async fn dispatch_with_snapshot(
     } else {
         for (_id, mw) in snapshot.global_middlewares.iter() {
             let decision = match mw {
-                ErasedMiddleware::Async(f) => f(event_name, Arc::clone(&event)).await,
-                ErasedMiddleware::Sync(f) => f(event_name, event.as_ref()),
+                ErasedMiddleware::Async(f) => match AssertUnwindSafe(f(event_name, Arc::clone(&event))).catch_unwind().await {
+                    Ok(decision) => decision,
+                    Err(panic_payload) => return Err(middleware_panic_error(panic_payload)),
+                },
+                ErasedMiddleware::Sync(f) => match catch_unwind(AssertUnwindSafe(|| f(event_name, event.as_ref()))) {
+                    Ok(decision) => decision,
+                    Err(panic_payload) => return Err(middleware_panic_error(panic_payload)),
+                },
             };
             if let MiddlewareDecision::Reject(reason) = decision {
                 return Err(EventBusError::MiddlewareRejected(reason));
@@ -334,8 +349,14 @@ pub(crate) async fn dispatch_with_snapshot(
     if !slot.middlewares.is_empty() {
         for slot_mw in slot.middlewares.iter() {
             let decision = match &slot_mw.middleware {
-                TypedMiddlewareEntry::Async(mw) => mw(event_name, Arc::clone(&event)).await,
-                TypedMiddlewareEntry::Sync(mw) => mw(event_name, event.as_ref()),
+                TypedMiddlewareEntry::Async(mw) => match AssertUnwindSafe(mw(event_name, Arc::clone(&event))).catch_unwind().await {
+                    Ok(decision) => decision,
+                    Err(panic_payload) => return Err(middleware_panic_error(panic_payload)),
+                },
+                TypedMiddlewareEntry::Sync(mw) => match catch_unwind(AssertUnwindSafe(|| mw(event_name, event.as_ref()))) {
+                    Ok(decision) => decision,
+                    Err(panic_payload) => return Err(middleware_panic_error(panic_payload)),
+                },
             };
             if let MiddlewareDecision::Reject(reason) = decision {
                 return Err(EventBusError::MiddlewareRejected(reason));
@@ -371,7 +392,10 @@ where
     } else {
         for (_id, mw) in snapshot.global_middlewares.iter() {
             let decision = match mw {
-                ErasedMiddleware::Sync(f) => f(event_name, event_any),
+                ErasedMiddleware::Sync(f) => match catch_unwind(AssertUnwindSafe(|| f(event_name, event_any))) {
+                    Ok(decision) => decision,
+                    Err(panic_payload) => return Err(middleware_panic_error(panic_payload)),
+                },
                 ErasedMiddleware::Async(_) => {
                     debug_assert!(false, "sync-only path entered with async global middleware");
                     return Err(EventBusError::MiddlewareRejected(
@@ -392,7 +416,10 @@ where
     if !slot.middlewares.is_empty() {
         for slot_mw in slot.middlewares.iter() {
             let decision = match &slot_mw.middleware {
-                TypedMiddlewareEntry::Sync(mw) => mw(event_name, event_any),
+                TypedMiddlewareEntry::Sync(mw) => match catch_unwind(AssertUnwindSafe(|| mw(event_name, event_any))) {
+                    Ok(decision) => decision,
+                    Err(panic_payload) => return Err(middleware_panic_error(panic_payload)),
+                },
                 TypedMiddlewareEntry::Async(_) => {
                     debug_assert!(false, "sync-only path entered with async typed middleware");
                     return Err(EventBusError::MiddlewareRejected(
