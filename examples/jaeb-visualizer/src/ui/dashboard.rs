@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Widget};
 
 use crate::metrics::VisualizationState;
 use crate::ui::palette;
-use crate::ui::widgets::{flow, pressure, throughput_chart};
+use crate::ui::widgets::{latency_chart, pressure, throughput_chart};
 
 pub struct DashboardState {
     pub dead_letter_scroll: usize,
@@ -131,16 +131,66 @@ fn counter_line(label: &str, value: u64, color: ratatui::style::Color) -> Line<'
 }
 
 fn render_right_panel(area: Rect, buf: &mut Buffer, viz: &VisualizationState) {
-    let [pressure_area, flow_area] = Layout::vertical([Constraint::Length(4), Constraint::Min(4)]).areas(area);
+    let [pressure_area, latency_area] = Layout::vertical([Constraint::Length(4), Constraint::Min(4)]).areas(area);
     pressure::render_pressure(pressure_area, buf, viz);
-    flow::render_flow(flow_area, buf, viz);
+    render_latency_summary(latency_area, buf, viz);
+}
+
+fn render_latency_summary(area: Rect, buf: &mut Buffer, viz: &VisualizationState) {
+    let block = Block::default()
+        .title(" Latency (handler avg) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette::BORDER_ALT))
+        .style(Style::default().bg(palette::PANEL_BG));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    if inner.height < 1 {
+        return;
+    }
+
+    let avg_str = match viz.avg_latency_ms() {
+        Some(v) => format!("{v:.1} ms"),
+        None => "-".into(),
+    };
+    let min_str = match viz.global_min_latency_ms() {
+        Some(v) => format!("{v:.0} ms"),
+        None => "-".into(),
+    };
+    let max_ms = viz.global_max_latency_ms();
+    let max_str = if max_ms > 0.0 { format!("{max_ms:.0} ms") } else { "-".into() };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("  {:<8}", "avg:"), Style::default().fg(palette::MUTED)),
+            Span::styled(
+                format!("{:>10}", avg_str),
+                Style::default().fg(palette::VALUE).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("  {:<8}", "min:"), Style::default().fg(palette::MUTED)),
+            Span::styled(
+                format!("{:>10}", min_str),
+                Style::default().fg(palette::RUNNING).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("  {:<8}", "max:"), Style::default().fg(palette::MUTED)),
+            Span::styled(
+                format!("{:>10}", max_str),
+                Style::default().fg(palette::WARN).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+    Paragraph::new(lines).render(inner, buf);
 }
 
 fn render_handler_panels(area: Rect, buf: &mut Buffer, viz: &VisualizationState, dash: &DashboardState) {
     let rows = viz.handler_metrics.len();
     if rows == 0 {
         Block::default()
-            .title(" Per-handler Throughput ")
+            .title(" Per-handler Throughput & Latency ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(palette::BORDER_ALT))
             .render(area, buf);
@@ -171,9 +221,10 @@ fn render_handler_panels(area: Rect, buf: &mut Buffer, viz: &VisualizationState,
     let chunks = Layout::vertical(constraints).split(area);
     let visible_rows = chunks.len().saturating_sub(1).min(remaining_rows);
     for (idx, handler) in viz.handler_metrics.iter().skip(dash.handler_scroll).take(visible_rows).enumerate() {
-        let [chart_area, lane_area] = Layout::horizontal([Constraint::Percentage(76), Constraint::Percentage(24)]).areas(chunks[idx]);
-        throughput_chart::render_handler_throughput(chart_area, buf, handler, dash.handler_scroll + idx, viz.sim_done);
-        flow::render_handler_lane(lane_area, buf, handler, dash.handler_scroll + idx);
+        let [throughput_area, lat_area] = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(chunks[idx]);
+        let color_idx = dash.handler_scroll + idx;
+        throughput_chart::render_handler_throughput(throughput_area, buf, handler, color_idx, viz.sim_done);
+        latency_chart::render_handler_latency(lat_area, buf, handler, color_idx, viz.sim_done);
     }
 
     draw_handler_scrollbar(area, buf, rows, visible_rows, dash.handler_scroll);
@@ -182,13 +233,10 @@ fn render_handler_panels(area: Rect, buf: &mut Buffer, viz: &VisualizationState,
     let legend = Line::from(vec![
         Span::styled("  Legend: ", Style::default().fg(palette::WARN)),
         Span::styled("ev/s", Style::default().fg(palette::BRAND).add_modifier(Modifier::BOLD)),
-        Span::styled(" (0.5s samples)  ", Style::default().fg(palette::MUTED)),
-        Span::styled(">", Style::default().fg(palette::VALUE).add_modifier(Modifier::BOLD)),
-        Span::styled(" in-flight  ", Style::default().fg(palette::MUTED)),
-        Span::styled("+", Style::default().fg(palette::RUNNING).add_modifier(Modifier::BOLD)),
-        Span::styled(" success  ", Style::default().fg(palette::MUTED)),
-        Span::styled("x", Style::default().fg(palette::ERROR).add_modifier(Modifier::BOLD)),
-        Span::styled(" failure", Style::default().fg(palette::MUTED)),
+        Span::styled(" throughput (left)  ", Style::default().fg(palette::MUTED)),
+        Span::styled("ms", Style::default().fg(palette::VALUE).add_modifier(Modifier::BOLD)),
+        Span::styled(" avg latency (right)  ", Style::default().fg(palette::MUTED)),
+        Span::styled("0.5s samples", Style::default().fg(palette::MUTED)),
         Span::styled(
             if hidden > 0 {
                 format!("  scroll PgDn ({hidden} more)")

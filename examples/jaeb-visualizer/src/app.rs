@@ -132,12 +132,8 @@ impl App {
                 }
             }
 
-            // Tick: update flow blips
+            // Tick
             if last_tick.elapsed() >= tick_rate {
-                if let AppPhase::Running { viz, .. } = &self.phase {
-                    let mut viz = viz.lock().expect("viz lock poisoned");
-                    viz.tick_flow_blips(tick_rate.as_secs_f64());
-                }
                 last_tick = Instant::now();
             }
         }

@@ -25,9 +25,6 @@ pub struct VisualizationState {
     // Channel pressure
     pub buffer_size: usize,
 
-    // Global flow animation blips
-    pub flow_blips: VecDeque<FlowBlip>,
-
     // Handler panels
     pub handler_metrics: Vec<HandlerViz>,
 
@@ -52,8 +49,6 @@ pub struct VisualizationState {
 
 const MAX_SPARKLINE_SAMPLES: usize = 60;
 const MAX_DEAD_LETTERS: usize = 200;
-const MAX_FLOW_BLIPS: usize = 30;
-const MAX_HANDLER_FLOW_BLIPS: usize = 20;
 
 impl VisualizationState {
     pub fn new(buffer_size: usize, listeners: &[ListenerConfig]) -> Self {
@@ -69,7 +64,6 @@ impl VisualizationState {
             last_sample_published: 0,
             last_sample_bp: 0,
             buffer_size,
-            flow_blips: VecDeque::with_capacity(MAX_FLOW_BLIPS),
             handler_metrics: listeners
                 .iter()
                 .enumerate()
@@ -105,6 +99,29 @@ impl VisualizationState {
         if elapsed > 0.0 { self.total_published as f64 / elapsed } else { 0.0 }
     }
 
+    /// Overall average handler latency across all handlers (latest sample window).
+    pub fn avg_latency_ms(&self) -> Option<f64> {
+        let active: Vec<f64> = self
+            .handler_metrics
+            .iter()
+            .filter_map(|h| h.latency_history.back().copied().filter(|&v| v > 0.0))
+            .collect();
+        if active.is_empty() {
+            return None;
+        }
+        Some(active.iter().sum::<f64>() / active.len() as f64)
+    }
+
+    /// Overall min latency across all handlers (all-time).
+    pub fn global_min_latency_ms(&self) -> Option<f64> {
+        self.handler_metrics.iter().filter_map(|h| h.min_latency_ms).reduce(f64::min)
+    }
+
+    /// Overall max latency across all handlers (all-time).
+    pub fn global_max_latency_ms(&self) -> f64 {
+        self.handler_metrics.iter().map(|h| h.max_latency_ms).fold(0.0_f64, f64::max)
+    }
+
     pub fn freeze_on_done(&mut self) {
         if self.frozen_elapsed_secs.is_some() {
             return;
@@ -114,6 +131,7 @@ impl VisualizationState {
         self.frozen_avg_rate = Some(if elapsed > 0.0 { self.total_published as f64 / elapsed } else { 0.0 });
         for handler in &mut self.handler_metrics {
             handler.frozen_rate = Some(handler.current_rate());
+            handler.frozen_avg_latency_ms = handler.latency_history.back().copied();
         }
     }
 
@@ -129,7 +147,7 @@ impl VisualizationState {
         (self.bus_publish_in_flight as f64 / capacity as f64).min(1.0)
     }
 
-    /// Called periodically (every 500ms) to sample throughput deltas.
+    /// Called periodically (every 500ms) to sample throughput and latency deltas.
     pub fn sample_throughput(&mut self) {
         let pub_delta = self.total_published - self.last_sample_published;
         let bp_delta = self.backpressure_hits - self.last_sample_bp;
@@ -151,13 +169,6 @@ impl VisualizationState {
         }
     }
 
-    pub fn add_flow_blip(&mut self, blip: FlowBlip) {
-        self.flow_blips.push_back(blip);
-        if self.flow_blips.len() > MAX_FLOW_BLIPS {
-            self.flow_blips.pop_front();
-        }
-    }
-
     pub fn add_dead_letter(&mut self, entry: DeadLetterEntry) {
         self.dead_letters.push_back(entry);
         if self.dead_letters.len() > MAX_DEAD_LETTERS {
@@ -166,53 +177,35 @@ impl VisualizationState {
     }
 
     pub fn on_handler_started(&mut self, listener_idx: usize, event_type_idx: usize, seq: u64, at: Instant) {
+        let _ = (event_type_idx, seq, at);
         if let Some(handler) = self.handler_metrics.get_mut(listener_idx) {
             handler.in_flight += 1;
-            handler.add_flow_blip(HandlerFlowBlip {
-                event_type_idx,
-                seq,
-                progress: 0.0,
-                spawned_at: at,
-                ttl_secs: 1.6,
-                success: None,
-            });
         }
     }
 
-    pub fn on_handler_completed(&mut self, listener_idx: usize, seq: u64) {
+    pub fn on_handler_completed(&mut self, listener_idx: usize, duration_ms: u64) {
         if let Some(handler) = self.handler_metrics.get_mut(listener_idx) {
             handler.total_handled += 1;
             handler.completed_since_sample += 1;
             handler.in_flight = handler.in_flight.saturating_sub(1);
-            if let Some(blip) = handler.flow_blips.iter_mut().rev().find(|blip| blip.seq == seq && blip.success.is_none()) {
-                blip.success = Some(true);
+            let dur = duration_ms as f64;
+            handler.latency_sum_since_sample += dur;
+            handler.latency_count_since_sample += 1;
+            handler.min_latency_ms = Some(match handler.min_latency_ms {
+                Some(prev) => prev.min(dur),
+                None => dur,
+            });
+            if dur > handler.max_latency_ms {
+                handler.max_latency_ms = dur;
             }
         }
     }
 
-    pub fn on_handler_failed(&mut self, listener_idx: usize, seq: u64) {
+    pub fn on_handler_failed(&mut self, listener_idx: usize) {
         if let Some(handler) = self.handler_metrics.get_mut(listener_idx) {
             handler.total_failed += 1;
             handler.failed_since_sample += 1;
             handler.in_flight = handler.in_flight.saturating_sub(1);
-            if let Some(blip) = handler.flow_blips.iter_mut().rev().find(|blip| blip.seq == seq && blip.success.is_none()) {
-                blip.success = Some(false);
-            }
-        }
-    }
-
-    /// Advance flow blips and remove completed ones.
-    pub fn tick_flow_blips(&mut self, dt_secs: f64) {
-        for blip in self.flow_blips.iter_mut() {
-            blip.progress += dt_secs / blip.ttl_secs;
-        }
-        self.flow_blips.retain(|b| b.progress < 1.0);
-
-        for handler in &mut self.handler_metrics {
-            for blip in handler.flow_blips.iter_mut() {
-                blip.progress += dt_secs / blip.ttl_secs;
-            }
-            handler.flow_blips.retain(|b| b.progress < 1.0);
         }
     }
 }
@@ -226,11 +219,20 @@ pub struct HandlerViz {
     pub total_handled: u64,
     pub total_failed: u64,
     pub in_flight: i64,
+
+    // Throughput
     pub throughput_history: VecDeque<u64>,
     pub completed_since_sample: u64,
     pub failed_since_sample: u64,
-    pub flow_blips: VecDeque<HandlerFlowBlip>,
     pub frozen_rate: Option<f64>,
+
+    // Latency (avg per 500ms window, milliseconds)
+    pub latency_history: VecDeque<f64>,
+    pub latency_sum_since_sample: f64,
+    pub latency_count_since_sample: u64,
+    pub min_latency_ms: Option<f64>,
+    pub max_latency_ms: f64,
+    pub frozen_avg_latency_ms: Option<f64>,
 }
 
 impl HandlerViz {
@@ -245,17 +247,38 @@ impl HandlerViz {
             throughput_history: VecDeque::with_capacity(MAX_SPARKLINE_SAMPLES),
             completed_since_sample: 0,
             failed_since_sample: 0,
-            flow_blips: VecDeque::with_capacity(MAX_HANDLER_FLOW_BLIPS),
             frozen_rate: None,
+            latency_history: VecDeque::with_capacity(MAX_SPARKLINE_SAMPLES),
+            latency_sum_since_sample: 0.0,
+            latency_count_since_sample: 0,
+            min_latency_ms: None,
+            max_latency_ms: 0.0,
+            frozen_avg_latency_ms: None,
         }
     }
 
     pub fn sample(&mut self) {
+        // Throughput sample
         self.throughput_history.push_back(self.completed_since_sample);
         self.completed_since_sample = 0;
         self.failed_since_sample = 0;
         if self.throughput_history.len() > MAX_SPARKLINE_SAMPLES {
             self.throughput_history.pop_front();
+        }
+
+        // Latency sample: compute avg for this window
+        let avg_latency = if self.latency_count_since_sample > 0 {
+            self.latency_sum_since_sample / self.latency_count_since_sample as f64
+        } else {
+            // Carry forward the previous value so the chart doesn't drop to 0 during idle windows
+            self.latency_history.back().copied().unwrap_or(0.0)
+        };
+        self.latency_sum_since_sample = 0.0;
+        self.latency_count_since_sample = 0;
+
+        self.latency_history.push_back(avg_latency);
+        if self.latency_history.len() > MAX_SPARKLINE_SAMPLES {
+            self.latency_history.pop_front();
         }
     }
 
@@ -263,33 +286,10 @@ impl HandlerViz {
         self.throughput_history.back().map(|v| *v as f64 / 0.5).unwrap_or(0.0)
     }
 
-    pub fn add_flow_blip(&mut self, blip: HandlerFlowBlip) {
-        self.flow_blips.push_back(blip);
-        if self.flow_blips.len() > MAX_HANDLER_FLOW_BLIPS {
-            self.flow_blips.pop_front();
-        }
+    /// Latest avg latency from the rolling window, or the frozen value after done.
+    pub fn current_avg_latency_ms(&self) -> f64 {
+        self.frozen_avg_latency_ms.or_else(|| self.latency_history.back().copied()).unwrap_or(0.0)
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct FlowBlip {
-    pub event_type_idx: usize,
-    pub progress: f64,
-    #[allow(dead_code)]
-    pub spawned_at: Instant,
-    pub ttl_secs: f64,
-}
-
-#[derive(Clone, Debug)]
-pub struct HandlerFlowBlip {
-    #[allow(dead_code)]
-    pub event_type_idx: usize,
-    pub seq: u64,
-    pub progress: f64,
-    #[allow(dead_code)]
-    pub spawned_at: Instant,
-    pub ttl_secs: f64,
-    pub success: Option<bool>,
 }
 
 #[derive(Clone, Debug)]

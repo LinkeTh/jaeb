@@ -13,7 +13,6 @@ pub const VALUE: Color = Color::Rgb(192, 255, 255);
 
 pub const BORDER: Color = Color::Rgb(147, 63, 255);
 pub const BORDER_ALT: Color = Color::Rgb(0, 210, 255);
-pub const TRACK: Color = Color::Rgb(51, 255, 153);
 
 pub const HANDLER_COLORS: [Color; 8] = [
     Color::Rgb(0, 255, 255),

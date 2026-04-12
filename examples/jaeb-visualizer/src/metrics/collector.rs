@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::config::types::ListenerConfig;
-use crate::metrics::state::{DeadLetterEntry, FlowBlip, VisualizationState};
+use crate::metrics::state::{DeadLetterEntry, VisualizationState};
 use crate::sim::SimEvent;
 
 /// Drains SimEvent from the channel and updates VisualizationState.
@@ -18,14 +18,8 @@ pub async fn run_collector(
         let mut s = state.lock().expect("viz state lock poisoned");
         match event {
             SimEvent::Published { event_type_idx, seq, at } => {
+                let _ = (event_type_idx, seq, at);
                 s.total_published += 1;
-                s.add_flow_blip(FlowBlip {
-                    event_type_idx,
-                    progress: 0.0,
-                    spawned_at: at,
-                    ttl_secs: 1.5,
-                });
-                let _ = seq;
             }
             SimEvent::HandlerStarted {
                 listener_idx,
@@ -37,16 +31,23 @@ pub async fn run_collector(
                 s.in_flight += 1;
                 s.on_handler_started(listener_idx, event_type_idx, seq, at);
             }
-            SimEvent::HandlerCompleted { listener_idx, seq, .. } => {
+            SimEvent::HandlerCompleted {
+                listener_idx,
+                seq,
+                duration_ms,
+                ..
+            } => {
+                let _ = seq;
                 s.total_handled += 1;
                 s.in_flight = s.in_flight.saturating_sub(1);
-                s.on_handler_completed(listener_idx, seq);
+                s.on_handler_completed(listener_idx, duration_ms);
                 s.total_processed.fetch_add(1, Ordering::Relaxed);
             }
             SimEvent::HandlerFailed { listener_idx, seq, .. } => {
+                let _ = seq;
                 s.total_failed += 1;
                 s.in_flight = s.in_flight.saturating_sub(1);
-                s.on_handler_failed(listener_idx, seq);
+                s.on_handler_failed(listener_idx);
             }
             SimEvent::DeadLetterReceived {
                 listener,
@@ -96,7 +97,7 @@ pub async fn run_collector(
     }
 }
 
-/// Periodically samples throughput and prunes old data. Call from a separate spawned task.
+/// Periodically samples throughput and latency. Call from a separate spawned task.
 pub async fn run_sampler(state: Arc<Mutex<VisualizationState>>, bus: jaeb::EventBus) {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
