@@ -494,6 +494,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-integration-macros"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "jaeb",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "axum-macros"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

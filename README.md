@@ -194,6 +194,7 @@ Core policy types:
 - `examples/panic-safety` - panic handling behavior in handlers
 - `examples/subscription-lifecycle` - subscribe/unsubscribe lifecycle
 - `examples/axum-integration` - axum REST app publishing domain events
+- `examples/axum-integration-macros` - axum REST app using `#[handler]` + `Dep<T>` DI
 - `examples/macro-handlers` - standalone `#[handler]` + `#[dead_letter_handler]` with builder
 - `examples/jaeb-demo` - full demo with tracing + metrics exporter
 - `examples/summer-jaeb-demo` - summer-rs plugin + `#[event_listener]`

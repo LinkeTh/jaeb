@@ -36,6 +36,7 @@ members = [
     "examples/macro-handlers",
     "examples/jaeb-visualizer",
     "examples/axum-integration",
+    "examples/axum-integration-macros",
     "examples/observability-stack",
     "summer-jaeb-macros",
     "summer-jaeb",
