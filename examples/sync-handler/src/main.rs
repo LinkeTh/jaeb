@@ -22,7 +22,7 @@ struct FirstHandler(Arc<AtomicUsize>);
 struct SecondHandler(Arc<AtomicUsize>);
 
 impl SyncEventHandler<OrderPlaced> for FirstHandler {
-    fn handle(&self, event: &OrderPlaced) -> HandlerResult {
+    fn handle(&self, event: &OrderPlaced, _bus: &EventBus) -> HandlerResult {
         let seq = self.0.fetch_add(1, Ordering::SeqCst);
         println!("[seq={seq}] first handler: order {} placed", event.id);
         Ok(())
@@ -30,7 +30,7 @@ impl SyncEventHandler<OrderPlaced> for FirstHandler {
 }
 
 impl SyncEventHandler<OrderPlaced> for SecondHandler {
-    fn handle(&self, event: &OrderPlaced) -> HandlerResult {
+    fn handle(&self, event: &OrderPlaced, _bus: &EventBus) -> HandlerResult {
         let seq = self.0.fetch_add(1, Ordering::SeqCst);
         println!("[seq={seq}] second handler: order {} placed", event.id);
         Ok(())
@@ -43,7 +43,7 @@ impl SyncEventHandler<OrderPlaced> for SecondHandler {
 async fn main() {
     let counter = Arc::new(AtomicUsize::new(0));
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let _ = bus
         .subscribe::<OrderPlaced, _, _>(FirstHandler(Arc::clone(&counter)))

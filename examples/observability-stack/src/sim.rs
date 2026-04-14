@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use jaeb::EventBus;
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::watch;
 use tracing::{Instrument, info, info_span};
 use uuid::Uuid;

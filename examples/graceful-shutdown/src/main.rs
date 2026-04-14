@@ -20,7 +20,7 @@ struct SlowJob;
 
 struct QuickHandler;
 impl EventHandler<QuickJob> for QuickHandler {
-    async fn handle(&self, _event: &QuickJob) -> HandlerResult {
+    async fn handle(&self, _event: &QuickJob, _bus: &EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(50)).await;
         println!("quick job completed");
         Ok(())
@@ -29,7 +29,7 @@ impl EventHandler<QuickJob> for QuickHandler {
 
 struct VerySlowHandler;
 impl EventHandler<SlowJob> for VerySlowHandler {
-    async fn handle(&self, _event: &SlowJob) -> HandlerResult {
+    async fn handle(&self, _event: &SlowJob, _bus: &EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_secs(5)).await;
         println!("slow job completed");
         Ok(())
@@ -43,7 +43,6 @@ async fn main() {
     // Scenario A: handlers finish before the timeout — clean drain.
     {
         let bus = EventBus::builder()
-            .buffer_size(64)
             .shutdown_timeout(Duration::from_secs(2))
             .build()
             .await
@@ -61,7 +60,6 @@ async fn main() {
     // Scenario B: handler exceeds timeout — bus returns ShutdownTimeout.
     {
         let bus = EventBus::builder()
-            .buffer_size(64)
             .shutdown_timeout(Duration::from_millis(200))
             .build()
             .await
@@ -77,7 +75,7 @@ async fn main() {
     }
 
     // After shutdown, further publishes return Stopped.
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     bus.shutdown().await.expect("shutdown failed");
     match bus.publish(QuickJob).await {
         Err(EventBusError::Stopped) => println!("post-shutdown publish: Stopped (expected)"),

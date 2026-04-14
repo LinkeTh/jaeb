@@ -49,7 +49,7 @@ impl TypedSyncMiddleware<Order> for VipOnlyMiddleware {
 
 struct OrderHandler;
 impl SyncEventHandler<Order> for OrderHandler {
-    fn handle(&self, event: &Order) -> HandlerResult {
+    fn handle(&self, event: &Order, _bus: &EventBus) -> HandlerResult {
         println!("handler: processing order {}", event.id);
         Ok(())
     }
@@ -57,7 +57,7 @@ impl SyncEventHandler<Order> for OrderHandler {
 
 struct MetricHandler;
 impl SyncEventHandler<Metric> for MetricHandler {
-    fn handle(&self, event: &Metric) -> HandlerResult {
+    fn handle(&self, event: &Metric, _bus: &EventBus) -> HandlerResult {
         println!("handler: recorded metric {}", event.name);
         Ok(())
     }
@@ -67,7 +67,7 @@ impl SyncEventHandler<Metric> for MetricHandler {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let _ = bus.add_sync_middleware(LogAllMiddleware).await.expect("add global middleware failed");
     let _ = bus

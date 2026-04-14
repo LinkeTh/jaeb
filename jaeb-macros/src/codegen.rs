@@ -21,13 +21,29 @@ pub(crate) fn resolved_struct_ident(fn_name: &Ident) -> Ident {
 
 // ── Handler trait impls (no deps — handler struct IS the handler) ─────────────
 
-pub(crate) fn gen_async_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, handler_name: Option<&str>) -> TokenStream2 {
+pub(crate) fn gen_async_handler_impl(
+    handler_ident: &Ident,
+    event_ty: &Type,
+    fn_name: &Ident,
+    handler_name: Option<&str>,
+    has_bus: bool,
+) -> TokenStream2 {
     let name_method = gen_name_method(handler_name);
+    let bus_param = if has_bus {
+        quote! { bus }
+    } else {
+        quote! { _bus }
+    };
+    let bus_call_arg = if has_bus {
+        quote! { , bus }
+    } else {
+        quote! {}
+    };
 
     quote! {
         impl ::jaeb::EventHandler<#event_ty> for #handler_ident {
-            async fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
-                #fn_name(event).await
+            async fn handle(&self, event: &#event_ty, #bus_param: &::jaeb::EventBus) -> ::jaeb::HandlerResult {
+                #fn_name(event #bus_call_arg).await
             }
 
             #name_method
@@ -35,13 +51,29 @@ pub(crate) fn gen_async_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_
     }
 }
 
-pub(crate) fn gen_sync_handler_impl(handler_ident: &Ident, event_ty: &Type, fn_name: &Ident, handler_name: Option<&str>) -> TokenStream2 {
+pub(crate) fn gen_sync_handler_impl(
+    handler_ident: &Ident,
+    event_ty: &Type,
+    fn_name: &Ident,
+    handler_name: Option<&str>,
+    has_bus: bool,
+) -> TokenStream2 {
     let name_method = gen_name_method(handler_name);
+    let bus_param = if has_bus {
+        quote! { bus }
+    } else {
+        quote! { _bus }
+    };
+    let bus_call_arg = if has_bus {
+        quote! { , bus }
+    } else {
+        quote! {}
+    };
 
     quote! {
         impl ::jaeb::SyncEventHandler<#event_ty> for #handler_ident {
-            fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
-                #fn_name(event)
+            fn handle(&self, event: &#event_ty, #bus_param: &::jaeb::EventBus) -> ::jaeb::HandlerResult {
+                #fn_name(event #bus_call_arg)
             }
 
             #name_method
@@ -99,6 +131,7 @@ pub(crate) fn gen_async_handler_impl_resolved(
     inner_fn_ident: &Ident,
     dep_params: &[DepParam],
     handler_name: Option<&str>,
+    has_bus: bool,
 ) -> TokenStream2 {
     let call_args: Vec<TokenStream2> = dep_params
         .iter()
@@ -108,11 +141,21 @@ pub(crate) fn gen_async_handler_impl_resolved(
         })
         .collect();
     let name_method = gen_name_method(handler_name);
+    let bus_param = if has_bus {
+        quote! { bus }
+    } else {
+        quote! { _bus }
+    };
+    let bus_call_arg = if has_bus {
+        quote! { , bus }
+    } else {
+        quote! {}
+    };
 
     quote! {
         impl ::jaeb::EventHandler<#event_ty> for #resolved_ident {
-            async fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
-                #inner_fn_ident(event, #(#call_args),*).await
+            async fn handle(&self, event: &#event_ty, #bus_param: &::jaeb::EventBus) -> ::jaeb::HandlerResult {
+                #inner_fn_ident(event, #(#call_args),* #bus_call_arg).await
             }
 
             #name_method
@@ -127,6 +170,7 @@ pub(crate) fn gen_sync_handler_impl_resolved(
     inner_fn_ident: &Ident,
     dep_params: &[DepParam],
     handler_name: Option<&str>,
+    has_bus: bool,
 ) -> TokenStream2 {
     let call_args: Vec<TokenStream2> = dep_params
         .iter()
@@ -136,11 +180,21 @@ pub(crate) fn gen_sync_handler_impl_resolved(
         })
         .collect();
     let name_method = gen_name_method(handler_name);
+    let bus_param = if has_bus {
+        quote! { bus }
+    } else {
+        quote! { _bus }
+    };
+    let bus_call_arg = if has_bus {
+        quote! { , bus }
+    } else {
+        quote! {}
+    };
 
     quote! {
         impl ::jaeb::SyncEventHandler<#event_ty> for #resolved_ident {
-            fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
-                #inner_fn_ident(event, #(#call_args),*)
+            fn handle(&self, event: &#event_ty, #bus_param: &::jaeb::EventBus) -> ::jaeb::HandlerResult {
+                #inner_fn_ident(event, #(#call_args),* #bus_call_arg)
             }
 
             #name_method
@@ -319,7 +373,7 @@ fn gen_name_method(handler_name: Option<&str>) -> TokenStream2 {
 
 fn gen_subscription_policy(attrs: &HandlerAttrs, is_async: bool) -> TokenStream2 {
     let mut chain = if is_async {
-        quote! { ::jaeb::SubscriptionPolicy::default() }
+        quote! { ::jaeb::AsyncSubscriptionPolicy::default() }
     } else {
         quote! { ::jaeb::SyncSubscriptionPolicy::default() }
     };

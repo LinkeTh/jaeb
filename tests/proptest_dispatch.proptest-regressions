@@ -1,0 +1,25 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 32fcb5095708f532c1c80691cc9c8f124385e09c14525dca9516e5818be5e780 # shrinks to listeners = 1, events = 1
+cc 2c377b687b3110fa72250929a916fb4075d6404c2b015b57330bbc0c6d8332b9 # shrinks to dead_letter_enabled = false, fail_count = 0, max_retries = 0
+cc 572719887dfba9047d7e0340333a52d2a0b054f34c4c0fe58a67650713d2e962 # shrinks to p1 = 0, p2 = 0, p3 = 0
+cc 1ae380bd87c1fd3afdcb65d53fc0bf1992a79f831161a13c62b9e7c0a17dcb2e # shrinks to dead_letter_enabled = true, fail_count = 0, max_retries = 0
+cc 920daebca228657135f27ac4771649a9b5ce9e46b3e42e91a2783a41f473f398 # shrinks to p1 = 0, p2 = 0, p3 = 0
+cc 9fef0115477f21653cfafde6ec2da28bf9a7fe28b02214a296c4e57456892a9e # shrinks to listeners = 1, events = 1
+cc cfc3950406be86c1e659b94efea22b2ec0f68955b65f1970e30587371e3753b3 # shrinks to max_retries = 1
+cc f115a09fe1b39cdcfb235473ee9785c17794cb4b2f762fb5eb2d1985a96cc077 # shrinks to max_retries = 0
+cc 54ffd83a1211f1b30a91a1ccb4b6fc5d304481a429ec1a812ff0cc0d1a913ae1 # shrinks to listeners = 4, events = 1
+cc 41e005a6372b2cb05b0e9cb619afb0cbd6f36ac9b76d8169e2d6b62a75003568 # shrinks to events = 3, values = [178, 369, 764, 199, 479, 23, 104, 262, 511, 783, 220, 300, 823, 668, 258, 65, 79, 666, 417, 225, 820, 132, 678, 702, 981, 949, 508, 976, 182, 202, 13, 294, 409, 127, 502, 714, 554, 429, 37]
+cc d5566f8f8f84ae25041f4cddd1d01a768e796d0901f1f749ac4f7f261243a50f # shrinks to dead_letter_enabled = true, fail_count = 0, max_retries = 0
+cc 53ee6dd1142f4cc0a880c8ccbbc3c85d469807b233f4766a7d8895ec2a604f9d # shrinks to listeners = 2, events = 1
+cc 39ec8f197b051416af87b0f11173d04fbfcb5c13ed84b01cd94eb5d5fd4b1477 # shrinks to events = 11, values = [24, 303, 81, 978, 379, 161, 243, 835, 963, 203, 851, 184, 911, 581, 700, 579, 56, 837, 337, 740, 340, 335, 409, 452, 666, 70, 540, 671, 934, 719, 848, 946, 62, 303, 514, 921, 95, 311, 690, 314, 729, 501, 491, 39, 436, 394, 379, 75, 554]
+cc df43d54bb5e1e23200845611222347536e861176e1021be811dbe52c689f6fa0 # shrinks to max_retries = 2
+cc fe44003803975ce5a8b9df70466bcdc0c9cac0887eee848e6a90f3b1fff8c588 # shrinks to dead_letter_enabled = false, fail_count = 2, max_retries = 3
+cc d5315cf8d8efa1f57a67232c83ae822a282ceb4c496aad3923785940d60f983f # shrinks to first_batch = 4, second_batch = 1
+cc 278e58e239b846185bf9cf8366dfed4dbee962c755c2ee8a978eef437f8521e7 # shrinks to listeners = 4, events = 1
+cc 091bedce29c9968b506bfe1bc097570d133b578f6c56e46c5f7abdcd4f4bba52 # shrinks to events = 11, values = [637, 216, 932, 608, 207, 808, 313, 402, 376, 129, 58, 54, 800, 874, 935, 792, 984, 634, 815, 401, 574, 103, 732, 25, 173, 292, 38, 782, 446, 510, 461, 826, 795, 676, 928, 488, 924, 759, 265, 223, 774, 929, 607, 307, 733]
+cc 73bad436a73408186a25e35572d722e2f1a3505dbbf04cb10dd28a4142743f40 # shrinks to p1 = -6, p2 = 0, p3 = 5

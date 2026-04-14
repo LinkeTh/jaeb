@@ -1,0 +1,13 @@
+error: #[dead_letter_handler] first parameter must be `&DeadLetter`
+ --> tests/compile_fail/dead_letter_wrong_first_param.rs:9:26
+  |
+9 | fn on_dead_letter(event: &MyEvent) -> HandlerResult {
+  |                          ^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/dead_letter_wrong_first_param.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, dead_letter_handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

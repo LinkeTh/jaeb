@@ -25,18 +25,14 @@ struct NoDepsHandler {
 }
 
 impl EventHandler<TestEvent> for NoDepsHandler {
-    async fn handle(&self, _event: &TestEvent) -> HandlerResult {
+    async fn handle(&self, _event: &TestEvent, _bus: &EventBus) -> HandlerResult {
         self.fired.store(true, Ordering::SeqCst);
         Ok(())
     }
 }
 
 impl HandlerDescriptor for NoDepsHandler {
-    fn register<'a>(
-        &'a self,
-        bus: &'a EventBus,
-        _deps: &'a Deps,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+    fn register<'a>(&'a self, bus: &'a EventBus, _deps: &'a Deps) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
         Box::pin(async move {
             bus.subscribe::<TestEvent, _, _>(NoDepsHandler {
                 fired: Arc::clone(&self.fired),
@@ -51,7 +47,7 @@ impl HandlerDescriptor for NoDepsHandler {
 struct WithDepHandler;
 
 impl EventHandler<TestEvent> for WithDepHandler {
-    async fn handle(&self, _event: &TestEvent) -> HandlerResult {
+    async fn handle(&self, _event: &TestEvent, _bus: &EventBus) -> HandlerResult {
         Ok(())
     }
 }
@@ -61,11 +57,7 @@ struct WithDepDescriptor {
 }
 
 impl HandlerDescriptor for WithDepDescriptor {
-    fn register<'a>(
-        &'a self,
-        bus: &'a EventBus,
-        deps: &'a Deps,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+    fn register<'a>(&'a self, bus: &'a EventBus, deps: &'a Deps) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
         let counter = deps.get::<Counter>().map(|c| Arc::clone(&c.0));
         let seen = Arc::clone(&self.seen);
         Box::pin(async move {
@@ -83,11 +75,7 @@ impl HandlerDescriptor for WithDepDescriptor {
 struct RequiredDepDescriptor;
 
 impl HandlerDescriptor for RequiredDepDescriptor {
-    fn register<'a>(
-        &'a self,
-        _bus: &'a EventBus,
-        deps: &'a Deps,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+    fn register<'a>(&'a self, _bus: &'a EventBus, deps: &'a Deps) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
         // Try to get a dep that is never inserted in relevant tests.
         struct Missing;
         Box::pin(async move {
@@ -104,7 +92,7 @@ struct LogDeadLetters {
 }
 
 impl SyncEventHandler<DeadLetter> for LogDeadLetters {
-    fn handle(&self, _dl: &DeadLetter) -> HandlerResult {
+    fn handle(&self, _dl: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -115,7 +103,7 @@ impl DeadLetterDescriptor for LogDeadLetters {
         &'a self,
         bus: &'a EventBus,
         _deps: &'a Deps,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
         Box::pin(async move {
             bus.subscribe_dead_letters(LogDeadLetters {
                 count: Arc::clone(&self.count),
@@ -141,7 +129,6 @@ async fn handler_registered_via_builder_receives_event() {
     let fired = Arc::new(AtomicBool::new(false));
 
     let bus = EventBus::builder()
-        .buffer_size(16)
         .handler(NoDepsHandler { fired: Arc::clone(&fired) })
         .build()
         .await
@@ -207,12 +194,12 @@ async fn multiple_handlers_all_registered() {
 /// terminal handler failure.
 #[tokio::test]
 async fn dead_letter_handler_registered_via_builder() {
-    use jaeb::{HandlerError, SubscriptionPolicy};
+    use jaeb::HandlerError;
 
     struct AlwaysFails;
 
     impl EventHandler<TestEvent> for AlwaysFails {
-        async fn handle(&self, _event: &TestEvent) -> HandlerResult {
+        async fn handle(&self, _event: &TestEvent, _bus: &EventBus) -> HandlerResult {
             Err(HandlerError::from("always fails"))
         }
     }
@@ -224,10 +211,13 @@ async fn dead_letter_handler_registered_via_builder() {
             &'a self,
             bus: &'a EventBus,
             _deps: &'a Deps,
-        ) -> Pin<Box<dyn std::future::Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Subscription, EventBusError>> + Send + 'a>> {
             Box::pin(async move {
-                bus.subscribe_with_policy::<TestEvent, _, _>(AlwaysFails, SubscriptionPolicy::default().with_max_retries(0).with_dead_letter(true))
-                    .await
+                bus.subscribe_with_policy::<TestEvent, _, _>(
+                    AlwaysFails,
+                    jaeb::AsyncSubscriptionPolicy::default().with_max_retries(0).with_dead_letter(true),
+                )
+                .await
             })
         }
     }

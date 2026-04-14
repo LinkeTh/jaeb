@@ -2,6 +2,9 @@ use std::any::{Any, TypeId, type_name};
 use std::collections::HashMap;
 use std::ops::Deref;
 
+#[cfg(feature = "trace")]
+use tracing::warn;
+
 use crate::error::EventBusError;
 
 /// A type-map container for handler dependencies resolved at bus build time.
@@ -65,7 +68,12 @@ impl Deps {
     /// let deps = Deps::new().insert(Config { timeout_secs: 30 });
     /// ```
     pub fn insert<T: Send + Sync + 'static>(mut self, val: T) -> Self {
-        self.map.insert(TypeId::of::<T>(), Box::new(val));
+        let key = TypeId::of::<T>();
+        #[cfg(feature = "trace")]
+        if self.map.contains_key(&key) {
+            warn!(type_name = type_name::<T>(), "overwriting previously inserted dependency");
+        }
+        self.map.insert(key, Box::new(val));
         self
     }
 

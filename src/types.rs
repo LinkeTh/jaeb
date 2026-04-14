@@ -1,6 +1,8 @@
 use std::any::Any;
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use std::fmt;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -31,8 +33,8 @@ impl fmt::Display for SubscriptionId {
 
 /// Strategy for computing the delay between retry attempts.
 ///
-/// Used by [`SubscriptionPolicy`] to control back-off behaviour when a handler
-/// fails and is eligible for retry.
+/// Used by [`AsyncSubscriptionPolicy`] to control back-off behaviour when a
+/// handler fails and is eligible for retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryStrategy {
     /// Wait a fixed duration between each retry.
@@ -80,13 +82,18 @@ impl RetryStrategy {
                 let delay = base.saturating_mul(factor);
                 let capped = if delay > max { max } else { delay };
                 // Simple jitter: pick a random fraction of the capped delay.
-                // We use a lightweight approach without pulling in the `rand` crate.
+                // We use `RandomState` (per-process random seed) hashed with a
+                // counter to get decent distribution without pulling in `rand`.
                 let nanos = capped.as_nanos() as u64;
                 if nanos == 0 {
                     Duration::ZERO
                 } else {
-                    // Use the current time's nanoseconds as a cheap entropy source.
-                    let entropy = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos() as u64;
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static COUNTER: AtomicU64 = AtomicU64::new(0);
+                    let tick = COUNTER.fetch_add(1, Ordering::Relaxed);
+                    let mut hasher = RandomState::new().build_hasher();
+                    hasher.write_u64(tick);
+                    let entropy = hasher.finish();
                     let jittered = entropy % (nanos + 1);
                     Duration::from_nanos(jittered)
                 }
@@ -95,37 +102,14 @@ impl RetryStrategy {
     }
 }
 
-/// Policy controlling how a subscription is scheduled and how failures are treated.
+/// Subscription policy for asynchronous handlers.
 ///
-/// - `priority`: listener ordering hint. Higher values are dispatched first
-///   within the same dispatch lane (sync or async). Equal priorities keep
-///   FIFO registration order.
-/// - `max_retries`: how many *additional* attempts after the first failure
-///   (0 means no retries). **Only supported for async handlers.** Sync
-///   handlers must use [`SyncSubscriptionPolicy`] instead; attempting to pass a
-///   `SubscriptionPolicy` to a sync handler via
-///   [`subscribe_with_policy`](crate::EventBus::subscribe_with_policy) is a
-///   compile-time error.
-/// - `retry_strategy`: optional [`RetryStrategy`] controlling the delay
-///   between retries. When `None`, retries happen immediately. Ignored when
-///   `max_retries` is 0. Only applies to async handlers.
-/// - `dead_letter`: whether a [`DeadLetter`] event is emitted after all
-///   attempts are exhausted (or on first failure for sync handlers).
-///   Automatically forced to `false` for dead-letter listeners to prevent
-///   infinite recursion.
-///
-/// All fields are public for convenience; invalid combinations (e.g.
-/// `retry_strategy` set with `max_retries: 0`) are harmless but have no effect.
+/// Async handlers can configure retry behaviour and dead-letter emission.
+/// Ordering is always FIFO by registration order within the async lane, so no
+/// priority field is exposed here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubscriptionPolicy {
-    /// Listener ordering hint (higher runs first).
-    ///
-    /// Applied independently within sync and async lanes.
-    pub priority: i32,
+pub struct AsyncSubscriptionPolicy {
     /// Number of additional attempts after the first failure (0 = no retries).
-    ///
-    /// Only honoured for async handlers. Sync handlers always behave as if
-    /// this is `0`.
     pub max_retries: usize,
     /// Optional back-off strategy between retry attempts.
     ///
@@ -137,10 +121,9 @@ pub struct SubscriptionPolicy {
     pub dead_letter: bool,
 }
 
-impl Default for SubscriptionPolicy {
+impl Default for AsyncSubscriptionPolicy {
     fn default() -> Self {
         Self {
-            priority: 0,
             max_retries: 0,
             retry_strategy: None,
             dead_letter: true,
@@ -148,15 +131,7 @@ impl Default for SubscriptionPolicy {
     }
 }
 
-impl SubscriptionPolicy {
-    /// Set listener priority (builder-style).
-    ///
-    /// Higher values are dispatched first within each lane.
-    pub const fn with_priority(mut self, priority: i32) -> Self {
-        self.priority = priority;
-        self
-    }
-
+impl AsyncSubscriptionPolicy {
     /// Set the maximum number of retries (builder-style).
     ///
     /// `0` disables retries. Only applicable to async handlers.
@@ -178,15 +153,10 @@ impl SubscriptionPolicy {
     }
 }
 
-/// Subscription policy for handlers that do not support retries.
+/// Subscription policy for synchronous handlers.
 ///
-/// This type is accepted by [`subscribe_with_policy`](crate::EventBus::subscribe_with_policy)
-/// for sync handlers and by [`subscribe_once_with_policy`](crate::EventBus::subscribe_once_with_policy)
-/// for all handler types. It contains only the `dead_letter` flag since
-/// retry-related fields (`max_retries`, `retry_strategy`) are not applicable.
-///
-/// Use [`SubscriptionPolicy`] instead when subscribing async handlers that need
-/// retry support.
+/// Sync handlers execute exactly once per publish and may provide a priority
+/// hint to control ordering within the sync dispatch lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncSubscriptionPolicy {
     /// Listener ordering hint (higher runs first).
@@ -220,81 +190,18 @@ impl SyncSubscriptionPolicy {
     }
 }
 
-impl From<SyncSubscriptionPolicy> for SubscriptionPolicy {
-    fn from(policy: SyncSubscriptionPolicy) -> SubscriptionPolicy {
-        SubscriptionPolicy {
-            priority: policy.priority,
-            max_retries: 0,
-            retry_strategy: None,
-            dead_letter: policy.dead_letter,
-        }
-    }
-}
-
-// ── IntoSubscriptionPolicy ───────────────────────────────────────────────────
-
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::SubscriptionPolicy {}
-    impl Sealed for super::SyncSubscriptionPolicy {}
-}
-
-/// Trait that converts a policy type into a [`SubscriptionPolicy`] suitable for
-/// the
-/// handler's dispatch mode.
+/// Default subscription policies applied by [`EventBus::subscribe`](crate::EventBus::subscribe)
 ///
-/// This trait is **sealed** — it cannot be implemented outside this crate.
-///
-/// The marker type `M` ([`AsyncMode`](crate::handler::AsyncMode),
-/// [`SyncMode`](crate::handler::SyncMode),
-/// [`AsyncFnMode`](crate::handler::AsyncFnMode), or
-/// [`SyncFnMode`](crate::handler::SyncFnMode)) is inferred from the handler via
-/// [`IntoHandler<E, M>`](crate::handler::IntoHandler), so callers never need
-/// to specify it explicitly. The type system enforces:
-///
-/// - **Async handlers** accept both [`SubscriptionPolicy`] (full retry
-///   support) and [`SyncSubscriptionPolicy`] (dead-letter only, no retries).
-/// - **Sync handlers** accept only [`SyncSubscriptionPolicy`]. Passing a
-///   [`SubscriptionPolicy`] to a sync handler is a compile-time error.
-pub trait IntoSubscriptionPolicy<M>: sealed::Sealed {
-    /// Convert into the internal [`SubscriptionPolicy`] representation.
-    fn into_subscription_policy(self) -> SubscriptionPolicy;
-}
-
-impl IntoSubscriptionPolicy<crate::handler::AsyncMode> for SubscriptionPolicy {
-    fn into_subscription_policy(self) -> SubscriptionPolicy {
-        self
-    }
-}
-
-impl IntoSubscriptionPolicy<crate::handler::AsyncFnMode> for SubscriptionPolicy {
-    fn into_subscription_policy(self) -> SubscriptionPolicy {
-        self
-    }
-}
-
-impl IntoSubscriptionPolicy<crate::handler::AsyncMode> for SyncSubscriptionPolicy {
-    fn into_subscription_policy(self) -> SubscriptionPolicy {
-        self.into()
-    }
-}
-
-impl IntoSubscriptionPolicy<crate::handler::AsyncFnMode> for SyncSubscriptionPolicy {
-    fn into_subscription_policy(self) -> SubscriptionPolicy {
-        self.into()
-    }
-}
-
-impl IntoSubscriptionPolicy<crate::handler::SyncMode> for SyncSubscriptionPolicy {
-    fn into_subscription_policy(self) -> SubscriptionPolicy {
-        self.into()
-    }
-}
-
-impl IntoSubscriptionPolicy<crate::handler::SyncFnMode> for SyncSubscriptionPolicy {
-    fn into_subscription_policy(self) -> SubscriptionPolicy {
-        self.into()
-    }
+/// `policy` is the default for async subscriptions, while `sync_policy` is the
+/// default for sync and one-shot subscriptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SubscriptionDefaults {
+    /// Default policy applied by [`EventBus::subscribe`](crate::EventBus::subscribe)
+    /// for async handlers.
+    pub policy: AsyncSubscriptionPolicy,
+    /// Default policy applied by [`EventBus::subscribe`](crate::EventBus::subscribe)
+    /// for sync handlers.
+    pub sync_policy: SyncSubscriptionPolicy,
 }
 
 /// A dead-letter record emitted when a handler exhausts all retry attempts.
@@ -332,7 +239,8 @@ pub struct DeadLetter {
 ///
 /// Any type that is `Send + Sync + 'static` automatically implements `Event`
 /// via a blanket implementation, so no manual implementation is required.
-/// Async handlers additionally require `E: Clone`.
+/// To publish an event through the bus APIs, the event type must also be
+/// `Clone`.
 ///
 /// # Examples
 ///
@@ -366,36 +274,19 @@ pub struct BusStats {
     /// The type names of all event types that currently have at least one
     /// registered listener.
     pub registered_event_types: Vec<&'static str>,
-    /// The configured channel buffer capacity.
-    pub queue_capacity: usize,
-    /// Number of currently available publish permits in the internal semaphore.
-    pub publish_permits_available: usize,
-    /// Number of currently occupied publish permits.
-    pub publish_in_flight: usize,
-    /// Number of async handler tasks currently in flight.
+    /// Number of accepted publish operations currently in progress.
+    pub dispatches_in_flight: usize,
+    /// Number of async listener invocations currently queued or running.
     pub in_flight_async: usize,
     /// Whether [`EventBus::shutdown`](crate::EventBus::shutdown) has been called.
     pub shutdown_called: bool,
 }
 
 /// Internal configuration for the event bus runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct BusConfig {
-    pub buffer_size: usize,
     pub handler_timeout: Option<Duration>,
     pub max_concurrent_async: Option<usize>,
-    pub default_subscription_policy: SubscriptionPolicy,
+    pub subscription_defaults: SubscriptionDefaults,
     pub shutdown_timeout: Option<Duration>,
-}
-
-impl Default for BusConfig {
-    fn default() -> Self {
-        Self {
-            buffer_size: 256,
-            handler_timeout: None,
-            max_concurrent_async: None,
-            default_subscription_policy: SubscriptionPolicy::default(),
-            shutdown_timeout: None,
-        }
-    }
 }

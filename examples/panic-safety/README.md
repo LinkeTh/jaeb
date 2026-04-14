@@ -11,10 +11,10 @@ cargo run -p panic-safety
 
 ## What it demonstrates
 
-| Concept | Where |
-|---|---|
-| Panic isolation | `PanicHandler` calls `panic!()` — the bus catches it internally |
-| Bus continues operating | After the panic, `SafeCounter` handles `Safe` events normally |
+| Concept                  | Where                                                                                       |
+|--------------------------|---------------------------------------------------------------------------------------------|
+| Panic isolation          | `PanicHandler` calls `panic!()` — the bus catches it internally                             |
+| Bus continues operating  | After the panic, `SafeCounter` handles `Safe` events normally                               |
 | Cross-event independence | `Boom` and `Safe` are separate event types; a failure in one lane does not affect the other |
 
 ## Expected output

@@ -33,6 +33,19 @@ pub(crate) fn is_handler_result_type(ty: &Type) -> bool {
     false
 }
 
+/// Check if a type is `&EventBus` (an immutable reference to `EventBus`).
+/// Used by the handler macro to detect the optional bus parameter.
+pub(crate) fn is_event_bus_ref_type(ty: &Type) -> bool {
+    if let Type::Reference(syn::TypeReference { elem, mutability, .. }) = ty
+        && mutability.is_none()
+        && let Type::Path(type_path) = elem.as_ref()
+        && let Some(seg) = type_path.path.segments.last()
+    {
+        return seg.ident == "EventBus";
+    }
+    false
+}
+
 // ── Dep<T> parameters ────────────────────────────────────────────────────────
 
 /// A `Dep<T>` parameter extracted from a handler function signature.
@@ -49,22 +62,28 @@ pub(crate) struct DepParam {
 
 /// Parse `Dep<T>` parameters from parameter position 1 onwards.
 ///
-/// The first parameter (position 0) is always the event reference and is
-/// skipped. Every subsequent parameter must be of the form `Dep<T>` or the
-/// call returns a compile error.
-pub(crate) fn parse_dep_params(inputs: &Punctuated<FnArg, Token![,]>) -> syn::Result<Vec<DepParam>> {
+/// Returns `(dep_params, has_bus)`. `has_bus` is `true` if any parameter
+/// at position 1+ has type `&EventBus`. A compile error is returned if a
+/// parameter at position 1+ is neither `Dep<T>` nor `&EventBus`.
+pub(crate) fn parse_dep_params(inputs: &Punctuated<FnArg, Token![,]>) -> syn::Result<(Vec<DepParam>, bool)> {
     let mut params = Vec::new();
+    let mut has_bus = false;
 
     for arg in inputs.iter().skip(1) {
         let FnArg::Typed(pat_ty) = arg else {
             return Err(syn::Error::new_spanned(arg, "unexpected `self` parameter in handler"));
         };
 
+        if is_event_bus_ref_type(&pat_ty.ty) {
+            has_bus = true;
+            continue;
+        }
+
         let (name, inner_ty) = parse_dep_param(pat_ty)?;
         params.push(DepParam { name, inner_ty });
     }
 
-    Ok(params)
+    Ok((params, has_bus))
 }
 
 fn parse_dep_param(pat_ty: &PatType) -> syn::Result<(Ident, Type)> {

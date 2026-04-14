@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use jaeb::{EventBus, EventHandler, HandlerResult, SyncEventHandler};
@@ -16,7 +16,7 @@ struct EventB;
 
 struct SyncHandlerA;
 impl SyncEventHandler<EventA> for SyncHandlerA {
-    fn handle(&self, _event: &EventA) -> HandlerResult {
+    fn handle(&self, _event: &EventA, _bus: &EventBus) -> HandlerResult {
         Ok(())
     }
     fn name(&self) -> Option<&'static str> {
@@ -26,7 +26,7 @@ impl SyncEventHandler<EventA> for SyncHandlerA {
 
 struct SyncHandlerB;
 impl SyncEventHandler<EventB> for SyncHandlerB {
-    fn handle(&self, _event: &EventB) -> HandlerResult {
+    fn handle(&self, _event: &EventB, _bus: &EventBus) -> HandlerResult {
         Ok(())
     }
 }
@@ -35,7 +35,7 @@ struct SlowAsyncHandler {
     started: Arc<AtomicBool>,
 }
 impl EventHandler<EventA> for SlowAsyncHandler {
-    async fn handle(&self, _event: &EventA) -> HandlerResult {
+    async fn handle(&self, _event: &EventA, _bus: &EventBus) -> HandlerResult {
         self.started.store(true, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(10)).await;
         Ok(())
@@ -45,19 +45,30 @@ impl EventHandler<EventA> for SlowAsyncHandler {
     }
 }
 
+struct BlockingAsyncHandler {
+    starts: Arc<AtomicUsize>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl EventHandler<EventA> for BlockingAsyncHandler {
+    async fn handle(&self, _event: &EventA, _bus: &EventBus) -> HandlerResult {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(())
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn stats_empty_bus() {
-    let bus = EventBus::builder().buffer_size(128).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let stats = bus.stats().await.expect("stats");
     assert_eq!(stats.total_subscriptions, 0);
     assert!(stats.registered_event_types.is_empty());
     assert!(stats.subscriptions_by_event.is_empty());
-    assert_eq!(stats.queue_capacity, 128);
-    assert_eq!(stats.publish_permits_available, 128);
-    assert_eq!(stats.publish_in_flight, 0);
+    assert_eq!(stats.dispatches_in_flight, 0);
     assert_eq!(stats.in_flight_async, 0);
     assert!(!stats.shutdown_called);
 
@@ -66,7 +77,7 @@ async fn stats_empty_bus() {
 
 #[tokio::test]
 async fn stats_after_subscriptions() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let _sub_a = bus.subscribe(SyncHandlerA).await.expect("subscribe a");
     let _sub_b = bus.subscribe(SyncHandlerB).await.expect("subscribe b");
@@ -101,7 +112,6 @@ async fn stats_after_subscriptions() {
 #[tokio::test]
 async fn stats_in_flight_async() {
     let bus = EventBus::builder()
-        .buffer_size(64)
         .shutdown_timeout(Duration::from_millis(100))
         .build()
         .await
@@ -139,7 +149,7 @@ async fn stats_in_flight_async() {
 
 #[tokio::test]
 async fn stats_shutdown_called() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let stats = bus.stats().await.expect("stats before shutdown");
     assert!(!stats.shutdown_called);
@@ -152,8 +162,53 @@ async fn stats_shutdown_called() {
 }
 
 #[tokio::test]
+async fn stats_in_flight_async_counts_per_listener_tasks() {
+    let bus = EventBus::builder()
+        .shutdown_timeout(Duration::from_millis(100))
+        .build()
+        .await
+        .expect("valid config");
+
+    let starts = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
+
+    for _ in 0..3 {
+        let _sub = bus
+            .subscribe(BlockingAsyncHandler {
+                starts: Arc::clone(&starts),
+                release: Arc::clone(&release),
+            })
+            .await
+            .expect("subscribe");
+    }
+
+    bus.publish(EventA).await.expect("publish");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while starts.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("all async listeners should start");
+
+    let stats = bus.stats().await.expect("stats");
+    assert!(
+        stats.in_flight_async >= 3,
+        "expected at least 3 in-flight async tasks for 3 listeners, got {}",
+        stats.in_flight_async
+    );
+
+    for _ in 0..3 {
+        release.notify_one();
+    }
+
+    bus.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn stats_after_unsubscribe() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let sub = bus.subscribe(SyncHandlerA).await.expect("subscribe");
 

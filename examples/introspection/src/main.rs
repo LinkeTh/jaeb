@@ -14,7 +14,7 @@ struct EventB;
 
 struct HandlerA;
 impl EventHandler<EventA> for HandlerA {
-    async fn handle(&self, _event: &EventA) -> HandlerResult {
+    async fn handle(&self, _event: &EventA, _bus: &EventBus) -> HandlerResult {
         Ok(())
     }
     fn name(&self) -> Option<&'static str> {
@@ -24,7 +24,7 @@ impl EventHandler<EventA> for HandlerA {
 
 struct HandlerB;
 impl SyncEventHandler<EventB> for HandlerB {
-    fn handle(&self, _event: &EventB) -> HandlerResult {
+    fn handle(&self, _event: &EventB, _bus: &EventBus) -> HandlerResult {
         Ok(())
     }
     fn name(&self) -> Option<&'static str> {
@@ -36,7 +36,7 @@ impl SyncEventHandler<EventB> for HandlerB {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let _ = bus.subscribe::<EventA, _, _>(HandlerA).await.expect("subscribe failed");
     let _ = bus.subscribe::<EventB, _, _>(HandlerB).await.expect("subscribe failed");
@@ -45,9 +45,7 @@ async fn main() {
     let stats = bus.stats().await.expect("stats failed");
     println!("total subscriptions: {}", stats.total_subscriptions);
     println!("registered event types: {:?}", stats.registered_event_types);
-    println!("queue capacity: {}", stats.queue_capacity);
-    println!("publish permits available: {}", stats.publish_permits_available);
-    println!("publish in-flight: {}", stats.publish_in_flight);
+    println!("dispatches in-flight: {}", stats.dispatches_in_flight);
     println!("in-flight async: {}", stats.in_flight_async);
 
     // Per-event-type details include listener names.
@@ -57,13 +55,13 @@ async fn main() {
         }
     }
 
-    // is_healthy() checks the bus is running and the control loop is alive.
-    println!("healthy: {}", bus.is_healthy().await);
+    // is_healthy() checks whether the bus is still running.
+    println!("healthy: {}", bus.is_healthy());
 
     bus.shutdown().await.expect("shutdown failed");
 
     // After shutdown, is_healthy returns false and stats returns Err(Stopped).
-    println!("healthy after shutdown: {}", bus.is_healthy().await);
+    println!("healthy after shutdown: {}", bus.is_healthy());
     assert!(bus.stats().await.is_err());
 
     println!("done");

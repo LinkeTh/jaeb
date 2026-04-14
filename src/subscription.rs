@@ -75,11 +75,11 @@ impl Subscription {
     ///
     /// struct H;
     /// impl SyncEventHandler<Evt> for H {
-    ///     fn handle(&self, _: &Evt) -> HandlerResult { Ok(()) }
+    ///     fn handle(&self, _: &Evt, _bus: &EventBus) -> HandlerResult { Ok(()) }
     /// }
     ///
     /// # #[tokio::main] async fn main() {
-    /// let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    /// let bus = EventBus::builder().build().await.expect("valid config");
     /// {
     ///     let _guard = bus.subscribe::<Evt, _, _>(H).await.unwrap().into_guard();
     ///     // listener is active inside this scope
@@ -160,9 +160,11 @@ impl Drop for SubscriptionGuard {
 
             let bus = inner.bus;
             let subscription_id = inner.subscription_id;
-            tokio::spawn(async move {
-                let _ = bus.unsubscribe(subscription_id).await;
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = bus.unsubscribe(subscription_id).await;
+                });
+            }
         }
     }
 }

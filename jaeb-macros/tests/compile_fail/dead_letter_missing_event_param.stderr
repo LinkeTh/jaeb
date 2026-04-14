@@ -1,0 +1,13 @@
+error: #[dead_letter_handler] function must have one parameter: `event: &DeadLetter`
+ --> tests/compile_fail/dead_letter_missing_event_param.rs:6:1
+  |
+6 | fn on_dead_letter() -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/dead_letter_missing_event_param.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, dead_letter_handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

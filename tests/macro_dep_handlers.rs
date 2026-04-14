@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::{DeadLetter, Dep, Deps, EventBus, EventBusError, HandlerError, HandlerResult, SubscriptionPolicy, dead_letter_handler, handler};
+use jaeb::{AsyncSubscriptionPolicy, DeadLetter, Dep, Deps, EventBus, EventBusError, HandlerError, HandlerResult, dead_letter_handler, handler};
 
 // ── Event types ───────────────────────────────────────────────────────────────
 
@@ -187,7 +187,7 @@ fn dl_with_dep(_event: &DeadLetter, Dep(counter): Dep<Counter>) -> HandlerResult
 struct AlwaysFails;
 
 impl jaeb::EventHandler<OrderEvent> for AlwaysFails {
-    async fn handle(&self, _event: &OrderEvent) -> HandlerResult {
+    async fn handle(&self, _event: &OrderEvent, _bus: &EventBus) -> HandlerResult {
         Err(HandlerError::from("always fails"))
     }
 }
@@ -195,11 +195,11 @@ impl jaeb::EventHandler<OrderEvent> for AlwaysFails {
 impl jaeb::HandlerDescriptor for AlwaysFails {
     fn register<'a>(
         &'a self,
-        bus: &'a jaeb::EventBus,
+        bus: &'a EventBus,
         _deps: &'a Deps,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<jaeb::Subscription, EventBusError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<jaeb::Subscription, EventBusError>> + Send + 'a>> {
         Box::pin(async move {
-            bus.subscribe_with_policy::<OrderEvent, _, _>(AlwaysFails, SubscriptionPolicy::default().with_max_retries(0).with_dead_letter(true))
+            bus.subscribe_with_policy::<OrderEvent, _, _>(AlwaysFails, AsyncSubscriptionPolicy::default().with_max_retries(0).with_dead_letter(true))
                 .await
         })
     }

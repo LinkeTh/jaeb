@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::{DeadLetter, EventBus, EventBusError, HandlerResult, SubscriptionPolicy, SyncEventHandler, SyncSubscriptionPolicy};
+use jaeb::{AsyncSubscriptionPolicy, DeadLetter, EventBus, EventBusError, HandlerResult, SyncEventHandler};
 
 #[derive(Clone)]
 struct Ping {
@@ -13,7 +13,7 @@ struct SyncCounter {
 }
 
 impl SyncEventHandler<Ping> for SyncCounter {
-    fn handle(&self, event: &Ping) -> HandlerResult {
+    fn handle(&self, event: &Ping, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(event.value, Ordering::SeqCst);
         Ok(())
     }
@@ -24,7 +24,7 @@ struct DeadLetterCounter {
 }
 
 impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
-    fn handle(&self, _event: &DeadLetter) -> HandlerResult {
+    fn handle(&self, _event: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -32,12 +32,12 @@ impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
 
 #[tokio::test]
 async fn sync_closure_receives_event() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
     let _sub = bus
-        .subscribe::<Ping, _, _>(move |event: &Ping| {
+        .subscribe::<Ping, _, _>(move |event: &Ping, _bus: &EventBus| {
             count_for_handler.fetch_add(event.value, Ordering::SeqCst);
             Ok(())
         })
@@ -52,12 +52,12 @@ async fn sync_closure_receives_event() {
 
 #[tokio::test]
 async fn async_closure_receives_event() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
     let _sub = bus
-        .subscribe::<Ping, _, _>(move |event: Ping| {
+        .subscribe::<Ping, _, _>(move |event: Ping, _bus: EventBus| {
             let count_for_handler = Arc::clone(&count_for_handler);
             async move {
                 count_for_handler.fetch_add(event.value, Ordering::SeqCst);
@@ -75,7 +75,7 @@ async fn async_closure_receives_event() {
 
 #[tokio::test]
 async fn closure_with_subscription_policy_emits_dead_letter() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let dead_letters = Arc::new(AtomicUsize::new(0));
 
     let _dl = bus
@@ -85,9 +85,12 @@ async fn closure_with_subscription_policy_emits_dead_letter() {
         .await
         .expect("subscribe dead letters");
 
-    let policy = SubscriptionPolicy::default().with_max_retries(1);
+    let policy = AsyncSubscriptionPolicy::default().with_max_retries(1);
     let _sub = bus
-        .subscribe_with_policy::<Ping, _, _>(|_event: Ping| async move { Err::<(), _>("closure failed".into()) }, policy)
+        .subscribe_with_policy::<Ping, _, _>(
+            |_event: Ping, _bus: EventBus| async move { Err::<(), _>("closure failed".into()) },
+            policy,
+        )
         .await
         .expect("subscribe closure with policy");
 
@@ -98,38 +101,14 @@ async fn closure_with_subscription_policy_emits_dead_letter() {
 }
 
 #[tokio::test]
-async fn closure_once_listener_fires_once() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
-    let count = Arc::new(AtomicUsize::new(0));
-
-    let count_for_handler = Arc::clone(&count);
-    let _sub = bus
-        .subscribe_once_with_policy::<Ping, _, _>(
-            move |event: &Ping| {
-                count_for_handler.fetch_add(event.value, Ordering::SeqCst);
-                Ok(())
-            },
-            SyncSubscriptionPolicy::default(),
-        )
-        .await
-        .expect("subscribe once closure");
-
-    bus.publish(Ping { value: 1 }).await.expect("publish one");
-    bus.publish(Ping { value: 1 }).await.expect("publish two");
-    bus.shutdown().await.expect("shutdown");
-
-    assert_eq!(count.load(Ordering::SeqCst), 1, "once closure should fire exactly once");
-}
-
-#[tokio::test]
 async fn multiple_closure_handlers_same_event_type() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let a = Arc::new(AtomicUsize::new(0));
     let b = Arc::new(AtomicUsize::new(0));
 
     let a_for_handler = Arc::clone(&a);
     let _sub_a = bus
-        .subscribe::<Ping, _, _>(move |event: &Ping| {
+        .subscribe::<Ping, _, _>(move |event: &Ping, _bus: &EventBus| {
             a_for_handler.fetch_add(event.value, Ordering::SeqCst);
             Ok(())
         })
@@ -138,7 +117,7 @@ async fn multiple_closure_handlers_same_event_type() {
 
     let b_for_handler = Arc::clone(&b);
     let _sub_b = bus
-        .subscribe::<Ping, _, _>(move |event: &Ping| {
+        .subscribe::<Ping, _, _>(move |event: &Ping, _bus: &EventBus| {
             b_for_handler.fetch_add(event.value, Ordering::SeqCst);
             Ok(())
         })
@@ -154,7 +133,7 @@ async fn multiple_closure_handlers_same_event_type() {
 
 #[tokio::test]
 async fn closure_and_struct_handler_same_event_type() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let struct_count = Arc::new(AtomicUsize::new(0));
     let closure_count = Arc::new(AtomicUsize::new(0));
 
@@ -167,7 +146,7 @@ async fn closure_and_struct_handler_same_event_type() {
 
     let closure_count_for_handler = Arc::clone(&closure_count);
     let _closure_sub = bus
-        .subscribe::<Ping, _, _>(move |event: &Ping| {
+        .subscribe::<Ping, _, _>(move |event: &Ping, _bus: &EventBus| {
             closure_count_for_handler.fetch_add(event.value, Ordering::SeqCst);
             Ok(())
         })
@@ -191,14 +170,14 @@ async fn typed_middleware_rejects_closure_handler() {
         }
     }
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _typed = bus.add_typed_sync_middleware::<Ping, _>(RejectPing).await.expect("add typed middleware");
 
     let count_for_handler = Arc::clone(&count);
     let _sub = bus
-        .subscribe::<Ping, _, _>(move |event: &Ping| {
+        .subscribe::<Ping, _, _>(move |event: &Ping, _bus: &EventBus| {
             count_for_handler.fetch_add(event.value, Ordering::SeqCst);
             Ok(())
         })

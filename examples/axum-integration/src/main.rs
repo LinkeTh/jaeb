@@ -7,7 +7,10 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use jaeb::{DeadLetter, EventBus, EventBusError, EventHandler, HandlerResult, SubscriptionPolicy, SyncEventHandler, SyncSubscriptionPolicy};
+use jaeb::{
+    AsyncSubscriptionPolicy, DeadLetter, EventBus, EventBusError, EventHandler, HandlerResult, SubscriptionDefaults, SyncEventHandler,
+    SyncSubscriptionPolicy,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -109,7 +112,7 @@ struct NotificationHandler {
 }
 
 impl EventHandler<OrderCreated> for NotificationHandler {
-    async fn handle(&self, event: &OrderCreated) -> HandlerResult {
+    async fn handle(&self, event: &OrderCreated, _bus: &EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(10)).await;
         self.mailer.send(&event.customer_email, &format!("Order {} confirmed", event.order_id));
         info!(
@@ -126,7 +129,7 @@ struct InventoryProjectionHandler {
 }
 
 impl EventHandler<OrderCreated> for InventoryProjectionHandler {
-    async fn handle(&self, event: &OrderCreated) -> HandlerResult {
+    async fn handle(&self, event: &OrderCreated, _bus: &EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(5)).await;
         self.db.update_inventory(&event.order_id);
         info!(order_id = %event.order_id, "inventory projection updated");
@@ -139,7 +142,7 @@ struct AuditLogHandler {
 }
 
 impl SyncEventHandler<OrderCreated> for AuditLogHandler {
-    fn handle(&self, event: &OrderCreated) -> HandlerResult {
+    fn handle(&self, event: &OrderCreated, _bus: &EventBus) -> HandlerResult {
         self.db.record_audit(&event.order_id, event.total_cents);
         info!(
             order_id = %event.order_id,
@@ -153,7 +156,7 @@ impl SyncEventHandler<OrderCreated> for AuditLogHandler {
 struct DeadLetterLogger;
 
 impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
-    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+    fn handle(&self, dl: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         warn!(
             event = dl.event_name,
             subscription_id = dl.subscription_id.as_u64(),
@@ -176,9 +179,8 @@ async fn main() {
         .init();
 
     let bus = EventBus::builder()
-        .buffer_size(256)
         .max_concurrent_async(64)
-        .default_subscription_policy(SubscriptionPolicy::default().with_priority(0))
+        .default_subscription_policies(SubscriptionDefaults::default())
         .build()
         .await
         .expect("valid bus config");
@@ -236,14 +238,14 @@ async fn register_handlers(bus: &EventBus, db: &Arc<DbPool>, mailer: &Arc<Mailer
     let _ = bus
         .subscribe_with_policy::<OrderCreated, _, _>(
             NotificationHandler { mailer: mailer.clone() },
-            SubscriptionPolicy::default().with_priority(20).with_max_retries(2),
+            AsyncSubscriptionPolicy::default().with_max_retries(2),
         )
         .await?;
 
     let _ = bus
         .subscribe_with_policy::<OrderCreated, _, _>(
             InventoryProjectionHandler { db: db.clone() },
-            SubscriptionPolicy::default().with_priority(10).with_max_retries(1),
+            AsyncSubscriptionPolicy::default().with_max_retries(1),
         )
         .await?;
 
@@ -263,7 +265,7 @@ async fn register_handlers(bus: &EventBus, db: &Arc<DbPool>, mailer: &Arc<Mailer
 // ---------------------------------------------------------------------------
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let bus_healthy = state.bus.is_healthy().await;
+    let bus_healthy = state.bus.is_healthy();
     let db_connected = state.db.is_connected();
     let mailer_available = state.mailer.is_available();
     let healthy = bus_healthy && db_connected && mailer_available;
@@ -277,9 +279,7 @@ async fn stats(State(state): State<AppState>) -> impl IntoResponse {
                 "total_subscriptions": stats.total_subscriptions,
                 "registered_event_types": stats.registered_event_types,
                 "in_flight_async": stats.in_flight_async,
-                "queue_capacity": stats.queue_capacity,
-                "publish_permits_available": stats.publish_permits_available,
-                "publish_in_flight": stats.publish_in_flight,
+                "dispatches_in_flight": stats.dispatches_in_flight,
                 "shutdown_called": stats.shutdown_called,
             });
             (StatusCode::OK, Json(body)).into_response()

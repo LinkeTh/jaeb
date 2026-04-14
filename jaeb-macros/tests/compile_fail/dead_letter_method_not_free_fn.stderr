@@ -1,0 +1,13 @@
+error: #[dead_letter_handler] can only be applied to free functions, not methods
+ --> tests/compile_fail/dead_letter_method_not_free_fn.rs:9:5
+  |
+9 |     fn on_dead_letter(&self, event: &DeadLetter) -> HandlerResult {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeadLetter` and `HandlerResult`
+ --> tests/compile_fail/dead_letter_method_not_free_fn.rs:3:12
+  |
+3 | use jaeb::{DeadLetter, HandlerResult, dead_letter_handler};
+  |            ^^^^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -125,7 +125,6 @@ pub mod _private {
 /// Configuration (`app.toml`):
 /// ```toml
 /// [jaeb]
-/// buffer_size = 512
 /// handler_timeout_secs = 5
 /// max_concurrent_async = 100
 /// shutdown_timeout_secs = 10
@@ -179,28 +178,14 @@ impl Default for SummerJaeb {
 
 #[async_trait]
 impl Plugin for SummerJaeb {
-    fn name(&self) -> &str {
-        "SummerJaeb"
-    }
-
-    fn dependencies(&self) -> Vec<&str> {
-        self.deps.iter().map(String::as_str).collect()
-    }
-
     async fn build(&self, app: &mut AppBuilder) {
-        let config = match app.get_config::<Config>() {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                tracing::warn!(error = %err, "summer-jaeb: failed to load [jaeb] config, using defaults");
-                Config::default()
-            }
-        };
+        let config = app.get_config::<Config>().unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "summer-jaeb: failed to load [jaeb] config, using defaults");
+            Config::default()
+        });
 
         let mut builder = EventBus::builder();
 
-        if let Some(size) = config.buffer_size {
-            builder = builder.buffer_size(size);
-        }
         if let Some(secs) = config.handler_timeout_secs {
             builder = builder.handler_timeout(Duration::from_secs(secs));
         }
@@ -214,7 +199,7 @@ impl Plugin for SummerJaeb {
         let bus = match builder.build().await {
             Ok(bus) => bus,
             Err(err) => {
-                // A bad configuration (e.g. buffer_size = 0) is a fatal
+                // A bad configuration is a fatal
                 // startup error — there is no sensible fallback.
                 error!(error = %err, "summer-jaeb: invalid event bus configuration");
                 panic!("summer-jaeb: {err}");
@@ -228,6 +213,14 @@ impl Plugin for SummerJaeb {
         for registrar in listeners {
             registrar.register(&bus, app).await;
         }
+    }
+
+    fn name(&self) -> &str {
+        "SummerJaeb"
+    }
+
+    fn dependencies(&self) -> Vec<&str> {
+        self.deps.iter().map(String::as_str).collect()
     }
 }
 

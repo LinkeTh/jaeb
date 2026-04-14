@@ -15,11 +15,11 @@ struct Clicked {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     // Sync closure: receives &Clicked.
     let _ = bus
-        .subscribe::<Clicked, _, _>(|event: &Clicked| -> HandlerResult {
+        .subscribe::<Clicked, _, _>(|event: &Clicked, _bus: &EventBus| -> HandlerResult {
             println!("sync closure: {} clicked", event.button);
             Ok(())
         })
@@ -28,7 +28,7 @@ async fn main() {
 
     // Async closure: receives Clicked by value (cloned from the published event).
     let _ = bus
-        .subscribe::<Clicked, _, _>(|event: Clicked| async move {
+        .subscribe::<Clicked, _, _>(|event: Clicked, _bus: EventBus| async move {
             println!("async closure: {} clicked", event.button);
             Ok(())
         })

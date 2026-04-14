@@ -1,0 +1,13 @@
+error: `priority` attribute is only supported on sync handlers
+ --> tests/compile_fail/handler_priority_on_async.rs:9:1
+  |
+9 | async fn on_event(event: &MyEvent) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/handler_priority_on_async.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

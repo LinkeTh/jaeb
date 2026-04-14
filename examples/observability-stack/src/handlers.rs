@@ -20,7 +20,7 @@ use crate::events::*;
 pub struct OrderPersistHandler;
 
 impl EventHandler<OrderCreated> for OrderPersistHandler {
-    async fn handle(&self, event: &OrderCreated) -> HandlerResult {
+    async fn handle(&self, event: &OrderCreated, _bus: &jaeb::EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(5)).await;
         info!(order_id = %event.order_id, amount = event.amount_cents, "order persisted");
         Ok(())
@@ -35,7 +35,7 @@ impl EventHandler<OrderCreated> for OrderPersistHandler {
 pub struct OrderEmailHandler;
 
 impl EventHandler<OrderCreated> for OrderEmailHandler {
-    async fn handle(&self, event: &OrderCreated) -> HandlerResult {
+    async fn handle(&self, event: &OrderCreated, _bus: &jaeb::EventBus) -> HandlerResult {
         // Simulate 80-250 ms email API latency.
         let ms = 80 + (event.amount_cents % 170) as u64;
         tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -54,7 +54,7 @@ impl EventHandler<OrderCreated> for OrderEmailHandler {
 pub struct PaymentLedgerHandler;
 
 impl EventHandler<PaymentProcessed> for PaymentLedgerHandler {
-    async fn handle(&self, event: &PaymentProcessed) -> HandlerResult {
+    async fn handle(&self, event: &PaymentProcessed, _bus: &jaeb::EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(20)).await;
         // Deterministic pseudo-failure keyed on order_id length.
         if !event.success && event.order_id.len().is_multiple_of(3) {
@@ -73,7 +73,7 @@ impl EventHandler<PaymentProcessed> for PaymentLedgerHandler {
 pub struct PaymentAuditHandler;
 
 impl SyncEventHandler<PaymentProcessed> for PaymentAuditHandler {
-    fn handle(&self, event: &PaymentProcessed) -> HandlerResult {
+    fn handle(&self, event: &PaymentProcessed, _bus: &jaeb::EventBus) -> HandlerResult {
         info!(order_id = %event.order_id, success = event.success, "payment audited");
         Ok(())
     }
@@ -89,7 +89,7 @@ impl SyncEventHandler<PaymentProcessed> for PaymentAuditHandler {
 pub struct WarehouseNotifier;
 
 impl EventHandler<ShipmentDispatched> for WarehouseNotifier {
-    async fn handle(&self, event: &ShipmentDispatched) -> HandlerResult {
+    async fn handle(&self, event: &ShipmentDispatched, _bus: &jaeb::EventBus) -> HandlerResult {
         tokio::time::sleep(Duration::from_millis(40)).await;
         info!(order_id = %event.order_id, carrier = event.carrier, "warehouse notified");
         Ok(())
@@ -106,7 +106,7 @@ impl EventHandler<ShipmentDispatched> for WarehouseNotifier {
 pub struct FraudAlertHandler;
 
 impl EventHandler<FraudCheckFailed> for FraudAlertHandler {
-    async fn handle(&self, event: &FraudCheckFailed) -> HandlerResult {
+    async fn handle(&self, event: &FraudCheckFailed, _bus: &jaeb::EventBus) -> HandlerResult {
         Err(format!("alert system unreachable for order {} (reason: {})", event.order_id, event.reason).into())
     }
 
@@ -122,7 +122,7 @@ impl EventHandler<FraudCheckFailed> for FraudAlertHandler {
 pub struct DeadLetterSink;
 
 impl SyncEventHandler<DeadLetter> for DeadLetterSink {
-    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+    fn handle(&self, dl: &DeadLetter, _bus: &jaeb::EventBus) -> HandlerResult {
         // eventbus.dead_letter is automatically incremented by the jaeb core
         // (metrics feature) when a dead letter is created -- no manual counter needed.
 

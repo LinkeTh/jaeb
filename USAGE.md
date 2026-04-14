@@ -1,7 +1,7 @@
 # Usage Guide
 
 This guide explains the supported subscription and dependency patterns in `jaeb`
-0.4+.
+0.5+.
 
 ## Subscription Paths
 
@@ -44,7 +44,7 @@ When to use it:
 
 - You want concise handler declarations.
 - You want builder-time dependency injection with `Deps`.
-- You want policy attributes (`retries`, `priority`, etc.) on handlers.
+- You want policy attributes (`retries`, `dead_letter`, `priority`, etc.) on handlers.
 
 ### 2) Direct runtime subscription (`bus.subscribe*`)
 
@@ -53,7 +53,7 @@ Build a bus, then subscribe handlers directly with `subscribe`,
 
 ```rust,ignore
 use std::time::Duration;
-use jaeb::{EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy};
+use jaeb::{AsyncSubscriptionPolicy, EventBus, EventHandler, HandlerResult, RetryStrategy};
 
 #[derive(Clone)]
 struct OrderPlaced;
@@ -61,7 +61,7 @@ struct OrderPlaced;
 struct EmailHandler;
 
 impl EventHandler<OrderPlaced> for EmailHandler {
-    async fn handle(&self, _event: &OrderPlaced) -> HandlerResult {
+    async fn handle(&self, _event: &OrderPlaced, _bus: &EventBus) -> HandlerResult {
         Ok(())
     }
 }
@@ -70,7 +70,7 @@ impl EventHandler<OrderPlaced> for EmailHandler {
 async fn main() -> Result<(), jaeb::EventBusError> {
     let bus = EventBus::builder().build().await?;
 
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)));
 
@@ -80,7 +80,7 @@ async fn main() -> Result<(), jaeb::EventBusError> {
 
     // closures also work:
     let _sync_sub = bus
-        .subscribe::<OrderPlaced, _, _>(|_event: &OrderPlaced| Ok(()))
+        .subscribe::<OrderPlaced, _, _>(|_event: &OrderPlaced, _bus: &EventBus| Ok(()))
         .await?;
 
     bus.shutdown().await
@@ -115,7 +115,7 @@ struct DbHandler {
 }
 
 impl EventHandler<OrderPlaced> for DbHandler {
-    async fn handle(&self, _event: &OrderPlaced) -> HandlerResult {
+    async fn handle(&self, _event: &OrderPlaced, _bus: &EventBus) -> HandlerResult {
         let _ = &self.db;
         Ok(())
     }
@@ -188,8 +188,8 @@ async fn main() -> Result<(), jaeb::EventBusError> {
 Notes:
 
 - Supported parameter forms:
-  - `Dep(name): Dep<T>`
-  - `name: Dep<T>`
+    - `Dep(name): Dep<T>`
+    - `name: Dep<T>`
 - Missing dependencies return `EventBusError::MissingDependency` at build time.
 - `T` must be `Clone`; for non-`Clone` resources, inject `Arc<T>`.
 
@@ -212,7 +212,7 @@ struct DbHandler {
 }
 
 impl EventHandler<OrderPlaced> for DbHandler {
-    async fn handle(&self, _event: &OrderPlaced) -> HandlerResult {
+    async fn handle(&self, _event: &OrderPlaced, _bus: &EventBus) -> HandlerResult {
         let _ = &self.db;
         Ok(())
     }

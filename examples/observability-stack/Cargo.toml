@@ -30,6 +30,6 @@ tracing-opentelemetry = "0.32"
 tracing-loki = "0.2"
 
 # ── utilities ─────────────────────────────────────────────────────────────
-rand = "0.9"
+rand = "0.10.1"
 uuid = { version = "1", features = ["v4"] }
 url = "2"

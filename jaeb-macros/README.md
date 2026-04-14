@@ -31,7 +31,6 @@ async fn on_order(event: &OrderPlaced, Dep(_audit): Dep<Arc<AuditLog>>) -> Handl
 #[tokio::main]
 async fn main() -> Result<(), jaeb::EventBusError> {
     let bus = EventBus::builder()
-        .buffer_size(64)
         .handler(on_order)
         .deps(Deps::new().insert(Arc::new(AuditLog)))
         .build()

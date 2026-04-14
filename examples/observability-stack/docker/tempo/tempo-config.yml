@@ -39,7 +39,7 @@ storage:
 overrides:
   defaults:
     metrics_generator:
-      processors: [service-graphs, span-metrics]
+      processors: [ service-graphs, span-metrics ]
 
 metrics_generator:
   registry:

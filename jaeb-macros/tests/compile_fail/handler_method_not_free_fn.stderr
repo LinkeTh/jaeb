@@ -1,0 +1,13 @@
+error: #[handler] can only be applied to free functions, not methods
+  --> tests/compile_fail/handler_method_not_free_fn.rs:12:5
+   |
+12 |     async fn on_event(&self, event: &MyEvent) -> HandlerResult {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/handler_method_not_free_fn.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

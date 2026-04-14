@@ -1,0 +1,13 @@
+error: use `#[dead_letter_handler]` for DeadLetter handlers — `#[handler]` cannot be used with `&DeadLetter`
+ --> tests/compile_fail/handler_dead_letter.rs:6:1
+  |
+6 | fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeadLetter` and `HandlerResult`
+ --> tests/compile_fail/handler_dead_letter.rs:3:12
+  |
+3 | use jaeb::{DeadLetter, HandlerResult, handler};
+  |            ^^^^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

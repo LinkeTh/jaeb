@@ -11,12 +11,13 @@ cargo run -p macro-handlers
 
 ## What it demonstrates
 
-| Concept | Where |
-|---|---|
-| `#[handler]` and `#[dead_letter_handler]` | `process_payment` and `on_dead_letter` |
-| `Dep<T>` injection via builder | `.deps(Deps::new().insert(...))` passed to both handlers |
-| Builder descriptor registration | `.handler(process_payment)` and `.dead_letter(on_dead_letter)` |
-| Full failure pipeline | `process_payment` always fails → retries → dead letter → `on_dead_letter` fires |
+| Concept                                   | Where                                                                           |
+|-------------------------------------------|---------------------------------------------------------------------------------|
+| `#[handler]` and `#[dead_letter_handler]` | `process_payment` and `on_dead_letter`                                          |
+| `Dep<T>` injection via builder            | `.deps(Deps::new().insert(...))` passed to both handlers                        |
+| Builder descriptor registration           | `.handler(process_payment)` and `.dead_letter(on_dead_letter)`                  |
+| Async policy attrs                        | `process_payment` uses `retries = 1` to drive the retry + dead-letter flow      |
+| Full failure pipeline                     | `process_payment` always fails → retries → dead letter → `on_dead_letter` fires |
 
 ## Expected output
 

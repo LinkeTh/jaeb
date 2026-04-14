@@ -16,7 +16,7 @@ struct Safe;
 struct PanicHandler;
 
 impl SyncEventHandler<Boom> for PanicHandler {
-    fn handle(&self, _event: &Boom) -> HandlerResult {
+    fn handle(&self, _event: &Boom, _bus: &EventBus) -> HandlerResult {
         panic!("handler panicked on purpose");
     }
 }
@@ -24,7 +24,7 @@ impl SyncEventHandler<Boom> for PanicHandler {
 struct AsyncPanicHandler;
 
 impl EventHandler<Boom> for AsyncPanicHandler {
-    async fn handle(&self, _event: &Boom) -> HandlerResult {
+    async fn handle(&self, _event: &Boom, _bus: &EventBus) -> HandlerResult {
         panic!("async handler panicked on purpose");
     }
 }
@@ -34,7 +34,7 @@ struct SafeCounter {
 }
 
 impl SyncEventHandler<Safe> for SafeCounter {
-    fn handle(&self, event: &Safe) -> HandlerResult {
+    fn handle(&self, event: &Safe, _bus: &EventBus) -> HandlerResult {
         let _ = event;
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -49,7 +49,7 @@ impl SyncEventHandler<Safe> for SafeCounter {
 /// NOTE: this test will print a panic backtrace to stderr — that is expected.
 #[tokio::test]
 async fn panicking_handler_does_not_crash_bus() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(PanicHandler).await.expect("subscribe panic handler");
@@ -74,7 +74,7 @@ async fn panicking_handler_does_not_crash_bus() {
 /// NOTE: this test will print a panic backtrace to stderr — that is expected.
 #[tokio::test]
 async fn async_panicking_handler_does_not_crash_bus() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe(AsyncPanicHandler).await.expect("subscribe async panic handler");

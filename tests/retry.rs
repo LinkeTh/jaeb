@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use jaeb::{EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler};
+use jaeb::{
+    AsyncSubscriptionPolicy, EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionDefaults, SyncEventHandler, SyncSubscriptionPolicy,
+};
 
 // ── Event types ──────────────────────────────────────────────────────
 
@@ -16,7 +18,7 @@ struct FailOnceAsync {
 }
 
 impl EventHandler<Job> for FailOnceAsync {
-    async fn handle(&self, _event: &Job) -> HandlerResult {
+    async fn handle(&self, _event: &Job, _bus: &EventBus) -> HandlerResult {
         let n = self.attempts.fetch_add(1, Ordering::SeqCst);
         if n == 0 { Err("first attempt fails".into()) } else { Ok(()) }
     }
@@ -27,7 +29,7 @@ struct AlwaysFailSync {
 }
 
 impl SyncEventHandler<Job> for AlwaysFailSync {
-    fn handle(&self, _event: &Job) -> HandlerResult {
+    fn handle(&self, _event: &Job, _bus: &EventBus) -> HandlerResult {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         Err("always fails".into())
     }
@@ -39,7 +41,7 @@ struct FailNTimesAsync {
 }
 
 impl EventHandler<Job> for FailNTimesAsync {
-    async fn handle(&self, _event: &Job) -> HandlerResult {
+    async fn handle(&self, _event: &Job, _bus: &EventBus) -> HandlerResult {
         let n = self.attempts.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_count {
             Err(format!("attempt {n} fails").into())
@@ -54,7 +56,7 @@ struct AlwaysFailAsync {
 }
 
 impl EventHandler<Job> for AlwaysFailAsync {
-    async fn handle(&self, _event: &Job) -> HandlerResult {
+    async fn handle(&self, _event: &Job, _bus: &EventBus) -> HandlerResult {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         Err("always fails".into())
     }
@@ -64,10 +66,10 @@ impl EventHandler<Job> for AlwaysFailAsync {
 
 #[tokio::test]
 async fn retry_policy_retries_async_handler() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(1)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(1)));
 
@@ -90,7 +92,7 @@ async fn retry_policy_retries_async_handler() {
 
 #[tokio::test]
 async fn sync_handler_single_attempt_on_failure() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Subscribe with default policy (max_retries: 0) — should succeed.
@@ -110,11 +112,11 @@ async fn sync_handler_single_attempt_on_failure() {
 
 #[tokio::test]
 async fn retry_multiple_attempts() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Fail the first 3, succeed on the 4th → need max_retries=3.
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(1)));
 
@@ -138,10 +140,10 @@ async fn retry_multiple_attempts() {
 
 #[tokio::test]
 async fn retry_delay_is_respected() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(1)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(false);
@@ -181,11 +183,11 @@ async fn retry_delay_is_respected() {
 
 #[tokio::test]
 async fn retry_exponential_backoff() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Exponential: base=25ms, max=200ms → delays: 25ms, 50ms (attempts 0,1)
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Exponential {
             base: Duration::from_millis(25),
@@ -224,11 +226,11 @@ async fn retry_exponential_backoff() {
 
 #[tokio::test]
 async fn retry_exponential_caps_at_max() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Exponential: base=50ms, max=60ms → delays: 50ms, 60ms (capped), 60ms (capped)
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::Exponential {
             base: Duration::from_millis(50),
@@ -267,11 +269,11 @@ async fn retry_exponential_caps_at_max() {
 
 #[tokio::test]
 async fn retry_exponential_with_jitter_is_bounded() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // Jitter: base=10ms, max=100ms → delays are random in [0, capped]
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::ExponentialWithJitter {
             base: Duration::from_millis(10),
@@ -302,11 +304,11 @@ async fn retry_exponential_with_jitter_is_bounded() {
 
 #[tokio::test]
 async fn retry_no_strategy_retries_immediately() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     // max_retries with no strategy → retries happen immediately (no delay).
-    let policy = SubscriptionPolicy::default().with_max_retries(2).with_dead_letter(false);
+    let policy = AsyncSubscriptionPolicy::default().with_max_retries(2).with_dead_letter(false);
 
     let _ = bus
         .subscribe_with_policy(
@@ -365,4 +367,28 @@ fn retry_strategy_delay_for_attempt_jitter_bounded() {
         );
         assert!(delay <= exp_cap, "attempt {attempt}: {delay:?} > cap {exp_cap:?}");
     }
+}
+
+#[tokio::test]
+async fn subscribe_uses_async_defaults_for_async_handlers() {
+    let bus = EventBus::builder()
+        .default_subscription_policies(SubscriptionDefaults {
+            policy: AsyncSubscriptionPolicy::default().with_max_retries(1),
+            sync_policy: SyncSubscriptionPolicy::default(),
+        })
+        .build()
+        .await
+        .expect("valid config");
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let _ = bus
+        .subscribe(FailOnceAsync {
+            attempts: Arc::clone(&attempts),
+        })
+        .await
+        .expect("subscribe");
+
+    bus.publish(Job).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }

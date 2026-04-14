@@ -1,0 +1,13 @@
+error: `retries` and retry strategy attributes are only supported on async handlers — sync handlers execute exactly once (failures produce dead letters when enabled)
+ --> tests/compile_fail/handler_retry_on_sync.rs:9:1
+  |
+9 | fn on_event(event: &MyEvent) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/handler_retry_on_sync.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

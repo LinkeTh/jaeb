@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use jaeb::{EventBus, RetryStrategy, SubscriptionPolicy, SyncSubscriptionPolicy};
+use jaeb::{AsyncSubscriptionPolicy, EventBus, RetryStrategy, SubscriptionDefaults, SyncSubscriptionPolicy};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -41,7 +41,7 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     let (tx, rx) = mpsc::unbounded_channel::<SimEvent>();
 
     // Build the event bus
-    let mut builder = EventBus::builder().buffer_size(config.bus.buffer_size);
+    let mut builder = EventBus::builder();
 
     if config.bus.handler_timeout_ms > 0 {
         builder = builder.handler_timeout(Duration::from_millis(config.bus.handler_timeout_ms));
@@ -49,7 +49,7 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     if config.bus.max_concurrent_async > 0 {
         builder = builder.max_concurrent_async(config.bus.max_concurrent_async);
     }
-    builder = builder.default_subscription_policy(SubscriptionPolicy::default());
+    builder = builder.default_subscription_policies(SubscriptionDefaults::default());
 
     let shutdown_timeout = Duration::from_millis(config.bus.shutdown_timeout_ms);
     builder = builder.shutdown_timeout(shutdown_timeout);
@@ -153,8 +153,8 @@ pub fn launch_simulation(config: SimConfig, viz: Arc<Mutex<VisualizationState>>)
     }
 }
 
-fn build_subscription_policy(cfg: &ListenerConfig) -> SubscriptionPolicy {
-    let mut policy = SubscriptionPolicy::default()
+fn build_subscription_policy(cfg: &ListenerConfig) -> AsyncSubscriptionPolicy {
+    let mut policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(cfg.max_retries as usize)
         .with_dead_letter(cfg.dead_letter);
 

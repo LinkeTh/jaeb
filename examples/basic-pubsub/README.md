@@ -11,9 +11,9 @@ cargo run -p basic-pubsub
 
 ## What it demonstrates
 
-| Concept | Where |
-|---|---|
-| `EventBus::builder().buffer_size(...).build().await` | Creates a bus with a fixed-size publish buffer |
-| `bus.subscribe` | Registers an `EventHandler` implementation |
-| `bus.publish` | Dispatches an event; returns after async tasks are spawned |
-| `bus.shutdown` | Drains in-flight tasks and stops the bus |
+| Concept                                              | Where                                                      |
+|------------------------------------------------------|------------------------------------------------------------|
+| `EventBus::builder().build().await` | Creates a bus with default runtime settings                |
+| `bus.subscribe`                                      | Registers an `EventHandler` implementation                 |
+| `bus.publish`                                        | Dispatches an event; returns after async work is spawned   |
+| `bus.shutdown`                                       | Drains in-flight tasks and stops the bus                   |

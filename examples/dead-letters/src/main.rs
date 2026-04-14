@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler};
+use jaeb::{AsyncSubscriptionPolicy, DeadLetter, EventBus, EventHandler, HandlerResult, RetryStrategy, SyncEventHandler};
 
 // ── Events ──────────────────────────────────────────────────────────────
 
@@ -18,7 +18,7 @@ struct Payment {
 struct OnPayment;
 
 impl EventHandler<Payment> for OnPayment {
-    async fn handle(&self, event: &Payment) -> HandlerResult {
+    async fn handle(&self, event: &Payment, _bus: &EventBus) -> HandlerResult {
         Err(format!("gateway unavailable for payment {}", event.id).into())
     }
 
@@ -31,7 +31,7 @@ impl EventHandler<Payment> for OnPayment {
 struct DeadLetterSink;
 
 impl SyncEventHandler<DeadLetter> for DeadLetterSink {
-    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+    fn handle(&self, dl: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         println!(
             "dead letter: event={}, handler={:?}, attempts={}, error={}",
             dl.event_name, dl.handler_name, dl.attempts, dl.error
@@ -48,9 +48,9 @@ impl SyncEventHandler<DeadLetter> for DeadLetterSink {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
-    let policy = SubscriptionPolicy::default()
+    let policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(true);

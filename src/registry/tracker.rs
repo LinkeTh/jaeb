@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -11,6 +11,7 @@ use tokio::task::AbortHandle;
 pub(crate) struct AsyncTaskTracker {
     next_id: AtomicU64,
     in_flight: AtomicUsize,
+    rejecting_new_tasks: AtomicBool,
     tasks: Option<StdMutex<HashMap<u64, AbortHandle>>>,
     notify: Notify,
 }
@@ -26,21 +27,25 @@ impl AsyncTaskTracker {
         Self {
             next_id: AtomicU64::new(1),
             in_flight: AtomicUsize::new(0),
+            rejecting_new_tasks: AtomicBool::new(false),
             tasks: track_abort_handles.then(|| StdMutex::new(HashMap::new())),
             notify: Notify::new(),
         }
     }
 
-    pub(crate) fn spawn_tracked<F>(self: &Arc<Self>, fut: F)
+    pub(crate) fn spawn_tracked<F>(self: &Arc<Self>, fut: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
-        let tracker = Arc::clone(self);
-
         if let Some(tasks) = &self.tasks {
-            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let mut guard = tasks.lock().expect("tracker task lock poisoned");
+            if self.rejecting_new_tasks.load(Ordering::Acquire) {
+                return false;
+            }
+
+            self.in_flight.fetch_add(1, Ordering::AcqRel);
+            let tracker = Arc::clone(self);
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
             // Keep the map lock across spawn so the abort handle is inserted
             // before the task can complete and attempt removal.
@@ -50,11 +55,19 @@ impl AsyncTaskTracker {
             });
 
             guard.insert(id, handle.abort_handle());
+            true
         } else {
+            if self.rejecting_new_tasks.load(Ordering::Acquire) {
+                return false;
+            }
+
+            self.in_flight.fetch_add(1, Ordering::AcqRel);
+            let tracker = Arc::clone(self);
             tokio::spawn(async move {
                 fut.await;
                 tracker.finish_task(None);
             });
+            true
         }
     }
 
@@ -62,19 +75,8 @@ impl AsyncTaskTracker {
         self.in_flight.load(Ordering::Acquire)
     }
 
-    /// Increment the in-flight counter without spawning a task.
-    /// Used by persistent async workers that manage their own execution.
-    pub(crate) fn track_external(&self) {
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
-    }
-
-    /// Decrement the in-flight counter for an externally-managed work item.
-    /// Must be paired with a prior `track_external()` call.
-    pub(crate) fn finish_external(&self) {
-        let prev = self.in_flight.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 {
-            self.notify.notify_waiters();
-        }
+    pub(crate) fn reject_new_tasks(&self) {
+        self.rejecting_new_tasks.store(true, Ordering::Release);
     }
 
     pub(crate) async fn shutdown(&self, timeout: Option<Duration>) -> bool {
@@ -97,6 +99,7 @@ impl AsyncTaskTracker {
                     self.tasks.is_some(),
                     "shutdown timeout requires tracked abort handles to cancel in-flight tasks"
                 );
+                self.reject_new_tasks();
                 let handles: Vec<AbortHandle> = self
                     .tasks
                     .as_ref()

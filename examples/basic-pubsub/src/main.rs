@@ -15,7 +15,7 @@ struct UserCreated {
 struct OnUserCreated;
 
 impl EventHandler<UserCreated> for OnUserCreated {
-    async fn handle(&self, event: &UserCreated) -> HandlerResult {
+    async fn handle(&self, event: &UserCreated, _bus: &EventBus) -> HandlerResult {
         println!("user created: id={}, name={}", event.id, event.name);
         Ok(())
     }
@@ -25,7 +25,7 @@ impl EventHandler<UserCreated> for OnUserCreated {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let _ = bus.subscribe::<UserCreated, _, _>(OnUserCreated).await.expect("subscribe failed");
 

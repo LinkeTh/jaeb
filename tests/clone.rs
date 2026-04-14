@@ -15,7 +15,7 @@ struct Counter {
 }
 
 impl SyncEventHandler<Signal> for Counter {
-    fn handle(&self, _event: &Signal) -> HandlerResult {
+    fn handle(&self, _event: &Signal, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -25,7 +25,7 @@ impl SyncEventHandler<Signal> for Counter {
 
 #[tokio::test]
 async fn cloned_bus_shares_state() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // Subscribe on the original handle.

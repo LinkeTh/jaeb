@@ -1,0 +1,13 @@
+error: #[dead_letter_handler] function must have an explicit return type (-> HandlerResult)
+ --> tests/compile_fail/dead_letter_missing_return_type.rs:6:1
+  |
+6 | fn on_dead_letter(event: &DeadLetter) {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DeadLetter`
+ --> tests/compile_fail/dead_letter_missing_return_type.rs:3:12
+  |
+3 | use jaeb::{DeadLetter, dead_letter_handler};
+  |            ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

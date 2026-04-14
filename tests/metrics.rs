@@ -4,7 +4,7 @@ use std::any::type_name;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::{DeadLetter, EventBus, HandlerResult, SubscriptionPolicy, SyncEventHandler};
+use jaeb::{AsyncSubscriptionPolicy, DeadLetter, EventBus, HandlerResult, SyncEventHandler};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 type SnapshotEntries = Vec<(
@@ -28,7 +28,7 @@ struct DeadLetterCounter {
 }
 
 impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
-    fn handle(&self, _event: &DeadLetter) -> HandlerResult {
+    fn handle(&self, _event: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -78,9 +78,9 @@ async fn publish_increments_event_counter() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _sub = bus
-        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
+        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent, _bus: &EventBus| Ok(()))
         .await
         .expect("subscribe");
 
@@ -100,9 +100,9 @@ async fn listener_dispatch_records_histogram_values() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _sub = bus
-        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
+        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent, _bus: &EventBus| Ok(()))
         .await
         .expect("subscribe");
 
@@ -122,11 +122,14 @@ async fn retry_metrics_error_counter_tracks_terminal_failure() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
-    let policy = SubscriptionPolicy::default().with_max_retries(2).with_dead_letter(false);
+    let bus = EventBus::builder().build().await.expect("valid config");
+    let policy = AsyncSubscriptionPolicy::default().with_max_retries(2).with_dead_letter(false);
 
     let _sub = bus
-        .subscribe_with_policy::<RetryMetricEvent, _, _>(|_event: RetryMetricEvent| async move { Err::<(), _>("always fail".into()) }, policy)
+        .subscribe_with_policy::<RetryMetricEvent, _, _>(
+            |_event: RetryMetricEvent, _bus: EventBus| async move { Err::<(), _>("always fail".into()) },
+            policy,
+        )
         .await
         .expect("subscribe");
 
@@ -144,7 +147,7 @@ async fn dead_letter_publication_is_counted() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let dead_letter_hits = Arc::new(AtomicUsize::new(0));
 
     let _dl = bus
@@ -155,7 +158,7 @@ async fn dead_letter_publication_is_counted() {
         .expect("subscribe dead letters");
 
     let _sub = bus
-        .subscribe::<DeadLetterMetricEvent, _, _>(|_event: &DeadLetterMetricEvent| Err::<(), _>("boom".into()))
+        .subscribe::<DeadLetterMetricEvent, _, _>(|_event: &DeadLetterMetricEvent, _bus: &EventBus| Err::<(), _>("boom".into()))
         .await
         .expect("subscribe failing handler");
 
@@ -175,9 +178,9 @@ async fn dead_letter_counter_fires_on_creation() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _sub = bus
-        .subscribe::<DeadLetterMetricEvent, _, _>(|_event: &DeadLetterMetricEvent| Err::<(), _>("boom".into()))
+        .subscribe::<DeadLetterMetricEvent, _, _>(|_event: &DeadLetterMetricEvent, _bus: &EventBus| Err::<(), _>("boom".into()))
         .await
         .expect("subscribe failing handler");
 
@@ -195,10 +198,13 @@ async fn dead_letter_counter_does_not_fire_when_disabled() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
-    let policy = SubscriptionPolicy::default().with_dead_letter(false);
+    let bus = EventBus::builder().build().await.expect("valid config");
+    let policy = AsyncSubscriptionPolicy::default().with_dead_letter(false);
     let _sub = bus
-        .subscribe_with_policy::<DeadLetterMetricEvent, _, _>(|_event: DeadLetterMetricEvent| async move { Err::<(), _>("boom".into()) }, policy)
+        .subscribe_with_policy::<DeadLetterMetricEvent, _, _>(
+            |_event: DeadLetterMetricEvent, _bus: EventBus| async move { Err::<(), _>("boom".into()) },
+            policy,
+        )
         .await
         .expect("subscribe");
 
@@ -218,7 +224,7 @@ async fn dead_letter_counter_includes_handler_label_when_named() {
 
     struct NamedFailHandler;
     impl SyncEventHandler<DeadLetterMetricEvent> for NamedFailHandler {
-        fn handle(&self, _: &DeadLetterMetricEvent) -> HandlerResult {
+        fn handle(&self, _: &DeadLetterMetricEvent, _bus: &EventBus) -> HandlerResult {
             Err("always fail".into())
         }
         fn name(&self) -> Option<&'static str> {
@@ -226,7 +232,7 @@ async fn dead_letter_counter_includes_handler_label_when_named() {
         }
     }
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _sub = bus.subscribe::<DeadLetterMetricEvent, _, _>(NamedFailHandler).await.expect("subscribe");
 
     bus.publish(DeadLetterMetricEvent).await.expect("publish");
@@ -247,9 +253,9 @@ async fn metrics_snapshot_after_shutdown_contains_recorded_values() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _sub = bus
-        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
+        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent, _bus: &EventBus| Ok(()))
         .await
         .expect("subscribe");
 
@@ -267,9 +273,9 @@ async fn concurrent_publish_metrics_coherent() {
     let snapshotter = recorder.snapshotter();
     let _guard = metrics::set_default_local_recorder(&recorder);
 
-    let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _sub = bus
-        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent| Ok(()))
+        .subscribe::<MetricEvent, _, _>(|_event: &MetricEvent, _bus: &EventBus| Ok(()))
         .await
         .expect("subscribe");
 

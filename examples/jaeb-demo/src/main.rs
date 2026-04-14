@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use jaeb::{DeadLetter, EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler};
+use jaeb::{AsyncSubscriptionPolicy, DeadLetter, EventBus, EventHandler, HandlerResult, RetryStrategy, SyncEventHandler};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_util::MetricKindMask;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -43,7 +43,7 @@ struct OnOrderCheckout {
 }
 
 impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
-    async fn handle(&self, event: &OrderCheckOutEvent) -> HandlerResult {
+    async fn handle(&self, event: &OrderCheckOutEvent, _bus: &EventBus) -> HandlerResult {
         // async work: send email, update DB via self.pool, etc.
         self.pool.persist(event.order_id);
         // Simulate transient failure on first attempt.
@@ -64,7 +64,7 @@ impl EventHandler<OrderCheckOutEvent> for OnOrderCheckout {
 struct OnOrderCancelled;
 
 impl SyncEventHandler<OrderCancelledEvent> for OnOrderCancelled {
-    fn handle(&self, event: &OrderCancelledEvent) -> HandlerResult {
+    fn handle(&self, event: &OrderCancelledEvent, _bus: &EventBus) -> HandlerResult {
         info!("sync: order {} cancelled", event.order_id);
         Ok(())
     }
@@ -78,7 +78,7 @@ impl SyncEventHandler<OrderCancelledEvent> for OnOrderCancelled {
 struct CheckoutLogger;
 
 impl EventHandler<OrderCheckOutEvent> for CheckoutLogger {
-    async fn handle(&self, event: &OrderCheckOutEvent) -> HandlerResult {
+    async fn handle(&self, event: &OrderCheckOutEvent, _bus: &EventBus) -> HandlerResult {
         info!("logger: order {} checked out", event.order_id);
         Ok(())
     }
@@ -93,7 +93,7 @@ impl EventHandler<OrderCheckOutEvent> for CheckoutLogger {
 struct OnPaymentFailed;
 
 impl EventHandler<PaymentFailedEvent> for OnPaymentFailed {
-    async fn handle(&self, event: &PaymentFailedEvent) -> HandlerResult {
+    async fn handle(&self, event: &PaymentFailedEvent, _bus: &EventBus) -> HandlerResult {
         Err(format!("payment gateway unavailable for order {}", event.order_id).into())
     }
 
@@ -106,7 +106,7 @@ impl EventHandler<PaymentFailedEvent> for OnPaymentFailed {
 struct DeadLetterLogger;
 
 impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
-    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+    fn handle(&self, dl: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         info!(
             "dead-letter: event={} subscription={} attempts={} error={}",
             dl.event_name, dl.subscription_id, dl.attempts, dl.error
@@ -145,7 +145,7 @@ async fn subscribe_listeners(bus: &EventBus) {
 
     let pool = DbPool;
     // In a real app, pass pool/config/etc. into handler structs here:
-    let retry_policy = SubscriptionPolicy::default()
+    let retry_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(1)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(100)));
 
@@ -160,7 +160,7 @@ async fn subscribe_listeners(bus: &EventBus) {
     let _ = bus.subscribe(CheckoutLogger).await.expect("failed to subscribe checkout logger");
 
     // Always-failing handler with dead-letter enabled to demonstrate the dead-letter pipeline.
-    let dl_policy = SubscriptionPolicy::default()
+    let dl_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(true);
@@ -187,7 +187,7 @@ async fn main() {
 
     init_prometheus(&3000);
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     subscribe_listeners(&bus).await;
 
     checkout(42, &bus).await;

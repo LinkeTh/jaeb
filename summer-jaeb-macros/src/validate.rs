@@ -35,20 +35,41 @@ pub(crate) fn is_handler_result_type(ty: &Type) -> bool {
     false
 }
 
+/// Check if a type is `&EventBus`.
+pub(crate) fn is_event_bus_ref_type(ty: &Type) -> bool {
+    if let Type::Reference(syn::TypeReference { elem, mutability, .. }) = ty
+        && mutability.is_none()
+        && let Type::Path(type_path) = elem.as_ref()
+        && let Some(seg) = type_path.path.segments.last()
+    {
+        return seg.ident == "EventBus";
+    }
+    false
+}
+
 /// Parse `Component(name): Component<Type>` parameters from position 1 onwards.
-pub(crate) fn parse_state_params(inputs: &Punctuated<FnArg, Token![,]>) -> syn::Result<Vec<StateParam>> {
+///
+/// Returns `(state_params, has_bus)`. `has_bus` is `true` if any parameter
+/// at position 1+ has type `&EventBus`.
+pub(crate) fn parse_state_params(inputs: &Punctuated<FnArg, Token![,]>) -> syn::Result<(Vec<StateParam>, bool)> {
     let mut params = Vec::new();
+    let mut has_bus = false;
 
     for arg in inputs.iter().skip(1) {
         let FnArg::Typed(pat_ty) = arg else {
             return Err(syn::Error::new_spanned(arg, "unexpected `self` parameter in event listener"));
         };
 
+        if is_event_bus_ref_type(&pat_ty.ty) {
+            has_bus = true;
+            continue;
+        }
+
         let (name, inner_ty) = parse_component_param(pat_ty)?;
         params.push(StateParam { name, inner_ty });
     }
 
-    Ok(params)
+    Ok((params, has_bus))
 }
 
 /// Parse a single `Component(name): Component<Type>` parameter.

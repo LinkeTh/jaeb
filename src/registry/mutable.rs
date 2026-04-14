@@ -2,23 +2,19 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, Semaphore};
-
-use super::tracker::AsyncTaskTracker;
 use super::types::{
-    AsyncListenerEntry, ErasedMiddleware, ListenerEntry, ListenerKind, RegistrySnapshot, SyncListenerEntry, TypeSlot, TypedMiddlewareEntry,
-    TypedMiddlewareSlot,
+    AsyncListenerEntry, DeadLetterSlot, ErasedMiddleware, ListenerEntry, ListenerKind, RegistrySnapshot, SyncListenerEntry, TypeSlot,
+    TypedMiddlewareEntry, TypedMiddlewareSlot,
 };
-use super::worker::AsyncSlotWorker;
+use crate::types::DeadLetter;
 use crate::types::{HandlerInfo, SubscriptionId};
+use tokio::sync::Mutex;
 
 struct MutableTypeSlot {
     event_name: &'static str,
     listeners: Vec<ListenerEntry>,
     middlewares: Vec<TypedMiddlewareSlot>,
     sync_gate: Arc<Mutex<()>>,
-    async_semaphore: Option<Arc<Semaphore>>,
-    worker: Option<AsyncSlotWorker>,
 }
 
 impl MutableTypeSlot {
@@ -28,26 +24,17 @@ impl MutableTypeSlot {
         let mut has_async_middleware = false;
         for listener in &self.listeners {
             match &listener.kind {
-                ListenerKind::Sync(handler) => sync_listeners.push(SyncListenerEntry {
-                    id: listener.id,
-                    handler: Arc::clone(handler),
-                    subscription_policy: listener.subscription_policy,
-                    name: listener.name,
-                    once: listener.once,
-                    fired: listener.fired.as_ref().map(Arc::clone),
-                }),
-                ListenerKind::Async(handler) => async_listeners.push(AsyncListenerEntry {
-                    id: listener.id,
-                    handler: Arc::clone(handler),
-                    subscription_policy: listener.subscription_policy,
-                    name: listener.name,
-                    once: listener.once,
-                    fired: listener.fired.as_ref().map(Arc::clone),
-                }),
+                ListenerKind::Sync(_) => sync_listeners.push(SyncListenerEntry::from(listener)),
+                ListenerKind::Async(_) => async_listeners.push(AsyncListenerEntry::from(listener)),
             }
         }
-        sync_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
-        async_listeners.sort_by(|a, b| b.subscription_policy.priority.cmp(&a.subscription_policy.priority));
+        sync_listeners.sort_by(|a, b| {
+            b.subscription_policy
+                .priority
+                .cmp(&a.subscription_policy.priority)
+                .then_with(|| a.registration_order.cmp(&b.registration_order))
+        });
+        async_listeners.sort_by(|a, b| a.registration_order.cmp(&b.registration_order));
 
         for middleware in &self.middlewares {
             if matches!(middleware.middleware, TypedMiddlewareEntry::Async(_)) {
@@ -62,8 +49,6 @@ impl MutableTypeSlot {
             middlewares: self.middlewares.clone().into(),
             has_async_middleware,
             sync_gate: Arc::clone(&self.sync_gate),
-            async_semaphore: self.async_semaphore.as_ref().map(Arc::clone),
-            worker: self.worker.clone(),
         })
     }
 }
@@ -76,22 +61,22 @@ enum IndexEntry {
 
 pub(crate) struct MutableRegistry {
     slots: HashMap<TypeId, MutableTypeSlot>,
+    dead_letter_listeners: Vec<ListenerEntry>,
+    dead_letter_sync_gate: Arc<Mutex<()>>,
     global_middlewares: Vec<(SubscriptionId, ErasedMiddleware)>,
     index: HashMap<SubscriptionId, IndexEntry>,
     type_names: HashMap<TypeId, &'static str>,
-    max_concurrent_async: Option<usize>,
-    tracker: Arc<AsyncTaskTracker>,
 }
 
 impl MutableRegistry {
-    pub(crate) fn new(max_concurrent_async: Option<usize>, tracker: Arc<AsyncTaskTracker>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             slots: HashMap::new(),
+            dead_letter_listeners: Vec::new(),
+            dead_letter_sync_gate: Arc::new(Mutex::new(())),
             global_middlewares: Vec::new(),
             index: HashMap::new(),
             type_names: HashMap::new(),
-            max_concurrent_async,
-            tracker,
         }
     }
 
@@ -102,20 +87,18 @@ impl MutableRegistry {
             listeners: Vec::new(),
             middlewares: Vec::new(),
             sync_gate: Arc::new(Mutex::new(())),
-            async_semaphore: self.max_concurrent_async.map(|n| Arc::new(Semaphore::new(n))),
-            worker: None,
         })
     }
 
     pub(crate) fn add_listener(&mut self, event_type: TypeId, event_name: &'static str, listener: ListenerEntry) {
-        let is_async = matches!(listener.kind, ListenerKind::Async(_));
-        let tracker = Arc::clone(&self.tracker);
+        if event_type == TypeId::of::<DeadLetter>() {
+            self.dead_letter_listeners.push(listener.clone());
+            self.index.insert(listener.id, IndexEntry::Listener(event_type));
+            return;
+        }
+
         let slot = self.ensure_slot(event_type, event_name);
         slot.listeners.push(listener.clone());
-        // Lazily create a persistent worker when the first async listener arrives.
-        if is_async && slot.worker.is_none() {
-            slot.worker = Some(AsyncSlotWorker::spawn(tracker));
-        }
         self.index.insert(listener.id, IndexEntry::Listener(event_type));
     }
 
@@ -133,6 +116,11 @@ impl MutableRegistry {
         let Some(IndexEntry::Listener(event_type)) = self.index.get(&subscription_id) else {
             return;
         };
+        if *event_type == TypeId::of::<DeadLetter>() {
+            self.dead_letter_listeners.retain(|l| l.id != subscription_id);
+            self.index.remove(&subscription_id);
+            return;
+        }
         if let Some(slot) = self.slots.get_mut(event_type) {
             slot.listeners.retain(|l| l.id != subscription_id);
             if slot.listeners.is_empty() && slot.middlewares.is_empty() {
@@ -151,6 +139,11 @@ impl MutableRegistry {
                 before != self.global_middlewares.len()
             }
             Some(IndexEntry::Listener(event_type)) => {
+                if event_type == TypeId::of::<DeadLetter>() {
+                    let before = self.dead_letter_listeners.len();
+                    self.dead_letter_listeners.retain(|l| l.id != subscription_id);
+                    return before != self.dead_letter_listeners.len();
+                }
                 if let Some(slot) = self.slots.get_mut(&event_type) {
                     let before = slot.listeners.len();
                     slot.listeners.retain(|l| l.id != subscription_id);
@@ -187,27 +180,52 @@ impl MutableRegistry {
         for (type_id, slot) in &self.slots {
             by_type.insert(*type_id, slot.to_snapshot_slot());
         }
+        let dead_letter = if self.dead_letter_listeners.is_empty() {
+            None
+        } else {
+            let mut listeners: Vec<SyncListenerEntry> = self.dead_letter_listeners.iter().map(SyncListenerEntry::from).collect();
+            listeners.sort_by(|a, b| {
+                b.subscription_policy
+                    .priority
+                    .cmp(&a.subscription_policy.priority)
+                    .then_with(|| a.registration_order.cmp(&b.registration_order))
+            });
+            Some(Arc::new(DeadLetterSlot {
+                listeners: listeners.into(),
+                sync_gate: Arc::clone(&self.dead_letter_sync_gate),
+            }))
+        };
         let global_has_async_middleware = self
             .global_middlewares
             .iter()
             .any(|(_, middleware)| matches!(middleware, ErasedMiddleware::Async(_)));
         RegistrySnapshot {
             by_type,
+            dead_letter,
             global_middlewares: self.global_middlewares.clone().into(),
             global_has_async_middleware,
         }
     }
 
-    pub(crate) fn stats(
-        &self,
-        in_flight_async: usize,
-        queue_capacity: usize,
-        publish_permits_available: usize,
-        shutdown_called: bool,
-    ) -> crate::types::BusStats {
+    pub(crate) fn stats(&self, in_flight_async: usize, dispatches_in_flight: usize, shutdown_called: bool) -> crate::types::BusStats {
         let mut subscriptions_by_event: HashMap<&'static str, Vec<HandlerInfo>> = HashMap::new();
         let mut total_subscriptions = 0usize;
         let mut registered_event_types = Vec::new();
+
+        if !self.dead_letter_listeners.is_empty() {
+            let event_name = std::any::type_name::<DeadLetter>();
+            registered_event_types.push(event_name);
+            let infos: Vec<HandlerInfo> = self
+                .dead_letter_listeners
+                .iter()
+                .map(|l| HandlerInfo {
+                    subscription_id: l.id,
+                    name: l.name,
+                })
+                .collect();
+            total_subscriptions += infos.len();
+            subscriptions_by_event.insert(event_name, infos);
+        }
 
         for (type_id, slot) in &self.slots {
             if slot.listeners.is_empty() {
@@ -229,15 +247,11 @@ impl MutableRegistry {
 
         registered_event_types.sort_unstable();
 
-        let publish_in_flight = queue_capacity.saturating_sub(publish_permits_available);
-
         crate::types::BusStats {
             total_subscriptions,
             subscriptions_by_event,
             registered_event_types,
-            queue_capacity,
-            publish_permits_available,
-            publish_in_flight,
+            dispatches_in_flight,
             in_flight_async,
             shutdown_called,
         }

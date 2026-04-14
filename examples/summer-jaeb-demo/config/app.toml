@@ -1,5 +1,4 @@
 [jaeb]
-buffer_size = 128
 handler_timeout_secs = 5
 
 [web]

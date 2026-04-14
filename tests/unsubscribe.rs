@@ -14,7 +14,7 @@ struct Counter {
 }
 
 impl SyncEventHandler<Tick> for Counter {
-    fn handle(&self, _event: &Tick) -> HandlerResult {
+    fn handle(&self, _event: &Tick, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -24,7 +24,7 @@ impl SyncEventHandler<Tick> for Counter {
 
 #[tokio::test]
 async fn unsubscribe_stops_delivery() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -42,7 +42,7 @@ async fn unsubscribe_stops_delivery() {
 
 #[tokio::test]
 async fn unsubscribe_by_id_stops_delivery() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -63,7 +63,7 @@ async fn unsubscribe_by_id_stops_delivery() {
 
 #[tokio::test]
 async fn unsubscribe_unknown_id_returns_false() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     // Subscribe and immediately unsubscribe to obtain a valid-but-removed id.
     let sub = bus
@@ -84,7 +84,7 @@ async fn unsubscribe_unknown_id_returns_false() {
 
 #[tokio::test]
 async fn double_unsubscribe_returns_false_second_time() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(Counter { count: Arc::clone(&count) }).await.expect("subscribe");
@@ -106,7 +106,7 @@ async fn double_unsubscribe_returns_false_second_time() {
 /// copy-on-write (`Arc<Vec<Listener>>`) so both operations are safe.
 #[tokio::test]
 async fn concurrent_publish_and_unsubscribe_is_safe() {
-    let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // Register several listeners.
@@ -147,7 +147,7 @@ async fn concurrent_publish_and_unsubscribe_is_safe() {
 
     // Bus remains operational after the race.
     bus.publish(Tick).await.expect("publish after race should succeed");
-    assert!(bus.is_healthy().await, "bus should remain healthy after race");
+    assert!(bus.is_healthy(), "bus should remain healthy after race");
 
     // The counter should have been incremented some number of times — we
     // don't assert an exact count because the ordering is non-deterministic.

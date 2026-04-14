@@ -32,10 +32,21 @@ impl SyncMiddleware for RejectAll {
     }
 }
 
+struct NamedReject(&'static str, &'static str);
+impl SyncMiddleware for NamedReject {
+    fn process(&self, name: &'static str, _event: &(dyn Any + Send + Sync)) -> MiddlewareDecision {
+        if name == self.0 {
+            MiddlewareDecision::Reject(self.1.to_string())
+        } else {
+            MiddlewareDecision::Continue
+        }
+    }
+}
+
 struct Counter(Arc<AtomicUsize>);
 
 impl SyncEventHandler<Ping> for Counter {
-    fn handle(&self, _event: &Ping) -> HandlerResult {
+    fn handle(&self, _event: &Ping, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -44,7 +55,7 @@ impl SyncEventHandler<Ping> for Counter {
 struct PongCounter(Arc<AtomicUsize>);
 
 impl SyncEventHandler<Pong> for PongCounter {
-    fn handle(&self, _event: &Pong) -> HandlerResult {
+    fn handle(&self, _event: &Pong, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -119,7 +130,7 @@ struct TypedAsyncOrderTracker {
 struct AlwaysFailPing;
 
 impl SyncEventHandler<Ping> for AlwaysFailPing {
-    fn handle(&self, _event: &Ping) -> HandlerResult {
+    fn handle(&self, _event: &Ping, _bus: &EventBus) -> HandlerResult {
         Err("sync failure".into())
     }
 }
@@ -129,7 +140,7 @@ struct DeadLetterCounter {
 }
 
 impl SyncEventHandler<jaeb::DeadLetter> for DeadLetterCounter {
-    fn handle(&self, _event: &jaeb::DeadLetter) -> HandlerResult {
+    fn handle(&self, _event: &jaeb::DeadLetter, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -148,7 +159,7 @@ impl TypedMiddleware<Ping> for TypedAsyncOrderTracker {
 
 #[tokio::test]
 async fn middleware_continues_handlers_fire() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_sync_middleware(AllowAll).await.expect("add middleware");
@@ -162,7 +173,7 @@ async fn middleware_continues_handlers_fire() {
 
 #[tokio::test]
 async fn middleware_rejects_handlers_do_not_fire() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_sync_middleware(RejectAll("blocked".into())).await.expect("add middleware");
@@ -180,7 +191,7 @@ async fn middleware_rejects_handlers_do_not_fire() {
 
 #[tokio::test]
 async fn middleware_ordering_fifo() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
     let count = Arc::new(AtomicUsize::new(0));
 
@@ -212,7 +223,7 @@ async fn middleware_ordering_fifo() {
 
 #[tokio::test]
 async fn middleware_removal() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let mw_sub = bus.add_sync_middleware(RejectAll("blocked".into())).await.expect("add middleware");
@@ -253,7 +264,7 @@ async fn middleware_with_downcast() {
         }
     }
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _mw = bus.add_sync_middleware(OnlyAllowImportant).await.expect("add middleware");
 
     // ImportantEvent(5) should pass.
@@ -280,7 +291,7 @@ async fn async_middleware_works() {
         }
     }
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _mw = bus.add_middleware(AsyncAllow).await.expect("add async middleware");
@@ -301,7 +312,7 @@ async fn async_middleware_rejects() {
         }
     }
 
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let _mw = bus.add_middleware(AsyncReject).await.expect("add async middleware");
 
     let err = bus.publish(Ping).await.unwrap_err();
@@ -312,7 +323,7 @@ async fn async_middleware_rejects() {
 
 #[tokio::test]
 async fn typed_middleware_runs_for_matching_event_only() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let typed_hits = Arc::new(AtomicUsize::new(0));
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
@@ -342,7 +353,7 @@ async fn typed_middleware_runs_for_matching_event_only() {
 
 #[tokio::test]
 async fn typed_sync_middleware_rejects_before_handlers() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _typed = bus
@@ -361,7 +372,7 @@ async fn typed_sync_middleware_rejects_before_handlers() {
 
 #[tokio::test]
 async fn typed_async_middleware_rejects_before_handlers() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _typed = bus
@@ -380,7 +391,7 @@ async fn typed_async_middleware_rejects_before_handlers() {
 
 #[tokio::test]
 async fn typed_middleware_runs_after_global_middleware_in_order() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
 
     let _global_sync = bus
@@ -417,7 +428,7 @@ async fn typed_middleware_runs_after_global_middleware_in_order() {
 
     let handler_log = Arc::clone(&log);
     let _sub = bus
-        .subscribe::<Ping, _, _>(move |_event: &Ping| {
+        .subscribe::<Ping, _, _>(move |_event: &Ping, _bus: &EventBus| {
             handler_log.lock().unwrap().push("handler");
             Ok(())
         })
@@ -433,7 +444,7 @@ async fn typed_middleware_runs_after_global_middleware_in_order() {
 
 #[tokio::test]
 async fn typed_middleware_ordering_fifo() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
 
     let _typed_a = bus
@@ -454,7 +465,7 @@ async fn typed_middleware_ordering_fifo() {
 
     let handler_log = Arc::clone(&log);
     let _sub = bus
-        .subscribe::<Ping, _, _>(move |_event: &Ping| {
+        .subscribe::<Ping, _, _>(move |_event: &Ping, _bus: &EventBus| {
             handler_log.lock().unwrap().push("handler");
             Ok(())
         })
@@ -470,7 +481,7 @@ async fn typed_middleware_ordering_fifo() {
 
 #[tokio::test]
 async fn typed_middleware_removal() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let typed_sub = bus
@@ -494,7 +505,7 @@ async fn typed_middleware_removal() {
 
 #[tokio::test]
 async fn sync_only_fast_path_preserves_pipeline_and_dead_letter() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
     let dead_letters = Arc::new(AtomicUsize::new(0));
 
@@ -523,7 +534,7 @@ async fn sync_only_fast_path_preserves_pipeline_and_dead_letter() {
 
     let handler_log = Arc::clone(&log);
     let _sub = bus
-        .subscribe::<Ping, _, _>(move |_event: &Ping| {
+        .subscribe::<Ping, _, _>(move |_event: &Ping, _bus: &EventBus| {
             handler_log.lock().unwrap().push("handler");
             Ok(())
         })
@@ -539,4 +550,60 @@ async fn sync_only_fast_path_preserves_pipeline_and_dead_letter() {
     assert_eq!(&entries[..3], ["global-sync", "typed-sync", "handler"]);
     assert_eq!(entries.iter().filter(|entry| **entry == "global-sync").count(), 2);
     assert_eq!(dead_letters.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn dead_letter_delivery_runs_through_global_middleware() {
+    let bus = EventBus::builder().build().await.expect("valid config");
+    let log = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
+    let dead_letters = Arc::new(AtomicUsize::new(0));
+
+    let _dl = bus
+        .subscribe_dead_letters(DeadLetterCounter {
+            count: Arc::clone(&dead_letters),
+        })
+        .await
+        .expect("subscribe dead letters");
+
+    let _mw = bus
+        .add_sync_middleware(OrderTracker {
+            id: "global-sync",
+            log: Arc::clone(&log),
+        })
+        .await
+        .expect("add global middleware");
+
+    let _failing = bus.subscribe::<Ping, _, _>(AlwaysFailPing).await.expect("subscribe failing handler");
+
+    bus.publish(Ping).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    let entries = log.lock().unwrap().clone();
+    assert_eq!(entries, vec!["global-sync", "global-sync"]);
+    assert_eq!(dead_letters.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn global_middleware_can_reject_dead_letter_delivery() {
+    let bus = EventBus::builder().build().await.expect("valid config");
+    let dead_letters = Arc::new(AtomicUsize::new(0));
+
+    let _dl = bus
+        .subscribe_dead_letters(DeadLetterCounter {
+            count: Arc::clone(&dead_letters),
+        })
+        .await
+        .expect("subscribe dead letters");
+
+    let _mw = bus
+        .add_sync_middleware(NamedReject(std::any::type_name::<jaeb::DeadLetter>(), "no dead letters"))
+        .await
+        .expect("add global middleware");
+
+    let _failing = bus.subscribe::<Ping, _, _>(AlwaysFailPing).await.expect("subscribe failing handler");
+
+    bus.publish(Ping).await.expect("publish");
+    bus.shutdown().await.expect("shutdown");
+
+    assert_eq!(dead_letters.load(Ordering::SeqCst), 0);
 }

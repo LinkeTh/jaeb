@@ -30,7 +30,7 @@ struct SpanCapturingAsyncHandler {
 }
 
 impl EventHandler<TracedEvent> for SpanCapturingAsyncHandler {
-    async fn handle(&self, _event: &TracedEvent) -> HandlerResult {
+    async fn handle(&self, _event: &TracedEvent, _bus: &EventBus) -> HandlerResult {
         // Record the span ID that is current when the handler runs.
         let current = Span::current();
         let id = current.id();
@@ -45,7 +45,7 @@ struct SpanCapturingSyncHandler {
 }
 
 impl SyncEventHandler<TracedEvent> for SpanCapturingSyncHandler {
-    fn handle(&self, _event: &TracedEvent) -> HandlerResult {
+    fn handle(&self, _event: &TracedEvent, _bus: &EventBus) -> HandlerResult {
         let current = Span::current();
         let id = current.id();
         *self.captured.lock().expect("lock") = id;
@@ -66,7 +66,7 @@ async fn async_handler_inherits_publish_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 
@@ -113,7 +113,7 @@ async fn sync_handler_sees_publish_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let captured = Arc::new(std::sync::Mutex::new(None));
 
     let _ = bus
@@ -148,7 +148,7 @@ async fn async_handler_works_without_active_span() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 
@@ -174,69 +174,20 @@ async fn async_handler_works_without_active_span() {
     assert!(handler_span_id.is_none(), "handler should have no active span when publisher had none");
 }
 
-/// Verify that `try_publish` also propagates the caller's span to async
-/// handlers. This exercises a different code path where the entire dispatch
-/// is deferred to a `tokio::spawn` — the span must be captured *before*
-/// the spawn, not inside it.
+/// Verify span propagation for the single-async-listener path. This covers the
+/// optimized one-listener scheduling branch used by dispatch and ensures the
+/// publisher's span still reaches the async handler.
 #[tokio::test]
-async fn try_publish_propagates_caller_span() {
+async fn single_async_listener_path_propagates_caller_span() {
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
         .with_test_writer()
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
-    let captured = Arc::new(tokio::sync::Mutex::new(None));
-    let done = Arc::new(Notify::new());
-
-    let _ = bus
-        .subscribe(SpanCapturingAsyncHandler {
-            captured: Arc::clone(&captured),
-            done: Arc::clone(&done),
-        })
-        .await
-        .expect("subscribe");
-
-    let outer_span = tracing::info_span!("test.try_publish");
-    let outer_id = outer_span.id();
-    assert!(outer_id.is_some(), "subscriber must allocate span IDs for this test");
-
-    {
-        let _entered = outer_span.enter();
-        bus.try_publish(TracedEvent { value: 4 }).expect("try_publish");
-    }
-
-    tokio::time::timeout(Duration::from_secs(2), done.notified())
-        .await
-        .expect("handler should complete within timeout");
-
-    bus.shutdown().await.expect("shutdown");
-
-    let handler_span_id = captured.lock().await.clone();
-    assert!(handler_span_id.is_some(), "handler should have an active span via try_publish");
-    assert_eq!(
-        handler_span_id, outer_id,
-        "try_publish should propagate the caller's span to async handlers"
-    );
-}
-
-/// Verify span propagation via the persistent worker path. When a non-once
-/// async handler is registered, dispatch uses `AsyncSlotWorker` (a persistent
-/// task processing work items via a channel) rather than `tokio::spawn` per
-/// publish. The span must be threaded through `WorkItem` to reach the handler.
-#[tokio::test]
-async fn worker_path_propagates_caller_span() {
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_test_writer()
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-
-    // A non-once async handler with a single listener triggers the persistent
-    // worker fast path (the slot has exactly one async listener, not marked
-    // `once`, so it goes through `AsyncSlotWorker`).
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    // A non-once async handler with a single listener exercises the single
+    // listener dispatch path.
+    let bus = EventBus::builder().build().await.expect("valid config");
     let captured = Arc::new(tokio::sync::Mutex::new(None));
     let done = Arc::new(Notify::new());
 
@@ -265,9 +216,9 @@ async fn worker_path_propagates_caller_span() {
     bus.shutdown().await.expect("shutdown");
 
     let handler_span_id = captured.lock().await.clone();
-    assert!(handler_span_id.is_some(), "handler via worker path should have an active span");
+    assert!(handler_span_id.is_some(), "handler via single-listener path should have an active span");
     assert_eq!(
         handler_span_id, outer_id,
-        "worker path should propagate the publisher's span to async handlers"
+        "single-listener path should propagate the publisher's span to async handlers"
     );
 }

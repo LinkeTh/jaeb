@@ -1,6 +1,6 @@
 [package]
 name = "jaeb"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 authors = ["linket <t.linke@pripares.com>"]
 description = "simple snapshot-driven event bus"
@@ -24,12 +24,10 @@ members = [
     "examples/sync-handler",
     "examples/closure-handlers",
     "examples/subscription-lifecycle",
-    "examples/fire-once",
     "examples/retry-strategies",
     "examples/dead-letters",
     "examples/panic-safety",
     "examples/middleware",
-    "examples/backpressure",
     "examples/graceful-shutdown",
     "examples/concurrency-limit",
     "examples/introspection",
@@ -42,8 +40,8 @@ members = [
     "summer-jaeb",
 ]
 [dependencies]
-arc-swap = "1.7"
-jaeb-macros = { version = "0.3.0", path = "jaeb-macros", optional = true }
+arc-swap = "1.9"
+jaeb-macros = { version = "0.4.0", path = "jaeb-macros", optional = true }
 metrics = { version = "0.24", optional = true }
 tokio = { version = "1.51", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -57,28 +55,10 @@ test-utils = []
 trace = ["dep:tracing"]
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["async_tokio"] }
 tokio = { version = "1.51", features = ["full", "test-util"] }
-async-trait = "0.1"
-eventbuzz = { version = "0.2", features = ["asynchronous"] }
-evno = "1.0.2"
-eventador = { version = "0.0.18", features = ["async"] }
-metrics-util = { version = "0.20.1", default-features = false, features = ["debugging"] }
-proptest = "1.9.0"
-tracing-test = "0.2"
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
+proptest = "1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-
-[[bench]]
-name = "throughput"
-harness = false
-
-[[bench]]
-name = "comparison"
-harness = false
-
-[[bench]]
-name = "evno_contention"
-harness = false
 
 [[test]]
 name = "macro_dep_handlers"

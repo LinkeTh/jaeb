@@ -15,7 +15,7 @@ struct Tick;
 struct Counter(Arc<AtomicUsize>);
 
 impl SyncEventHandler<Tick> for Counter {
-    fn handle(&self, _event: &Tick) -> HandlerResult {
+    fn handle(&self, _event: &Tick, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -25,7 +25,7 @@ impl SyncEventHandler<Tick> for Counter {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // 1. Subscribe and unsubscribe explicitly.

@@ -1,0 +1,13 @@
+error: #[handler] function must have at least one parameter (the event)
+ --> tests/compile_fail/handler_missing_event_param.rs:6:1
+  |
+6 | async fn on_event() -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/handler_missing_event_param.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

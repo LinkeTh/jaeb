@@ -74,7 +74,7 @@ impl ConfigState {
 
     fn field_count(&self) -> usize {
         match self.active_tab {
-            ConfigTab::Bus => 4,
+            ConfigTab::Bus => 3,
             ConfigTab::EventTypes => 4,
             ConfigTab::Listeners => {
                 if self.config.listeners.is_empty() {
@@ -235,10 +235,9 @@ impl ConfigState {
         match self.active_tab {
             ConfigTab::Bus => {
                 let val = match self.field_idx {
-                    0 => self.config.bus.buffer_size.to_string(),
-                    1 => self.config.bus.handler_timeout_ms.to_string(),
-                    2 => self.config.bus.max_concurrent_async.to_string(),
-                    3 => self.config.bus.shutdown_timeout_ms.to_string(),
+                    0 => self.config.bus.handler_timeout_ms.to_string(),
+                    1 => self.config.bus.max_concurrent_async.to_string(),
+                    2 => self.config.bus.shutdown_timeout_ms.to_string(),
                     _ => return,
                 };
                 self.edit_buffer = val;
@@ -339,17 +338,15 @@ impl ConfigState {
     fn commit_edit(&mut self) {
         match self.active_tab {
             ConfigTab::Bus => {
-                if let Ok(val) = self.edit_buffer.parse::<usize>() {
-                    match self.field_idx {
-                        0 => self.config.bus.buffer_size = val,
-                        2 => self.config.bus.max_concurrent_async = val,
-                        _ => {}
-                    }
+                if let Ok(val) = self.edit_buffer.parse::<usize>()
+                    && self.field_idx == 1
+                {
+                    self.config.bus.max_concurrent_async = val
                 }
                 if let Ok(val) = self.edit_buffer.parse::<u64>() {
                     match self.field_idx {
-                        1 => self.config.bus.handler_timeout_ms = val,
-                        3 => self.config.bus.shutdown_timeout_ms = val,
+                        0 => self.config.bus.handler_timeout_ms = val,
+                        2 => self.config.bus.shutdown_timeout_ms = val,
                         _ => {}
                     }
                 }
@@ -508,20 +505,13 @@ fn render_bus_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
     let c = &state.config.bus;
     let lines = vec![
         field_line(
-            "Buffer Size:",
-            &c.buffer_size.to_string(),
-            state.field_idx == 0,
-            state.editing,
-            &state.edit_buffer,
-        ),
-        field_line(
             "Handler Timeout (ms):",
             &if c.handler_timeout_ms == 0 {
                 "none".into()
             } else {
                 c.handler_timeout_ms.to_string()
             },
-            state.field_idx == 1,
+            state.field_idx == 0,
             state.editing,
             &state.edit_buffer,
         ),
@@ -532,14 +522,14 @@ fn render_bus_tab(area: Rect, buf: &mut Buffer, state: &ConfigState) {
             } else {
                 c.max_concurrent_async.to_string()
             },
-            state.field_idx == 2,
+            state.field_idx == 1,
             state.editing,
             &state.edit_buffer,
         ),
         field_line(
             "Shutdown Timeout (ms):",
             &c.shutdown_timeout_ms.to_string(),
-            state.field_idx == 3,
+            state.field_idx == 2,
             state.editing,
             &state.edit_buffer,
         ),

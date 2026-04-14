@@ -35,7 +35,7 @@ If you need durable messaging, consider pairing JAEB with an external queue for 
 
 ```toml
 [dependencies]
-jaeb = "0.4.0"
+jaeb = "0.5.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -43,7 +43,7 @@ With metrics instrumentation:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.4.0", features = ["metrics"] }
+jaeb = { version = "0.5.0", features = ["metrics"] }
 ```
 
 ![png](grafana.png 'grafana dashboard')
@@ -52,14 +52,14 @@ With tracing:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.4.0", features = ["trace"] }
+jaeb = { version = "0.5.0", features = ["trace"] }
 ```
 
 With standalone handler macros:
 
 ```toml
 [dependencies]
-jaeb = { version = "0.4.0", features = ["macros"] }
+jaeb = { version = "0.5.0", features = ["macros"] }
 ```
 
 ## ⚡ Quick Start
@@ -70,7 +70,7 @@ Full example with sync/async handlers, retry policies, and dead-letter handling:
 use std::time::Duration;
 
 use jaeb::{
-    DeadLetter, EventBus, EventBusError, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy, SyncEventHandler,
+    AsyncSubscriptionPolicy, DeadLetter, EventBus, EventBusError, EventHandler, HandlerResult, RetryStrategy, SyncEventHandler,
 };
 
 #[derive(Clone)]
@@ -81,7 +81,7 @@ struct OrderCheckoutEvent {
 struct AsyncCheckoutHandler;
 
 impl EventHandler<OrderCheckoutEvent> for AsyncCheckoutHandler {
-    async fn handle(&self, event: &OrderCheckoutEvent) -> HandlerResult {
+    async fn handle(&self, event: &OrderCheckoutEvent, _bus: &EventBus) -> HandlerResult {
         println!("async checkout {}", event.order_id);
         Ok(())
     }
@@ -90,7 +90,7 @@ impl EventHandler<OrderCheckoutEvent> for AsyncCheckoutHandler {
 struct SyncAuditHandler;
 
 impl SyncEventHandler<OrderCheckoutEvent> for SyncAuditHandler {
-    fn handle(&self, event: &OrderCheckoutEvent) -> HandlerResult {
+    fn handle(&self, event: &OrderCheckoutEvent, _bus: &EventBus) -> HandlerResult {
         println!("sync audit {}", event.order_id);
         Ok(())
     }
@@ -99,7 +99,7 @@ impl SyncEventHandler<OrderCheckoutEvent> for SyncAuditHandler {
 struct DeadLetterLogger;
 
 impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
-    fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+    fn handle(&self, dl: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         eprintln!(
             "dead-letter: event={} listener={} attempts={} error={}",
             dl.event_name, dl.subscription_id, dl.attempts, dl.error
@@ -110,10 +110,9 @@ impl SyncEventHandler<DeadLetter> for DeadLetterLogger {
 
 #[tokio::main]
 async fn main() -> Result<(), EventBusError> {
-    let bus = EventBus::builder().buffer_size(64).build().await?;
+    let bus = EventBus::builder().build().await?;
 
-    let retry_policy = SubscriptionPolicy::default()
-        .with_priority(10)
+    let retry_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)));
 
@@ -125,7 +124,6 @@ async fn main() -> Result<(), EventBusError> {
     let _dl_sub = bus.subscribe_dead_letters(DeadLetterLogger).await?;
 
     bus.publish(OrderCheckoutEvent { order_id: 42 }).await?;
-    bus.try_publish(OrderCheckoutEvent { order_id: 43 })?;
 
     checkout_sub.unsubscribe().await?;
     bus.shutdown().await?;
@@ -145,38 +143,30 @@ graph LR
     P[publish] --> S[Load Snapshot]
     S --> GM[Global Middleware]
     GM --> TM[Typed Middleware]
-    TM --> AL[Async Lane - spawned]
+    TM --> AL[Async Lane - enqueued]
     TM --> SL[Sync Lane - serialized FIFO]
 ```
 
 - async and sync listeners are separated per event type
-- priority is applied per lane (higher first)
+- sync priority is applied within the sync lane (higher first)
 - equal priority preserves registration order
 
 ## API Highlights
 
-- `EventBus::builder()` for buffer size, timeouts, concurrency limit, and default policy
-- `default_subscription_policy(SubscriptionPolicy)` sets fallback policy for `subscribe`
+- `EventBus::builder()` for timeouts, concurrency limit, and default subscription policies
+- `default_subscription_policies(SubscriptionDefaults)` sets fallback policies for `subscribe`
 - `subscribe_with_policy(handler, policy)` accepts:
-    - `SubscriptionPolicy` for async handlers
+    - `AsyncSubscriptionPolicy` for async handlers
     - `SyncSubscriptionPolicy` for sync handlers and once handlers
-- `publish` waits for sync listeners and task-spawn for async listeners
-- `try_publish` is non-blocking and returns `EventBusError::ChannelFull` on saturation
+- `publish` waits for sync listeners and async-listener task spawning
+- `max_concurrent_async(n)` caps async handler execution **across the whole bus**, not per event type; async listeners are scheduled in registration
+  order within a publish, then run asynchronously as tracked tasks
 
 Core policy types:
 
-- `SubscriptionPolicy { priority, max_retries, retry_strategy, dead_letter }`
+- `AsyncSubscriptionPolicy { max_retries, retry_strategy, dead_letter }`
 - `SyncSubscriptionPolicy { priority, dead_letter }`
-- `IntoSubscriptionPolicy<M>` sealed trait for compile-time mode/policy safety
-
-<details>
-<summary>Deprecated aliases (will be removed in the next major version)</summary>
-
-- `FailurePolicy` -> `SubscriptionPolicy`
-- `NoRetryPolicy` -> `SyncSubscriptionPolicy`
-- `IntoFailurePolicy` -> `IntoSubscriptionPolicy`
-
-</details>
+- `SubscriptionDefaults { policy, sync_policy }`
 
 ## Examples
 
@@ -186,7 +176,6 @@ Core policy types:
 - `examples/retry-strategies` - fixed/exponential/jitter retry configuration
 - `examples/dead-letters` - dead-letter subscription and inspection
 - `examples/middleware` - global and typed middleware
-- `examples/backpressure` - `try_publish` saturation behavior
 - `examples/concurrency-limit` - max concurrent async handlers
 - `examples/graceful-shutdown` - controlled shutdown and draining
 - `examples/introspection` - `EventBus::stats()` output
@@ -224,7 +213,6 @@ When `metrics` is enabled, JAEB records:
 - `eventbus.handler.duration` (histogram, labels: `event`, `handler`)
 - `eventbus.handler.error` (counter, labels: `event`, `listener`)
 - `eventbus.dead_letter` (counter, labels: `event`, `handler`) — fires when a dead letter is created
-- `eventbus.handler.join_error` (counter, labels: `event`)
 
 ## summer-rs Integration
 
@@ -237,7 +225,7 @@ Macro support includes:
 - `retry_base_ms`
 - `retry_max_ms`
 - `dead_letter`
-- `priority`
+- `priority` (sync listeners only)
 - `name`
 
 ```rust,ignore
@@ -353,7 +341,7 @@ fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
 #[tokio::main]
 async fn main() -> Result<(), jaeb::EventBusError> {
     let bus = EventBus::builder()
-        .buffer_size(64)
+        
         .handler(process_payment)
         .dead_letter(on_dead_letter)
         .build()
@@ -404,7 +392,7 @@ async fn main() -> Result<(), jaeb::EventBusError> {
 ## Notes
 
 - JAEB requires a running Tokio runtime.
-- Events must be `Send + Sync + 'static`; async handlers also require `Clone`.
+- Events published through JAEB must be `Send + Sync + 'static + Clone`.
 - The crate enforces `#![forbid(unsafe_code)]`.
 
 ## License

@@ -1,0 +1,13 @@
+error: retry strategy attributes have no effect without `retries`; add `retries = N` or remove retry-related attributes
+ --> tests/compile_fail/handler_strategy_without_retries.rs:9:1
+  |
+9 | async fn on_event(event: &MyEvent) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/handler_strategy_without_retries.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

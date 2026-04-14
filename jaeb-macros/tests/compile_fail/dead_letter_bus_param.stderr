@@ -1,0 +1,13 @@
+error: #[dead_letter_handler] functions cannot declare a `bus: &EventBus` parameter — dead-letter handlers run in a controlled re-publish context and bus access is intentionally restricted
+ --> tests/compile_fail/dead_letter_bus_param.rs:6:1
+  |
+6 | fn on_dead_letter(event: &DeadLetter, bus: &EventBus) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeadLetter`, `EventBus`, and `HandlerResult`
+ --> tests/compile_fail/dead_letter_bus_param.rs:3:12
+  |
+3 | use jaeb::{DeadLetter, EventBus, HandlerResult, dead_letter_handler};
+  |            ^^^^^^^^^^  ^^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

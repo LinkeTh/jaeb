@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use jaeb::{EventBus, EventHandler, HandlerResult, RetryStrategy, SubscriptionPolicy};
+use jaeb::{AsyncSubscriptionPolicy, EventBus, EventHandler, HandlerResult, RetryStrategy};
 
 // ── Events ──────────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ struct FlakyHandler {
 }
 
 impl EventHandler<Job> for FlakyHandler {
-    async fn handle(&self, _event: &Job) -> HandlerResult {
+    async fn handle(&self, _event: &Job, _bus: &EventBus) -> HandlerResult {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         if attempt <= self.fail_count {
             println!("[{}] attempt {attempt}: failing", self.label);
@@ -38,10 +38,10 @@ impl EventHandler<Job> for FlakyHandler {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     // Fixed: wait 50ms between each retry.
-    let fixed_policy = SubscriptionPolicy::default()
+    let fixed_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::Fixed(Duration::from_millis(50)))
         .with_dead_letter(false);
@@ -58,7 +58,7 @@ async fn main() {
         .expect("subscribe failed");
 
     // Exponential: 25ms, 50ms, 100ms, ...
-    let exp_policy = SubscriptionPolicy::default()
+    let exp_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::Exponential {
             base: Duration::from_millis(25),
@@ -78,7 +78,7 @@ async fn main() {
         .expect("subscribe failed");
 
     // ExponentialWithJitter: randomised delay up to the exponential cap.
-    let jitter_policy = SubscriptionPolicy::default()
+    let jitter_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(3)
         .with_retry_strategy(RetryStrategy::ExponentialWithJitter {
             base: Duration::from_millis(25),

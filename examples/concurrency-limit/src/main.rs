@@ -1,4 +1,4 @@
-//! Concurrency limit: `max_concurrent_async` caps parallel handler execution.
+//! Concurrency limit: `max_concurrent_async` caps parallel async handler execution across the whole bus.
 //!
 //! Without this cap every published event spawns an async task immediately.
 //! With the cap, excess tasks queue behind a semaphore.
@@ -24,7 +24,7 @@ struct TrackedHandler {
 }
 
 impl EventHandler<Work> for TrackedHandler {
-    async fn handle(&self, event: &Work) -> HandlerResult {
+    async fn handle(&self, event: &Work, _bus: &EventBus) -> HandlerResult {
         let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         // Update peak concurrency.
         self.peak.fetch_max(current, Ordering::SeqCst);
@@ -44,12 +44,7 @@ async fn main() {
     let in_flight = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
 
-    let bus = EventBus::builder()
-        .buffer_size(64)
-        .max_concurrent_async(2)
-        .build()
-        .await
-        .expect("valid config");
+    let bus = EventBus::builder().max_concurrent_async(2).build().await.expect("valid config");
 
     let _ = bus
         .subscribe::<Work, _, _>(TrackedHandler {

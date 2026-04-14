@@ -56,7 +56,7 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 /// # Policy attributes
 ///
 /// ```rust,ignore
-/// #[handler(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true, priority = 10)]
+/// #[handler(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]
 /// async fn flaky(event: &OrderPlaced) -> HandlerResult {
 ///     Ok(())
 /// }
@@ -209,7 +209,7 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
     }
 
     // Parse optional Dep<T> parameters (position 1+).
-    let dep_params = parse_dep_params(&func.sig.inputs)?;
+    let (dep_params, has_bus) = parse_dep_params(&func.sig.inputs)?;
     let has_deps = !dep_params.is_empty();
 
     if (attrs.retry_base_ms.is_some() || attrs.retry_max_ms.is_some()) && attrs.retry_strategy.is_none() {
@@ -255,6 +255,13 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
         ));
     }
 
+    if is_async && (attrs.priority.is_some()) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "`priority` attribute is only supported on sync handlers",
+        ));
+    }
+
     let handler_name: Option<&str> = match &attrs.name {
         Some(n) if n.is_empty() => None,
         Some(n) => Some(n.as_str()),
@@ -278,9 +285,9 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
         let resolved_ident = resolved_struct_ident(fn_name);
         let resolved_struct = gen_resolved_struct(&resolved_ident, &dep_params);
         let handler_impl = if is_async {
-            gen_async_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name)
+            gen_async_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name, has_bus)
         } else {
-            gen_sync_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name)
+            gen_sync_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name, has_bus)
         };
         let descriptor_impl = gen_handler_descriptor_impl_with_deps(&handler_ident, &resolved_ident, event_ty, &attrs, is_async, &dep_params);
 
@@ -302,9 +309,9 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
         })
     } else {
         let handler_impl = if is_async {
-            gen_async_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name)
+            gen_async_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name, has_bus)
         } else {
-            gen_sync_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name)
+            gen_sync_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name, has_bus)
         };
         let descriptor_impl = gen_handler_descriptor_impl(&handler_ident, event_ty, &attrs, is_async);
 
@@ -386,8 +393,15 @@ fn expand_dead_letter_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<
     }
 
     // Parse optional Dep<T> parameters (position 1+).
-    let dep_params = parse_dep_params(&func.sig.inputs)?;
+    let (dep_params, has_bus) = parse_dep_params(&func.sig.inputs)?;
     let has_deps = !dep_params.is_empty();
+
+    if has_bus {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[dead_letter_handler] functions cannot declare a `bus: &EventBus` parameter — dead-letter handlers run in a controlled re-publish context and bus access is intentionally restricted",
+        ));
+    }
 
     let handler_name: Option<&str> = match &attrs.name {
         Some(n) if n.is_empty() => None,
@@ -411,7 +425,7 @@ fn expand_dead_letter_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<
     if has_deps {
         let resolved_ident = resolved_struct_ident(fn_name);
         let resolved_struct = gen_resolved_struct(&resolved_ident, &dep_params);
-        let sync_impl = gen_sync_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name);
+        let sync_impl = gen_sync_handler_impl_resolved(&resolved_ident, event_ty, &inner_fn_ident, &dep_params, handler_name, false);
         let descriptor_impl = gen_dead_letter_descriptor_impl_with_deps(&handler_ident, &resolved_ident, &dep_params);
 
         Ok(quote! {
@@ -431,7 +445,7 @@ fn expand_dead_letter_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<
             #vis const #fn_name: #handler_ident = #handler_ident;
         })
     } else {
-        let sync_impl = gen_sync_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name);
+        let sync_impl = gen_sync_handler_impl(&handler_ident, event_ty, &inner_fn_ident, handler_name, false);
         let descriptor_impl = gen_dead_letter_descriptor_impl(&handler_ident);
 
         Ok(quote! {

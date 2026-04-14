@@ -104,7 +104,7 @@ async fn test_bus_capture_idempotent() {
 
 #[tokio::test]
 async fn test_bus_builder() {
-    let bus = TestBus::builder().buffer_size(32).build().await.expect("build TestBus");
+    let bus = TestBus::builder().build().await.expect("build TestBus");
 
     bus.capture::<Ping>().await.expect("capture");
     bus.inner().publish(Ping(7)).await.expect("publish");

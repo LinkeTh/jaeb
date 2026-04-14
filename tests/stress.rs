@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use jaeb::{EventBus, EventBusError, EventHandler, HandlerResult};
+use jaeb::{EventBus, EventBusError, EventHandler, HandlerResult, SyncEventHandler};
 
 #[derive(Clone, Debug)]
 struct StressEvent;
@@ -13,8 +13,16 @@ struct SlowAsyncCounter {
     delay: Duration,
 }
 
+struct NoOpSyncHandler;
+
+impl SyncEventHandler<StressEvent> for NoOpSyncHandler {
+    fn handle(&self, _event: &StressEvent, _bus: &EventBus) -> HandlerResult {
+        Ok(())
+    }
+}
+
 impl EventHandler<StressEvent> for SlowAsyncCounter {
-    async fn handle(&self, _event: &StressEvent) -> HandlerResult {
+    async fn handle(&self, _event: &StressEvent, _bus: &EventBus) -> HandlerResult {
         tokio::time::sleep(self.delay).await;
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -23,12 +31,12 @@ impl EventHandler<StressEvent> for SlowAsyncCounter {
 
 #[tokio::test]
 async fn hundred_concurrent_publishers() {
-    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
     let _sub = bus
-        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent| {
+        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent, _bus: &EventBus| {
             count_for_handler.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -59,13 +67,13 @@ async fn hundred_concurrent_publishers() {
 
 #[tokio::test]
 async fn five_hundred_listeners_single_type() {
-    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     for _ in 0..500 {
         let count_for_handler = Arc::clone(&count);
         let _sub = bus
-            .subscribe::<StressEvent, _, _>(move |_event: &StressEvent| {
+            .subscribe::<StressEvent, _, _>(move |_event: &StressEvent, _bus: &EventBus| {
                 count_for_handler.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
@@ -81,12 +89,12 @@ async fn five_hundred_listeners_single_type() {
 
 #[tokio::test]
 async fn hundred_thousand_events_throughput() {
-    let bus = EventBus::builder().buffer_size(2048).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let count_for_handler = Arc::clone(&count);
     let _sub = bus
-        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent| {
+        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent, _bus: &EventBus| {
             count_for_handler.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -107,14 +115,14 @@ async fn hundred_thousand_events_throughput() {
 
 #[tokio::test]
 async fn mixed_sync_async_high_contention() {
-    let bus = EventBus::builder().buffer_size(2048).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let sync_hits = Arc::new(AtomicUsize::new(0));
     let async_hits = Arc::new(AtomicUsize::new(0));
 
     for _ in 0..50 {
         let hits = Arc::clone(&sync_hits);
         let _sub = bus
-            .subscribe::<StressEvent, _, _>(move |_event: &StressEvent| {
+            .subscribe::<StressEvent, _, _>(move |_event: &StressEvent, _bus: &EventBus| {
                 hits.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
@@ -125,7 +133,7 @@ async fn mixed_sync_async_high_contention() {
     for _ in 0..50 {
         let hits = Arc::clone(&async_hits);
         let _sub = bus
-            .subscribe::<StressEvent, _, _>(move |_event: StressEvent| {
+            .subscribe::<StressEvent, _, _>(move |_event: StressEvent, _bus: EventBus| {
                 let hits = Arc::clone(&hits);
                 async move {
                     hits.fetch_add(1, Ordering::SeqCst);
@@ -163,13 +171,13 @@ async fn mixed_sync_async_high_contention() {
 
 #[tokio::test]
 async fn subscribe_unsubscribe_churn_during_publish() {
-    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let delivered = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
 
     let delivered_for_handler = Arc::clone(&delivered);
     let _baseline = bus
-        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent| {
+        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent, _bus: &EventBus| {
             delivered_for_handler.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -191,10 +199,7 @@ async fn subscribe_unsubscribe_churn_during_publish() {
         let bus = bus.clone();
         tokio::spawn(async move {
             for _ in 0..1000 {
-                let sub = bus
-                    .subscribe::<StressEvent, _, _>(|_event: &StressEvent| Ok(()))
-                    .await
-                    .expect("subscribe churn");
+                let sub = bus.subscribe::<StressEvent, _, _>(NoOpSyncHandler).await.expect("subscribe churn");
                 let _removed = sub.unsubscribe().await.expect("unsubscribe churn");
             }
         })
@@ -211,14 +216,14 @@ async fn subscribe_unsubscribe_churn_during_publish() {
         .expect("publisher drain timed out")
         .expect("publisher task panicked");
 
-    assert!(bus.is_healthy().await, "bus should remain healthy");
+    assert!(bus.is_healthy(), "bus should remain healthy");
     assert!(delivered.load(Ordering::SeqCst) > 0, "baseline listener should have received events");
     bus.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
 async fn backpressure_fairness_under_contention() {
-    let bus = EventBus::builder().buffer_size(1).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let handled = Arc::new(AtomicUsize::new(0));
 
     let _sub = bus
@@ -260,12 +265,12 @@ async fn backpressure_fairness_under_contention() {
 
 #[tokio::test]
 async fn concurrent_stats_access_under_load() {
-    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let handled = Arc::new(AtomicUsize::new(0));
 
     let handled_for_handler = Arc::clone(&handled);
     let _sub = bus
-        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent| {
+        .subscribe::<StressEvent, _, _>(move |_event: &StressEvent, _bus: &EventBus| {
             handled_for_handler.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -278,7 +283,7 @@ async fn concurrent_stats_access_under_load() {
         stats_tasks.spawn(async move {
             for _ in 0..200 {
                 let stats = bus_cloned.stats().await.expect("stats");
-                assert!(stats.publish_permits_available <= stats.queue_capacity);
+                assert!(stats.dispatches_in_flight <= 10_000);
             }
         });
     }
@@ -301,11 +306,11 @@ async fn concurrent_stats_access_under_load() {
 
 #[tokio::test]
 async fn memory_no_listener_accumulation() {
-    let bus = EventBus::builder().buffer_size(256).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     for _ in 0..10_000 {
         let sub = bus
-            .subscribe::<StressEvent, _, _>(|_event: &StressEvent| Ok(()))
+            .subscribe::<StressEvent, _, _>(|_event: &StressEvent, _bus: &EventBus| Ok(()))
             .await
             .expect("subscribe");
         let removed = sub.unsubscribe().await.expect("unsubscribe");
@@ -322,7 +327,6 @@ async fn memory_no_listener_accumulation() {
 #[tokio::test]
 async fn shutdown_with_many_inflight_async() {
     let bus = EventBus::builder()
-        .buffer_size(2048)
         .shutdown_timeout(Duration::from_millis(30))
         .build()
         .await
@@ -332,7 +336,7 @@ async fn shutdown_with_many_inflight_async() {
     for _ in 0..200 {
         let completed_for_handler = Arc::clone(&completed);
         let _sub = bus
-            .subscribe::<StressEvent, _, _>(move |_event: StressEvent| {
+            .subscribe::<StressEvent, _, _>(move |_event: StressEvent, _bus: EventBus| {
                 let completed_for_handler = Arc::clone(&completed_for_handler);
                 async move {
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -355,7 +359,7 @@ async fn shutdown_with_many_inflight_async() {
 
 #[tokio::test]
 async fn subscription_id_uniqueness_under_contention() {
-    let bus = EventBus::builder().buffer_size(1024).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let ids = Arc::new(tokio::sync::Mutex::new(HashSet::<u64>::new()));
 
     let mut tasks = tokio::task::JoinSet::new();
@@ -363,10 +367,7 @@ async fn subscription_id_uniqueness_under_contention() {
         let bus_cloned = bus.clone();
         let ids_cloned = Arc::clone(&ids);
         tasks.spawn(async move {
-            let sub = bus_cloned
-                .subscribe::<StressEvent, _, _>(|_event: &StressEvent| Ok(()))
-                .await
-                .expect("subscribe");
+            let sub = bus_cloned.subscribe::<StressEvent, _, _>(NoOpSyncHandler).await.expect("subscribe");
             ids_cloned.lock().await.insert(sub.id().as_u64());
         });
     }

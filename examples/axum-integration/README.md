@@ -13,11 +13,11 @@ cargo run -p axum-integration
 
 ## Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Returns `{"healthy": true/false}` via `bus.is_healthy()` |
-| `POST` | `/orders` | Publishes `OrderCreated`, returns `202 Accepted` |
-| `GET` | `/stats` | Returns a `BusStats` JSON snapshot |
+| Method | Path      | Description                                              |
+|--------|-----------|----------------------------------------------------------|
+| `GET`  | `/health` | Returns `{"healthy": true/false}` via `bus.is_healthy()` |
+| `POST` | `/orders` | Publishes `OrderCreated`, returns `202 Accepted`         |
+| `GET`  | `/stats`  | Returns a `BusStats` JSON snapshot                       |
 
 ```bash
 curl -X POST http://127.0.0.1:3000/orders \
@@ -27,18 +27,18 @@ curl -X POST http://127.0.0.1:3000/orders \
 
 ## What it demonstrates
 
-| Concept | Where |
-|---|---|
-| `EventBus` as axum `State` | `AppState { bus, db, mailer }` cloned into every route handler |
-| `EventBus::builder()` | `buffer_size`, `max_concurrent_async`, `default_subscription_policy` |
+| Concept                           | Where                                                                                                                                                                              |
+|-----------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `EventBus` as axum `State`        | `AppState { bus, db, mailer }` cloned into every route handler                                                                                                                     |
+| `EventBus::builder()`             | `max_concurrent_async`, `default_subscription_policies`, `handler_timeout`, `shutdown_timeout`                                                                                     |
 | Struct-based dependency injection | `NotificationHandler { mailer }`, `InventoryProjectionHandler { db }`, `AuditLogHandler { db }` — deps injected at startup, stored as `Arc` fields, zero overhead at dispatch time |
-| Handler priority ordering | `AuditLogHandler` at priority 50 runs before `NotificationHandler` (20) and `InventoryProjectionHandler` (10) |
-| Mixed async + sync handlers | `NotificationHandler` / `InventoryProjectionHandler` async; `AuditLogHandler` sync |
-| `SyncSubscriptionPolicy` | Separate policy builder for sync handlers (`with_dead_letter(false)`) |
-| Dead-letter sink | `DeadLetterLogger` logs terminal failures |
-| `bus.is_healthy()` | Checked in the `/health` endpoint |
-| `bus.stats()` | Exposed as a JSON endpoint at `/stats` |
-| Ctrl-C graceful shutdown | `server.with_graceful_shutdown(...)` calls `bus.shutdown().await` |
+| Handler priority ordering         | `AuditLogHandler` at priority 50 runs before other sync listeners                                                                                                                   |
+| Mixed async + sync handlers       | `NotificationHandler` / `InventoryProjectionHandler` async; `AuditLogHandler` sync                                                                                                 |
+| `SyncSubscriptionPolicy`          | Separate policy builder for sync handlers (`with_dead_letter(false)`)                                                                                                              |
+| Dead-letter sink                  | `DeadLetterLogger` logs terminal failures                                                                                                                                          |
+| `bus.is_healthy()`                | Checked in the `/health` endpoint                                                                                                                                                  |
+| `bus.stats()`                     | Exposed as a JSON endpoint at `/stats`                                                                                                                                             |
+| Ctrl-C graceful shutdown          | `server.with_graceful_shutdown(...)` calls `bus.shutdown().await`                                                                                                                  |
 
 ## Dependency injection pattern
 
@@ -61,9 +61,9 @@ At registration time the handler is constructed with its deps:
 ```rust
 bus.subscribe_with_policy::<OrderCreated, _, _>(
     NotificationHandler { mailer: mailer.clone() },
-    SubscriptionPolicy::default().with_priority(20).with_max_retries(2),
+    AsyncSubscriptionPolicy::default().with_max_retries(2),
 ).await?;
 ```
 
 The bus holds the constructed handler object for its lifetime. At dispatch time it simply
-calls `handler.handle(event)` — no lookup, no allocation, no lock.
+calls `handler.handle(event, &bus)` — no lookup, no allocation, no lock.

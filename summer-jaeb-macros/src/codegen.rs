@@ -9,13 +9,24 @@ use crate::attrs::{ListenerAttrs, StateParam};
 // ── Handler trait implementations ────────────────────────────────────────────
 
 /// Generate `impl EventHandler<E> for Handler { ... }` (async).
-pub(crate) fn gen_async_handler_impl(event_ty: &Type, fn_name: &Ident, state_params: &[StateParam], listener_name: Option<&str>) -> TokenStream2 {
-    let call_args = gen_handler_call_args(state_params);
+pub(crate) fn gen_async_handler_impl(
+    event_ty: &Type,
+    fn_name: &Ident,
+    state_params: &[StateParam],
+    listener_name: Option<&str>,
+    has_bus: bool,
+) -> TokenStream2 {
+    let call_args = gen_handler_call_args(state_params, has_bus);
     let name_method = gen_name_method(listener_name);
+    let bus_param = if has_bus {
+        quote! { bus }
+    } else {
+        quote! { _bus }
+    };
 
     quote! {
         impl ::jaeb::EventHandler<#event_ty> for Handler {
-            async fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
+            async fn handle(&self, event: &#event_ty, #bus_param: &::jaeb::EventBus) -> ::jaeb::HandlerResult {
                 #fn_name(event, #call_args).await
             }
             #name_method
@@ -24,13 +35,24 @@ pub(crate) fn gen_async_handler_impl(event_ty: &Type, fn_name: &Ident, state_par
 }
 
 /// Generate `impl SyncEventHandler<E> for Handler { ... }` (sync).
-pub(crate) fn gen_sync_handler_impl(event_ty: &Type, fn_name: &Ident, state_params: &[StateParam], listener_name: Option<&str>) -> TokenStream2 {
-    let call_args = gen_handler_call_args(state_params);
+pub(crate) fn gen_sync_handler_impl(
+    event_ty: &Type,
+    fn_name: &Ident,
+    state_params: &[StateParam],
+    listener_name: Option<&str>,
+    has_bus: bool,
+) -> TokenStream2 {
+    let call_args = gen_handler_call_args(state_params, has_bus);
     let name_method = gen_name_method(listener_name);
+    let bus_param = if has_bus {
+        quote! { bus }
+    } else {
+        quote! { _bus }
+    };
 
     quote! {
         impl ::jaeb::SyncEventHandler<#event_ty> for Handler {
-            fn handle(&self, event: &#event_ty) -> ::jaeb::HandlerResult {
+            fn handle(&self, event: &#event_ty, #bus_param: &::jaeb::EventBus) -> ::jaeb::HandlerResult {
                 #fn_name(event, #call_args)
             }
             #name_method
@@ -49,15 +71,19 @@ fn gen_name_method(listener_name: Option<&str>) -> TokenStream2 {
 }
 
 /// Generate the argument expressions for calling the original function from inside the handler.
-/// For state params, generates `Component(self.field_name.clone())`.
-fn gen_handler_call_args(state_params: &[StateParam]) -> TokenStream2 {
-    let args: Vec<TokenStream2> = state_params
+/// For state params, generates `Component(self.field_name.clone())`. If has_bus, appends `bus`.
+fn gen_handler_call_args(state_params: &[StateParam], has_bus: bool) -> TokenStream2 {
+    let mut args: Vec<TokenStream2> = state_params
         .iter()
         .map(|sp| {
             let name = &sp.name;
             quote! { ::summer::extractor::Component(self.#name.clone()) }
         })
         .collect();
+
+    if has_bus {
+        args.push(quote! { bus });
+    }
 
     quote! { #(#args),* }
 }
@@ -106,10 +132,10 @@ pub(crate) fn gen_subscribe_call(
 }
 
 fn gen_subscription_policy(attrs: &ListenerAttrs, is_async: bool) -> TokenStream2 {
-    // For async handlers, use SubscriptionPolicy (supports retries).
+    // For async handlers, use AsyncSubscriptionPolicy (supports retries).
     // For sync handlers, use SyncSubscriptionPolicy (compile-time safety — no retries allowed).
     let mut chain = if is_async {
-        quote! { ::jaeb::SubscriptionPolicy::default() }
+        quote! { ::jaeb::AsyncSubscriptionPolicy::default() }
     } else {
         quote! { ::jaeb::SyncSubscriptionPolicy::default() }
     };

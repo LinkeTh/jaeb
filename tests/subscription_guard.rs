@@ -13,7 +13,7 @@ struct Counter {
 }
 
 impl SyncEventHandler<Ping> for Counter {
-    fn handle(&self, _event: &Ping) -> HandlerResult {
+    fn handle(&self, _event: &Ping, _bus: &EventBus) -> HandlerResult {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -24,7 +24,7 @@ impl SyncEventHandler<Ping> for Counter {
 /// Dropping a `SubscriptionGuard` unsubscribes the listener.
 #[tokio::test]
 async fn guard_drop_unsubscribes() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     {
@@ -51,7 +51,7 @@ async fn guard_drop_unsubscribes() {
 /// `disarm()` prevents the guard from unsubscribing on drop.
 #[tokio::test]
 async fn disarmed_guard_does_not_unsubscribe() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     {
@@ -78,7 +78,7 @@ async fn disarmed_guard_does_not_unsubscribe() {
 /// Dropping the guard after shutdown does not panic or hang.
 #[tokio::test]
 async fn guard_drop_after_shutdown_is_safe() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let guard = bus
         .subscribe(Counter {
@@ -95,10 +95,27 @@ async fn guard_drop_after_shutdown_is_safe() {
     drop(guard);
 }
 
+#[test]
+fn guard_drop_without_runtime_does_not_panic() {
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let guard = runtime.block_on(async {
+        let bus = EventBus::builder().build().await.expect("valid config");
+        bus.subscribe(Counter {
+            count: Arc::new(AtomicUsize::new(0)),
+        })
+        .await
+        .expect("subscribe")
+        .into_guard()
+    });
+    drop(runtime);
+
+    drop(guard);
+}
+
 /// `id()` returns `Some` before disarm and `None` after.
 #[tokio::test]
 async fn guard_id_reflects_state() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     let sub = bus
         .subscribe(Counter {

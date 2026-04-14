@@ -3,10 +3,10 @@ networks:
     driver: bridge
 
 volumes:
-  prometheus_data: {}
-  loki_data: {}
-  tempo_data: {}
-  grafana_data: {}
+  prometheus_data: { }
+  loki_data: { }
+  tempo_data: { }
+  grafana_data: { }
 
 services:
 
@@ -23,7 +23,7 @@ services:
       RUST_LOG: "info,jaeb=debug"
     ports:
       - "3000:3000"
-    networks: [obs]
+    networks: [ obs ]
     depends_on:
       loki:
         condition: service_healthy
@@ -45,10 +45,10 @@ services:
       - --web.enable-remote-write-receiver
     ports:
       - "9090:9090"
-    networks: [obs]
-    depends_on: [app]
+    networks: [ obs ]
+    depends_on: [ app ]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:9090/-/ready" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,9 +62,9 @@ services:
     command: -config.file=/etc/loki/loki-config.yml
     ports:
       - "3100:3100"
-    networks: [obs]
+    networks: [ obs ]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3100/ready" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -80,9 +80,9 @@ services:
       - "3200:3200"   # Tempo HTTP query API
       - "4317:4317"   # OTLP gRPC receiver
       - "4318:4318"   # OTLP HTTP receiver
-    networks: [obs]
+    networks: [ obs ]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3200/ready"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3200/ready" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -100,7 +100,7 @@ services:
       GF_FEATURE_TOGGLES_ENABLE: "traceToMetrics"
     ports:
       - "3001:3000"
-    networks: [obs]
+    networks: [ obs ]
     depends_on:
       prometheus:
         condition: service_healthy
@@ -109,7 +109,7 @@ services:
       tempo:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3000/api/health" ]
       interval: 10s
       timeout: 5s
       retries: 10

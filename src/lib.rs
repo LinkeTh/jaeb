@@ -27,5 +27,5 @@ pub use subscription::{Subscription, SubscriptionGuard};
 #[cfg(feature = "test-utils")]
 pub use test_utils::{TestBus, TestBusBuilder};
 pub use types::{
-    BusStats, DeadLetter, Event, HandlerInfo, IntoSubscriptionPolicy, RetryStrategy, SubscriptionId, SubscriptionPolicy, SyncSubscriptionPolicy,
+    AsyncSubscriptionPolicy, BusStats, DeadLetter, Event, HandlerInfo, RetryStrategy, SubscriptionDefaults, SubscriptionId, SyncSubscriptionPolicy,
 };

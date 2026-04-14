@@ -27,7 +27,7 @@ struct SyncAlphaRecorder {
 }
 
 impl SyncEventHandler<Alpha> for SyncAlphaRecorder {
-    fn handle(&self, event: &Alpha) -> HandlerResult {
+    fn handle(&self, event: &Alpha, _bus: &EventBus) -> HandlerResult {
         self.log.lock().unwrap().push(event.0);
         Ok(())
     }
@@ -39,7 +39,7 @@ struct SlowAlphaHandler {
 }
 
 impl EventHandler<Alpha> for SlowAlphaHandler {
-    async fn handle(&self, _event: &Alpha) -> HandlerResult {
+    async fn handle(&self, _event: &Alpha, _bus: &EventBus) -> HandlerResult {
         let _ = self.started_tx.send("alpha");
         self.release.notified().await;
         Ok(())
@@ -52,7 +52,7 @@ struct SlowBetaHandler {
 }
 
 impl EventHandler<Beta> for SlowBetaHandler {
-    async fn handle(&self, _event: &Beta) -> HandlerResult {
+    async fn handle(&self, _event: &Beta, _bus: &EventBus) -> HandlerResult {
         let _ = self.started_tx.send("beta");
         self.release.notified().await;
         Ok(())
@@ -62,7 +62,7 @@ impl EventHandler<Beta> for SlowBetaHandler {
 struct AlphaAsyncCounter(Arc<AtomicUsize>);
 
 impl EventHandler<Alpha> for AlphaAsyncCounter {
-    async fn handle(&self, event: &Alpha) -> HandlerResult {
+    async fn handle(&self, event: &Alpha, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(event.0, Ordering::SeqCst);
         Ok(())
     }
@@ -71,7 +71,7 @@ impl EventHandler<Alpha> for AlphaAsyncCounter {
 struct BetaAsyncCounter(Arc<AtomicUsize>);
 
 impl EventHandler<Beta> for BetaAsyncCounter {
-    async fn handle(&self, event: &Beta) -> HandlerResult {
+    async fn handle(&self, event: &Beta, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(event.0, Ordering::SeqCst);
         Ok(())
     }
@@ -80,7 +80,7 @@ impl EventHandler<Beta> for BetaAsyncCounter {
 struct GammaAsyncCounter(Arc<AtomicUsize>);
 
 impl EventHandler<Gamma> for GammaAsyncCounter {
-    async fn handle(&self, _event: &Gamma) -> HandlerResult {
+    async fn handle(&self, _event: &Gamma, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -89,7 +89,7 @@ impl EventHandler<Gamma> for GammaAsyncCounter {
 struct AlphaSyncCounter(Arc<AtomicUsize>);
 
 impl SyncEventHandler<Alpha> for AlphaSyncCounter {
-    fn handle(&self, _event: &Alpha) -> HandlerResult {
+    fn handle(&self, _event: &Alpha, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -102,7 +102,7 @@ impl SyncEventHandler<Alpha> for AlphaSyncCounter {
 /// than blocking each other.
 #[tokio::test]
 async fn per_type_parallelism() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();
     let release = Arc::new(Notify::new());
 
@@ -151,7 +151,7 @@ async fn per_type_parallelism() {
 /// in FIFO order by the same sync lane.
 #[tokio::test]
 async fn fifo_within_event_type() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let _ = bus.subscribe(SyncAlphaRecorder { log: Arc::clone(&log) }).await.expect("subscribe");
@@ -173,7 +173,7 @@ async fn fifo_within_event_type() {
 /// stats for Beta.
 #[tokio::test]
 async fn lazy_type_slot_registration() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     // Only subscribe to Alpha.
@@ -201,7 +201,7 @@ async fn lazy_type_slot_registration() {
 /// eventually remove the slot, freeing resources.
 #[tokio::test]
 async fn type_slot_cleanup_on_empty() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let sub = bus.subscribe(AlphaSyncCounter(Arc::clone(&count))).await.expect("subscribe");
@@ -226,7 +226,7 @@ async fn type_slot_cleanup_on_empty() {
 /// of them and report success.
 #[tokio::test]
 async fn shutdown_aggregates_all_type_slots() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let alpha_count = Arc::new(AtomicUsize::new(0));
     let beta_count = Arc::new(AtomicUsize::new(0));
     let gamma_count = Arc::new(AtomicUsize::new(0));
@@ -253,7 +253,7 @@ async fn shutdown_aggregates_all_type_slots() {
 /// type slot — each receives the event.
 #[tokio::test]
 async fn multiple_listeners_share_type_slot() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let sync_count = Arc::new(AtomicUsize::new(0));
     let async_count = Arc::new(AtomicUsize::new(0));
 

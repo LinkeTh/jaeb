@@ -56,7 +56,7 @@ use validate::{extract_ref_type, is_dead_letter_type, is_handler_result_type, pa
 ///
 /// ```rust,ignore
 /// // Fixed delay
-/// #[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true, priority = 10)]
+/// #[event_listener(retries = 3, retry_strategy = "fixed", retry_base_ms = 100, dead_letter = true)]
 /// async fn flaky_handler(event: &SomeEvent) -> HandlerResult {
 ///     // ...
 ///     Ok(())
@@ -187,7 +187,16 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
         ));
     }
 
-    // ── Retry attribute validation ───────────────────────────────────────
+    // Parse remaining parameters as Component state
+    let (state_params, has_bus) = parse_state_params(&func.sig.inputs)?;
+    let has_state = !state_params.is_empty();
+
+    if is_dead_letter && has_bus {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "DeadLetter listeners cannot declare a `bus: &EventBus` parameter",
+        ));
+    }
 
     // `retry_base_ms` / `retry_max_ms` are only valid with explicit `retry_strategy`.
     if (attrs.retry_base_ms.is_some() || attrs.retry_max_ms.is_some()) && attrs.retry_strategy.is_none() {
@@ -243,9 +252,12 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
         ));
     }
 
-    // Parse remaining parameters as Component state
-    let state_params = parse_state_params(&func.sig.inputs)?;
-    let has_state = !state_params.is_empty();
+    if is_async && attrs.priority.is_some() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "`priority` attribute is only supported on sync handlers",
+        ));
+    }
 
     // ── Listener name resolution ─────────────────────────────────────────
     //
@@ -260,9 +272,9 @@ fn expand_event_listener(attrs: ListenerAttrs, func: ItemFn) -> syn::Result<Toke
 
     // Build the generated code
     let handler_trait_impl = if is_async {
-        gen_async_handler_impl(event_ty, fn_name, &state_params, listener_name)
+        gen_async_handler_impl(event_ty, fn_name, &state_params, listener_name, has_bus)
     } else {
-        gen_sync_handler_impl(event_ty, fn_name, &state_params, listener_name)
+        gen_sync_handler_impl(event_ty, fn_name, &state_params, listener_name, has_bus)
     };
 
     let subscribe_call = gen_subscribe_call(event_ty, is_dead_letter, &attrs, &fn_name_str, has_state, is_async);

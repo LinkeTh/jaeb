@@ -25,7 +25,7 @@ pub struct MockAsyncHandler {
 }
 
 impl jaeb::EventHandler<SimEnvelopeEvent> for MockAsyncHandler {
-    fn handle(&self, event: &SimEnvelopeEvent) -> impl std::future::Future<Output = jaeb::HandlerResult> + Send {
+    fn handle(&self, event: &SimEnvelopeEvent, _bus: &jaeb::EventBus) -> impl Future<Output = jaeb::HandlerResult> + Send {
         let tx = self.tx.clone();
         let listener_idx = self.listener_idx;
         let cfg = self.cfg.clone();
@@ -46,7 +46,9 @@ impl jaeb::EventHandler<SimEnvelopeEvent> for MockAsyncHandler {
                 at: start,
             });
 
-            tokio::time::sleep(Duration::from_millis(cfg.processing_ms)).await;
+            if cfg.processing_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(cfg.processing_ms)).await;
+            }
             if rand::random::<f64>() < cfg.failure_rate {
                 let _ = tx.send(SimEvent::HandlerFailed {
                     listener: cfg.name,
@@ -84,7 +86,7 @@ pub struct MockSyncHandler {
 }
 
 impl jaeb::SyncEventHandler<SimEnvelopeEvent> for MockSyncHandler {
-    fn handle(&self, event: &SimEnvelopeEvent) -> jaeb::HandlerResult {
+    fn handle(&self, event: &SimEnvelopeEvent, _bus: &jaeb::EventBus) -> jaeb::HandlerResult {
         if event.event_type_idx != self.cfg.event_type_idx as usize {
             return Ok(());
         }
@@ -97,7 +99,9 @@ impl jaeb::SyncEventHandler<SimEnvelopeEvent> for MockSyncHandler {
             at: Instant::now(),
         });
 
-        std::thread::sleep(Duration::from_millis(self.cfg.processing_ms));
+        if self.cfg.processing_ms > 0 {
+            std::thread::sleep(Duration::from_millis(self.cfg.processing_ms));
+        }
         if rand::random::<f64>() < self.cfg.failure_rate {
             let _ = self.tx.send(SimEvent::HandlerFailed {
                 listener: self.cfg.name.clone(),
@@ -133,7 +137,7 @@ pub struct DeadLetterCollector {
 }
 
 impl jaeb::SyncEventHandler<jaeb::DeadLetter> for DeadLetterCollector {
-    fn handle(&self, dl: &jaeb::DeadLetter) -> jaeb::HandlerResult {
+    fn handle(&self, dl: &jaeb::DeadLetter, _bus: &jaeb::EventBus) -> jaeb::HandlerResult {
         let envelope = dl.event.downcast_ref::<SimEnvelopeEvent>();
         let event_type_idx = envelope.map(|e| e.event_type_idx).unwrap_or(0);
         let seq = envelope.map(|e| e.seq).unwrap_or(0);

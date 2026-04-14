@@ -14,13 +14,13 @@ Requires a terminal with at least 80×24 characters.
 
 ## Usage
 
-| Key | Action |
-|---|---|
-| `Enter` | Start the simulation from the config screen |
-| `Tab` / arrows | Navigate config fields |
-| `r` | Re-run simulation with the same config (after it finishes) |
-| `c` | Return to the config screen to change parameters |
-| `q` | Quit |
+| Key            | Action                                                     |
+|----------------|------------------------------------------------------------|
+| `Enter`        | Start the simulation from the config screen                |
+| `Tab` / arrows | Navigate config fields                                     |
+| `r`            | Re-run simulation with the same config (after it finishes) |
+| `c`            | Return to the config screen to change parameters           |
+| `q`            | Quit                                                       |
 
 ## Screens
 
@@ -28,6 +28,7 @@ Requires a terminal with at least 80×24 characters.
 listener properties (count, failure rate, retry count) before starting.
 
 **Dashboard** — live panels showing:
+
 - Publish rate and cumulative volume
 - Per-handler invocation counts and error rates
 - Dead-letter counter
@@ -35,9 +36,9 @@ listener properties (count, failure rate, retry count) before starting.
 
 ## What it demonstrates
 
-| Concept | Where |
-|---|---|
-| Real-time `bus.stats()` polling | `metrics` module samples the bus on every tick |
-| Configurable simulation | `SimConfig` drives listener count, failure rates, publish interval |
-| ratatui integration | `ui/` module renders config and dashboard frames at 100 ms tick rate |
-| Graceful shutdown on quit | `sim_handle.stop()` triggers `bus.shutdown()` before exiting |
+| Concept                         | Where                                                                |
+|---------------------------------|----------------------------------------------------------------------|
+| Real-time `bus.stats()` polling | `metrics` module samples the bus on every tick                       |
+| Configurable simulation         | `SimConfig` drives listener count, failure rates, publish interval   |
+| ratatui integration             | `ui/` module renders config and dashboard frames at 100 ms tick rate |
+| Graceful shutdown on quit       | `sim_handle.stop()` triggers `bus.shutdown()` before exiting         |

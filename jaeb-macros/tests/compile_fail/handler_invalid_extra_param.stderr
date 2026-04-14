@@ -1,0 +1,13 @@
+error: handler dependency parameter type must be `Dep<T>`; add `use jaeb::Dep` and annotate as `Dep(name): Dep<MyType>` or `name: Dep<MyType>`
+  --> tests/compile_fail/handler_invalid_extra_param.rs:11:40
+   |
+11 | async fn on_event(event: &MyEvent, db: Db) -> HandlerResult {
+   |                                        ^^
+
+warning: unused import: `HandlerResult`
+ --> tests/compile_fail/handler_invalid_extra_param.rs:3:12
+  |
+3 | use jaeb::{HandlerResult, handler};
+  |            ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

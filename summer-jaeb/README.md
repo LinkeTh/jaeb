@@ -66,7 +66,6 @@ Configuration (`app.toml`):
 
 ```toml
 [jaeb]
-buffer_size = 512
 handler_timeout_secs = 5
 max_concurrent_async = 100
 shutdown_timeout_secs = 10

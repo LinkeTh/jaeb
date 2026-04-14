@@ -1,0 +1,13 @@
+error: subscription policy attributes (retries, retry_strategy, retry_base_ms, retry_max_ms, dead_letter, priority) are not supported on dead-letter handlers
+ --> tests/compile_fail/dead_letter_policy_attrs.rs:6:1
+  |
+6 | fn on_dead_letter(event: &DeadLetter) -> HandlerResult {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DeadLetter` and `HandlerResult`
+ --> tests/compile_fail/dead_letter_policy_attrs.rs:3:12
+  |
+3 | use jaeb::{DeadLetter, HandlerResult, dead_letter_handler};
+  |            ^^^^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

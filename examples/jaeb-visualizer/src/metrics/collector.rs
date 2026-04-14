@@ -112,8 +112,7 @@ pub async fn run_sampler(state: Arc<Mutex<VisualizationState>>, bus: jaeb::Event
         if let Ok(stats) = bus.stats().await {
             let mut s = state.lock().expect("viz state lock poisoned");
             s.bus_in_flight_async = stats.in_flight_async;
-            s.bus_publish_in_flight = stats.publish_in_flight;
-            s.bus_queue_capacity = stats.queue_capacity;
+            s.bus_dispatches_in_flight = stats.dispatches_in_flight;
             s.bus_total_subscriptions = stats.total_subscriptions;
         }
     }

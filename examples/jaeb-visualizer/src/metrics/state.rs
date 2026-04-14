@@ -34,8 +34,7 @@ pub struct VisualizationState {
 
     // From bus.stats()
     pub bus_in_flight_async: usize,
-    pub bus_publish_in_flight: usize,
-    pub bus_queue_capacity: usize,
+    pub bus_dispatches_in_flight: usize,
     pub bus_total_subscriptions: usize,
 
     // Lifecycle
@@ -52,7 +51,7 @@ const MAX_SPARKLINE_SAMPLES: usize = 60;
 const MAX_DEAD_LETTERS: usize = 200;
 
 impl VisualizationState {
-    pub fn new(buffer_size: usize, listeners: &[ListenerConfig]) -> Self {
+    pub fn new(listeners: &[ListenerConfig]) -> Self {
         Self {
             total_published: 0,
             total_handled: 0,
@@ -73,8 +72,7 @@ impl VisualizationState {
                 .collect(),
             dead_letters: VecDeque::with_capacity(MAX_DEAD_LETTERS),
             bus_in_flight_async: 0,
-            bus_publish_in_flight: 0,
-            bus_queue_capacity: buffer_size,
+            bus_dispatches_in_flight: 0,
             bus_total_subscriptions: 0,
             sim_start: None,
             sim_end: None,

@@ -16,7 +16,7 @@ struct Alert(String);
 struct AlwaysFailSync;
 
 impl SyncEventHandler<Alert> for AlwaysFailSync {
-    fn handle(&self, _event: &Alert) -> HandlerResult {
+    fn handle(&self, _event: &Alert, _bus: &EventBus) -> HandlerResult {
         Err("sync handler always fails".into())
     }
 }
@@ -24,7 +24,7 @@ impl SyncEventHandler<Alert> for AlwaysFailSync {
 struct AlwaysFailAsync;
 
 impl EventHandler<Alert> for AlwaysFailAsync {
-    async fn handle(&self, _event: &Alert) -> HandlerResult {
+    async fn handle(&self, _event: &Alert, _bus: &EventBus) -> HandlerResult {
         Err("async handler always fails".into())
     }
 }
@@ -35,7 +35,7 @@ struct DeadLetterCollector {
 }
 
 impl SyncEventHandler<DeadLetter> for DeadLetterCollector {
-    fn handle(&self, event: &DeadLetter) -> HandlerResult {
+    fn handle(&self, event: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         let mut guard = self.letters.lock().unwrap();
         guard.push(event.clone());
         self.notify.notify_one();
@@ -49,7 +49,7 @@ struct DeadLetterCounter {
 }
 
 impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
-    fn handle(&self, _event: &DeadLetter) -> HandlerResult {
+    fn handle(&self, _event: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         self.seen.fetch_add(1, Ordering::SeqCst);
         self.notify.notify_one();
         Ok(())
@@ -59,7 +59,7 @@ impl SyncEventHandler<DeadLetter> for DeadLetterCounter {
 struct FailingDeadLetterHandler;
 
 impl SyncEventHandler<DeadLetter> for FailingDeadLetterHandler {
-    fn handle(&self, _event: &DeadLetter) -> HandlerResult {
+    fn handle(&self, _event: &DeadLetter, _bus: &EventBus) -> HandlerResult {
         Err("dead letter handler fails too".into())
     }
 }
@@ -68,7 +68,7 @@ impl SyncEventHandler<DeadLetter> for FailingDeadLetterHandler {
 
 #[tokio::test]
 async fn failed_handler_emits_dead_letter() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let notify = Arc::new(Notify::new());
     let seen = Arc::new(AtomicUsize::new(0));
 
@@ -94,7 +94,7 @@ async fn failed_handler_emits_dead_letter() {
 
 #[tokio::test]
 async fn dead_letter_contains_correct_metadata() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let notify = Arc::new(Notify::new());
     let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
 
@@ -129,7 +129,7 @@ async fn dead_letter_contains_correct_metadata() {
 
 #[tokio::test]
 async fn async_handler_failure_emits_dead_letter() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let seen = Arc::new(AtomicUsize::new(0));
 
     let _ = bus
@@ -153,7 +153,7 @@ async fn async_handler_failure_emits_dead_letter() {
 
 #[tokio::test]
 async fn dead_letter_suppressed_when_disabled() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let notify = Arc::new(Notify::new());
     let seen = Arc::new(AtomicUsize::new(0));
 
@@ -181,7 +181,7 @@ async fn dead_letter_suppressed_when_disabled() {
 
 #[tokio::test]
 async fn dead_letter_handler_failure_does_not_recurse() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
 
     // Subscribe a dead-letter handler that itself fails.
     let _ = bus
@@ -204,7 +204,7 @@ async fn dead_letter_handler_failure_does_not_recurse() {
 
 #[tokio::test]
 async fn dead_letter_contains_original_event() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let notify = Arc::new(Notify::new());
     let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
 
@@ -236,7 +236,7 @@ async fn dead_letter_contains_original_event() {
 async fn dead_letter_has_timestamp() {
     let before = SystemTime::now();
 
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let notify = Arc::new(Notify::new());
     let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
 
@@ -273,7 +273,7 @@ async fn dead_letter_has_timestamp() {
 
 #[tokio::test]
 async fn async_dead_letter_contains_original_event() {
-    let bus = EventBus::builder().buffer_size(16).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let letters: Arc<Mutex<Vec<DeadLetter>>> = Arc::default();
 
     let _ = bus

@@ -19,7 +19,7 @@ struct Safe;
 struct PanicHandler;
 
 impl SyncEventHandler<Boom> for PanicHandler {
-    fn handle(&self, _event: &Boom) -> HandlerResult {
+    fn handle(&self, _event: &Boom, _bus: &EventBus) -> HandlerResult {
         panic!("handler exploded!");
     }
 }
@@ -27,7 +27,7 @@ impl SyncEventHandler<Boom> for PanicHandler {
 struct SafeCounter(Arc<AtomicUsize>);
 
 impl SyncEventHandler<Safe> for SafeCounter {
-    fn handle(&self, _event: &Safe) -> HandlerResult {
+    fn handle(&self, _event: &Safe, _bus: &EventBus) -> HandlerResult {
         self.0.fetch_add(1, Ordering::SeqCst);
         println!("safe handler invoked");
         Ok(())
@@ -38,7 +38,7 @@ impl SyncEventHandler<Safe> for SafeCounter {
 
 #[tokio::main]
 async fn main() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let count = Arc::new(AtomicUsize::new(0));
 
     let _ = bus.subscribe::<Boom, _, _>(PanicHandler).await.expect("subscribe failed");

@@ -152,7 +152,7 @@ impl App {
     }
 
     fn start_simulation_with_config(&mut self, config: SimConfig) {
-        let viz = Arc::new(Mutex::new(VisualizationState::new(config.bus.buffer_size, &config.listeners)));
+        let viz = Arc::new(Mutex::new(VisualizationState::new(&config.listeners)));
 
         {
             let mut v = viz.lock().expect("viz lock poisoned");

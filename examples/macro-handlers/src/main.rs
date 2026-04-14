@@ -25,7 +25,7 @@ struct AuditLog(Arc<AtomicUsize>);
 
 /// Async handler with a `Dep<T>` parameter.  The `AuditLog` is resolved from
 /// the `Deps` container at bus build time and cloned into each invocation.
-#[handler]
+#[handler(retries = 1)]
 async fn process_payment(event: &Payment, Dep(log): Dep<AuditLog>) -> HandlerResult {
     println!("processing payment {}", event.id);
     log.0.fetch_add(1, Ordering::SeqCst);
@@ -48,7 +48,6 @@ async fn main() -> Result<(), jaeb::EventBusError> {
     let audit = AuditLog(Arc::new(AtomicUsize::new(0)));
 
     let bus = EventBus::builder()
-        .buffer_size(64)
         .handler(process_payment)
         .dead_letter(on_dead_letter)
         .deps(Deps::new().insert(audit.clone()))

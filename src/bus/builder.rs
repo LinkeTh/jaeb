@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::deps::Deps;
 use crate::error::{ConfigError, EventBusError};
 use crate::handler::{DeadLetterDescriptor, HandlerDescriptor};
-use crate::types::{BusConfig, SubscriptionPolicy};
+use crate::types::{BusConfig, SubscriptionDefaults};
 
 use super::EventBus;
 
@@ -23,7 +23,6 @@ use super::EventBus;
 ///
 /// ```rust,ignore
 /// let bus = EventBus::builder()
-///     .buffer_size(256)
 ///     .handler(ProcessPaymentHandler)
 ///     .handler(AuditLogHandler)
 ///     .dead_letter(LogDeadLetterHandler)
@@ -34,9 +33,8 @@ use super::EventBus;
 ///
 /// # Errors
 ///
-/// [`build`](Self::build) returns [`EventBusError::InvalidConfig`] when:
-/// - `buffer_size` was set to `0`.
-/// - `max_concurrent_async` was set to `0`.
+/// [`build`](Self::build) returns [`EventBusError::InvalidConfig`] when
+/// `max_concurrent_async` was set to `0`.
 ///
 /// [`build`](Self::build) returns [`EventBusError::MissingDependency`] when a
 /// registered handler requires a dependency that was not supplied via
@@ -69,28 +67,11 @@ impl EventBusBuilder {
         }
     }
 
-    /// Set the internal channel buffer capacity.
-    ///
-    /// This controls the maximum number of in-flight publish permits at any
-    /// given time. When the buffer is full, [`EventBus::publish`] will wait
-    /// until space becomes available, and [`EventBus::try_publish`] will
-    /// return [`EventBusError::ChannelFull`] immediately.
-    ///
-    /// **Default:** `256`.
-    ///
-    /// # Errors
-    ///
-    /// [`build`](Self::build) will return an error if `size` is `0`.
-    pub fn buffer_size(mut self, size: usize) -> Self {
-        self.config.buffer_size = size;
-        self
-    }
-
     /// Set a per-invocation timeout for async handler tasks.
     ///
     /// If an async handler does not complete within this duration it is
     /// cancelled and treated as a failure (subject to the listener's
-    /// [`SubscriptionPolicy`]). Sync handlers are not affected.
+    /// subscription policy). Sync handlers are not affected.
     ///
     /// **Default:** no timeout (handlers may run indefinitely).
     pub fn handler_timeout(mut self, timeout: Duration) -> Self {
@@ -113,16 +94,17 @@ impl EventBusBuilder {
         self
     }
 
-    /// Set the fallback [`SubscriptionPolicy`] applied to every new subscription
-    /// that does not specify its own policy.
+    /// Set the fallback subscription policies applied to new subscriptions that
+    /// do not specify an explicit policy.
     ///
-    /// This policy is overridden on a per-subscription basis by
+    /// `defaults.policy` is used for async subscriptions, while
+    /// `defaults.sync_policy` is used for sync and one-shot subscriptions.
+    /// These defaults are overridden on a per-subscription basis by
     /// [`EventBus::subscribe_with_policy`] and friends.
     ///
-    /// **Default:** [`SubscriptionPolicy::default()`] — priority `0`, no
-    /// retries, dead-letter enabled.
-    pub fn default_subscription_policy(mut self, policy: SubscriptionPolicy) -> Self {
-        self.config.default_subscription_policy = policy;
+    /// **Default:** [`SubscriptionDefaults::default()`].
+    pub fn default_subscription_policies(mut self, defaults: SubscriptionDefaults) -> Self {
+        self.config.subscription_defaults = defaults;
         self
     }
 
@@ -209,16 +191,12 @@ impl EventBusBuilder {
     ///
     /// # Errors
     ///
-    /// - [`EventBusError::InvalidConfig`] — `buffer_size` or
-    ///   `max_concurrent_async` is `0`.
+    /// - [`EventBusError::InvalidConfig`] — `max_concurrent_async` is `0`.
     /// - [`EventBusError::MissingDependency`] — a registered handler requires a
     ///   dependency that was not supplied via [`deps`](Self::deps).
     /// - [`EventBusError::Stopped`] — should not occur during build, but
     ///   propagated from subscription calls for completeness.
     pub async fn build(self) -> Result<EventBus, EventBusError> {
-        if self.config.buffer_size == 0 {
-            return Err(ConfigError::ZeroBufferSize.into());
-        }
         if self.config.max_concurrent_async == Some(0) {
             return Err(ConfigError::ZeroConcurrency.into());
         }

@@ -3,9 +3,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use crate::AsyncSubscriptionPolicy;
+use crate::SyncSubscriptionPolicy;
 use crate::deps::Deps;
 use crate::error::{EventBusError, HandlerResult};
-use crate::registry::{ErasedAsyncHandlerFn, ErasedSyncHandlerFn, EventType, ListenerEntry, ListenerKind};
+use crate::registry::{ErasedAsyncHandlerFn, ErasedSyncHandlerFn, EventType, ListenerEntry, ListenerKind, ListenerPolicy};
 use crate::subscription::Subscription;
 use crate::types::Event;
 
@@ -13,37 +15,40 @@ use crate::types::Event;
 ///
 /// Implement this trait on a struct to receive events of type `E`
 /// asynchronously. When an event is published:
-/// - The event is cloned once per registered async listener (hence the
-///   `E: Clone` bound).
-/// - Each invocation is spawned as an independent Tokio task.
-/// - [`EventBus::publish`](crate::EventBus::publish) returns once all async
-///   handler tasks have been *spawned*, not necessarily *completed*.
+/// - The event is `Arc`-wrapped once at publish time and shared across all
+///   async listeners via `Arc::clone` — no `Clone` bound is required on `E`.
+/// - Each invocation is spawned onto the Tokio runtime as tracked async work.
+/// - [`EventBus::publish`](crate::EventBus::publish) returns once matching async
+///   handler invocations have been spawned, not necessarily completed.
 ///
 /// # Examples
 ///
 /// ```
-/// use jaeb::{EventHandler, HandlerResult};
+/// use jaeb::{EventBus, EventHandler, HandlerResult};
 ///
-/// #[derive(Clone)]
 /// struct OrderPlaced { id: u64 }
 ///
 /// struct EmailNotifier;
 ///
 /// impl EventHandler<OrderPlaced> for EmailNotifier {
-///     async fn handle(&self, event: &OrderPlaced) -> HandlerResult {
+///     async fn handle(&self, event: &OrderPlaced, _bus: &EventBus) -> HandlerResult {
 ///         // send email …
 ///         Ok(())
 ///     }
 /// }
 /// ```
-pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
+pub trait EventHandler<E: Event>: Send + Sync + 'static {
     /// Handle a single published event.
     ///
-    /// Called with a shared reference to the cloned event. Return `Ok(())`
-    /// on success or a [`HandlerError`](crate::HandlerError) on failure.
-    /// Failures are subject to the listener's
-    /// [`SubscriptionPolicy`](crate::SubscriptionPolicy).
-    fn handle(&self, event: &E) -> impl Future<Output = HandlerResult> + Send;
+    /// Called with a shared reference to the event (via `Arc` deref) and a reference to
+    /// the bus that dispatched it. The `bus` handle can be used to publish
+    /// further events, query [`EventBus::stats`](crate::EventBus::stats), or perform other bus
+    /// operations inside the handler body.
+    ///
+    /// Return `Ok(())` on success or a [`HandlerError`](crate::HandlerError)
+    /// on failure. Failures are subject to the listener's
+    /// [`AsyncSubscriptionPolicy`](crate::AsyncSubscriptionPolicy).
+    fn handle(&self, event: &E, bus: &crate::bus::EventBus) -> impl Future<Output = HandlerResult> + Send;
 
     /// Return an optional human-readable name for this listener.
     ///
@@ -62,21 +67,22 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
 ///
 /// Implement this trait on a struct to receive events of type `E`
 /// synchronously. When an event is published:
-/// - The handler is called inline in a serialized per-event-type FIFO lane.
+/// - The handler is called inline in a serialized per-event-type lane.
+///   Higher-priority sync handlers run first; equal priorities keep FIFO
+///   registration order.
 /// - [`EventBus::publish`](crate::EventBus::publish) waits for the handler to
 ///   return before proceeding.
 /// - Sync handlers do **not** require `E: Clone` because the original event
 ///   reference is passed directly.
 ///
 /// Sync handlers must use
-/// [`SyncSubscriptionPolicy`](crate::SyncSubscriptionPolicy); passing a
-/// [`SubscriptionPolicy`](crate::SubscriptionPolicy) for a sync handler is a
-/// compile-time error.
+/// [`SyncSubscriptionPolicy`](crate::SyncSubscriptionPolicy); passing an async
+/// policy for a sync handler is a compile-time error.
 ///
 /// # Examples
 ///
 /// ```
-/// use jaeb::{SyncEventHandler, HandlerResult};
+/// use jaeb::{EventBus, SyncEventHandler, HandlerResult};
 ///
 /// #[derive(Clone)]
 /// struct UserDeleted { id: u64 }
@@ -84,7 +90,7 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
 /// struct AuditLog;
 ///
 /// impl SyncEventHandler<UserDeleted> for AuditLog {
-///     fn handle(&self, event: &UserDeleted) -> HandlerResult {
+///     fn handle(&self, event: &UserDeleted, _bus: &EventBus) -> HandlerResult {
 ///         // write to audit log …
 ///         Ok(())
 ///     }
@@ -93,11 +99,14 @@ pub trait EventHandler<E: Event + Clone>: Send + Sync + 'static {
 pub trait SyncEventHandler<E: Event>: Send + Sync + 'static {
     /// Handle a single published event synchronously.
     ///
-    /// Called with a shared reference to the event. Return `Ok(())` on success
-    /// or a [`HandlerError`](crate::HandlerError) on failure. On failure a
-    /// [`DeadLetter`](crate::DeadLetter) is emitted if the listener's policy
-    /// has `dead_letter` enabled.
-    fn handle(&self, event: &E) -> HandlerResult;
+    /// Called with a shared reference to the event and a reference to the bus
+    /// that dispatched it. Sync handlers should avoid publishing additional
+    /// events and instead delegate that work to async handlers when needed.
+    ///
+    /// Return `Ok(())` on success or a [`HandlerError`](crate::HandlerError)
+    /// on failure. On failure a [`DeadLetter`](crate::DeadLetter) is emitted
+    /// if the listener's policy has `dead_letter` enabled.
+    fn handle(&self, event: &E, bus: &crate::bus::EventBus) -> HandlerResult;
 
     /// Return an optional human-readable name for this listener.
     ///
@@ -128,12 +137,56 @@ pub struct AsyncFnMode;
 /// function pointer or closure is passed to a `subscribe_*` method.
 pub struct SyncFnMode;
 
-pub(crate) type RegisterFn = Box<dyn FnOnce(crate::types::SubscriptionId, crate::types::SubscriptionPolicy, bool) -> ListenerEntry + Send>;
+pub(crate) type RegisterAsyncFn =
+    Box<dyn FnOnce(crate::types::SubscriptionId, AsyncSubscriptionPolicy, bool, crate::bus::EventBus) -> ListenerEntry + Send>;
+pub(crate) type RegisterSyncFn =
+    Box<dyn FnOnce(crate::types::SubscriptionId, SyncSubscriptionPolicy, bool, crate::bus::EventBus) -> ListenerEntry + Send>;
 
-pub(crate) struct RegisteredHandler {
-    pub register: RegisterFn,
-    pub name: Option<&'static str>,
-    pub is_sync: bool,
+pub(crate) enum RegisteredHandler {
+    Async { register: RegisterAsyncFn, name: Option<&'static str> },
+    Sync { register: RegisterSyncFn, name: Option<&'static str> },
+}
+
+impl RegisteredHandler {
+    #[cfg(feature = "trace")]
+    pub(crate) const fn name(&self) -> Option<&'static str> {
+        match self {
+            Self::Async { name, .. } | Self::Sync { name, .. } => *name,
+        }
+    }
+}
+
+mod private {
+    use crate::registry::ListenerPolicy;
+
+    pub trait SealedHandlerPolicy {
+        #[allow(private_interfaces)]
+        fn into_listener_policy(self) -> ListenerPolicy;
+    }
+}
+
+pub trait HandlerPolicy: Copy + 'static + private::SealedHandlerPolicy {}
+
+impl private::SealedHandlerPolicy for AsyncSubscriptionPolicy {
+    #[allow(private_interfaces)]
+    fn into_listener_policy(self) -> ListenerPolicy {
+        ListenerPolicy::Async(self)
+    }
+}
+
+impl private::SealedHandlerPolicy for SyncSubscriptionPolicy {
+    #[allow(private_interfaces)]
+    fn into_listener_policy(self) -> ListenerPolicy {
+        ListenerPolicy::Sync(self)
+    }
+}
+
+impl HandlerPolicy for AsyncSubscriptionPolicy {}
+
+impl HandlerPolicy for SyncSubscriptionPolicy {}
+
+pub(crate) fn into_listener_policy<P: HandlerPolicy>(policy: P) -> ListenerPolicy {
+    policy.into_listener_policy()
 }
 
 /// Type-erases a concrete handler into the internal representation
@@ -142,9 +195,9 @@ pub(crate) struct RegisteredHandler {
 /// This trait is implemented for:
 /// - Structs implementing [`EventHandler<E>`] (selects [`AsyncMode`]).
 /// - Structs implementing [`SyncEventHandler<E>`] (selects [`SyncMode`]).
-/// - `async fn(E) -> HandlerResult` closures / function pointers (selects
+/// - `async fn(E, EventBus) -> HandlerResult` closures / function pointers (selects
 ///   [`AsyncFnMode`]).
-/// - `fn(&E) -> HandlerResult` closures / function pointers (selects
+/// - `fn(&E, &EventBus) -> HandlerResult` closures / function pointers (selects
 ///   [`SyncFnMode`]).
 ///
 /// The `Mode` type parameter is inferred by the compiler from the concrete
@@ -155,43 +208,52 @@ pub(crate) struct RegisteredHandler {
 #[allow(private_interfaces)]
 pub trait IntoHandler<E: Event, Mode> {
     #[doc(hidden)]
+    type Policy;
+
+    #[doc(hidden)]
+    fn default_policy(defaults: &crate::types::SubscriptionDefaults) -> Self::Policy;
+
+    #[doc(hidden)]
     fn into_handler(self) -> RegisteredHandler;
 }
 
 #[allow(private_interfaces)]
 impl<E, H> IntoHandler<E, AsyncMode> for H
 where
-    E: Event + Clone,
+    E: Event,
     H: EventHandler<E>,
 {
+    type Policy = AsyncSubscriptionPolicy;
+
+    fn default_policy(defaults: &crate::types::SubscriptionDefaults) -> Self::Policy {
+        defaults.policy
+    }
+
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
+        let register: RegisterAsyncFn = Box::new(move |id, subscription_policy, once, bus| {
             let typed_fn: ErasedAsyncHandlerFn = Arc::new(move |event: EventType| {
                 let handler = Arc::clone(&handler);
+                let bus = bus.clone();
                 let event = event.downcast::<E>();
                 Box::pin(async move {
                     let event = event.map_err(|_| "event type mismatch")?;
-                    let event = (*event).clone();
-                    handler.handle(&event).await
+                    handler.handle(&event, &bus).await
                 })
             });
             ListenerEntry {
                 id,
+                registration_order: 0,
                 kind: ListenerKind::Async(typed_fn),
-                subscription_policy,
+                subscription_policy: ListenerPolicy::Async(subscription_policy),
                 name,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
             }
         });
 
-        RegisteredHandler {
-            register,
-            name,
-            is_sync: false,
-        }
+        RegisteredHandler::Async { register, name }
     }
 }
 
@@ -201,31 +263,34 @@ where
     E: Event,
     H: SyncEventHandler<E>,
 {
+    type Policy = SyncSubscriptionPolicy;
+
+    fn default_policy(defaults: &crate::types::SubscriptionDefaults) -> Self::Policy {
+        defaults.sync_policy
+    }
+
     fn into_handler(self) -> RegisteredHandler {
         let name = self.name();
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
+        let register: RegisterSyncFn = Box::new(move |id, subscription_policy, once, bus| {
             let typed_fn: ErasedSyncHandlerFn = Arc::new(move |event: &(dyn std::any::Any + Send + Sync)| {
                 let Some(event) = event.downcast_ref::<E>() else {
                     return Err("event type mismatch".into());
                 };
-                handler.handle(event)
+                handler.handle(event, &bus)
             });
             ListenerEntry {
                 id,
+                registration_order: 0,
                 kind: ListenerKind::Sync(typed_fn),
-                subscription_policy,
+                subscription_policy: ListenerPolicy::Sync(subscription_policy),
                 name,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
             }
         });
 
-        RegisteredHandler {
-            register,
-            name,
-            is_sync: true,
-        }
+        RegisteredHandler::Sync { register, name }
     }
 }
 
@@ -233,32 +298,35 @@ where
 impl<E, F> IntoHandler<E, SyncFnMode> for F
 where
     E: Event,
-    F: Fn(&E) -> HandlerResult + Send + Sync + 'static,
+    F: Fn(&E, &crate::bus::EventBus) -> HandlerResult + Send + Sync + 'static,
 {
+    type Policy = SyncSubscriptionPolicy;
+
+    fn default_policy(defaults: &crate::types::SubscriptionDefaults) -> Self::Policy {
+        defaults.sync_policy
+    }
+
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
+        let register: RegisterSyncFn = Box::new(move |id, subscription_policy, once, bus| {
             let typed_fn: ErasedSyncHandlerFn = Arc::new(move |event: &(dyn std::any::Any + Send + Sync)| {
                 let Some(event) = event.downcast_ref::<E>() else {
                     return Err("event type mismatch".into());
                 };
-                handler(event)
+                handler(event, &bus)
             });
             ListenerEntry {
                 id,
+                registration_order: 0,
                 kind: ListenerKind::Sync(typed_fn),
-                subscription_policy,
+                subscription_policy: ListenerPolicy::Sync(subscription_policy),
                 name: None,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
             }
         });
 
-        RegisteredHandler {
-            register,
-            name: None,
-            is_sync: true,
-        }
+        RegisteredHandler::Sync { register, name: None }
     }
 }
 
@@ -266,36 +334,40 @@ where
 impl<E, F, Fut> IntoHandler<E, AsyncFnMode> for F
 where
     E: Event + Clone,
-    F: Fn(E) -> Fut + Send + Sync + 'static,
+    F: Fn(E, crate::bus::EventBus) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = HandlerResult> + Send + 'static,
 {
+    type Policy = AsyncSubscriptionPolicy;
+
+    fn default_policy(defaults: &crate::types::SubscriptionDefaults) -> Self::Policy {
+        defaults.policy
+    }
+
     fn into_handler(self) -> RegisteredHandler {
         let handler = Arc::new(self);
-        let register: RegisterFn = Box::new(move |id, subscription_policy, once| {
+        let register: RegisterAsyncFn = Box::new(move |id, subscription_policy, once, bus| {
             let typed_fn: ErasedAsyncHandlerFn = Arc::new(move |event: EventType| {
                 let handler = Arc::clone(&handler);
+                let bus = bus.clone();
                 let event = event.downcast::<E>();
                 Box::pin(async move {
                     let event = event.map_err(|_| "event type mismatch")?;
                     let event = (*event).clone();
-                    handler(event).await
+                    handler(event, bus).await
                 })
             });
             ListenerEntry {
                 id,
+                registration_order: 0,
                 kind: ListenerKind::Async(typed_fn),
-                subscription_policy,
+                subscription_policy: ListenerPolicy::Async(subscription_policy),
                 name: None,
                 once,
                 fired: once.then(|| Arc::new(AtomicBool::new(false))),
             }
         });
 
-        RegisteredHandler {
-            register,
-            name: None,
-            is_sync: false,
-        }
+        RegisteredHandler::Async { register, name: None }
     }
 }
 
@@ -326,7 +398,7 @@ where
 /// struct NotifyHandler;
 ///
 /// impl EventHandler<OrderPlaced> for NotifyHandler {
-///     async fn handle(&self, event: &OrderPlaced) -> HandlerResult { Ok(()) }
+///     async fn handle(&self, event: &OrderPlaced, _bus: &EventBus) -> HandlerResult { Ok(()) }
 /// }
 ///
 /// impl HandlerDescriptor for NotifyHandler {
@@ -375,7 +447,7 @@ pub trait HandlerDescriptor: Send + Sync + 'static {
 /// struct LogDeadLetters;
 ///
 /// impl SyncEventHandler<DeadLetter> for LogDeadLetters {
-///     fn handle(&self, dl: &DeadLetter) -> HandlerResult {
+///     fn handle(&self, dl: &DeadLetter, _bus: &EventBus) -> HandlerResult {
 ///         eprintln!("dead letter: {:?}", dl);
 ///         Ok(())
 ///     }

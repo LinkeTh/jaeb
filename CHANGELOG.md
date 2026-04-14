@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-16
+
+### Breaking Changes
+
+- Subscription policy configuration is now mode-specific:
+    - `AsyncSubscriptionPolicy { max_retries, retry_strategy, dead_letter }`
+    - `SyncSubscriptionPolicy { priority, dead_letter }`
+    - `SubscriptionDefaults { policy, sync_policy }`
+- `#[handler]` and `#[event_listener]` now reject `priority` on async handlers with explicit compile-time diagnostics.
+- `EventBusBuilder::default_subscription_policies(...)` and `TestBusBuilder::default_subscription_policies(...)` now replace the old singular
+  default-policy configuration and select async vs sync defaults by handler mode.
+- `EventHandler::handle` now takes `&EventBus` as a second parameter:
+  `fn handle(&self, event: &E, bus: &EventBus) -> impl Future<Output = HandlerResult> + Send`.
+- `SyncEventHandler::handle` now takes `&EventBus` as a second parameter:
+  `fn handle(&self, event: &E, bus: &EventBus) -> HandlerResult`.
+- Sync closure handlers now require the signature `Fn(&E, &EventBus) -> HandlerResult`.
+- Async closure handlers now require the signature `Fn(E, EventBus) -> Fut`.
+- Removed **Once-off subscriptions.** `EventBus::subscribe_once()`
+
+### Changed
+
+- Removed the failure/dead-letter control loop; terminal listener failures are now finalized directly.
+- Async dispatch now spawns one tracked Tokio task per listener invocation instead of routing through per-listener runtimes.
+- Shutdown now stops ingress, drains accepted publish dispatch tasks, and waits for tracked async work before timing out or aborting tasks.
+- Equal-priority listener ordering is now deterministic FIFO by registration order during snapshot rebuilds.
+- `EventBus::subscribe()` now picks defaults by dispatch mode instead of normalizing a catch-all public policy.
+- `BusStats::in_flight_async` now reports tracked in-flight async tasks.
+- `EventBus::is_healthy()` now reflects whether the bus is still running rather than the status of a separate control task.
+- `README.md`, `USAGE.md`, examples, and inline docs were updated to reflect the split async/sync policy model and direct async task spawning.
+
+### Fixed
+
+- `SubscriptionGuard::drop` no longer panics when dropped outside an active Tokio runtime; it only spawns best-effort async cleanup when a runtime
+  handle is available.
+- Fixed a shutdown hang where queued async work could miss job-completion accounting if listener runtime state dropped before the worker finished.
+
+### Added
+
+- Trybuild compile-fail coverage for `jaeb-macros` and `summer-jaeb` macros, including async-priority rejection and invalid handler/dead-letter
+  signatures.
+- Handlers can now publish events, query `stats`, or perform
+  other bus operations directly from inside the handler body via the `bus` parameter.
+- `#[handler]` macro: declare `bus: &EventBus` as an optional parameter in handler
+  functions to receive bus access. Dead-letter handlers (`#[dead_letter_handler]`)
+  cannot use this parameter (compile-time error).
+- `#[event_listener]` macro: same support — declare `bus: &EventBus` alongside
+  `Component<T>` params. Dead-letter listeners cannot use this parameter.
+- `tests/bus_in_handler.rs` — integration tests covering async/sync struct handlers,
+  async/sync closure handlers, and the `#[handler]` macro all using bus access.
+
 ## [0.4.0] - 2026-04-12
 
 ### Added
@@ -23,11 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are a compile-time error.
 - `#[handler]` and `#[dead_letter_handler]` support `Dep<T>` parameters for
   build-time dependency injection.
-  - Supported syntax forms: `Dep(name): Dep<T>` (destructured) and
-    `name: Dep<T>` (plain identifier).
-  - Multiple `Dep<T>` parameters are supported.
-  - Missing dependencies return `EventBusError::MissingDependency` at build
-    time.
+    - Supported syntax forms: `Dep(name): Dep<T>` (destructured) and
+      `name: Dep<T>` (plain identifier).
+    - Multiple `Dep<T>` parameters are supported.
+    - Missing dependencies return `EventBusError::MissingDependency` at build
+      time.
 - `EventBusError::MissingDependency(String)` variant.
 - `tests/builder_handlers.rs` — integration tests for descriptor and DI
   registration.
@@ -548,7 +598,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful `shutdown()` that drains queued messages and waits for in-flight
   async handlers.
 - `EventBus::builder()` with `EventBusBuilder` for fine-grained configuration:
-    - `buffer_size` -- internal channel capacity.
     - `handler_timeout` -- per-invocation timeout; exceeded handlers are treated
       as failures eligible for retry / dead-letter.
     - `max_concurrent_async` -- semaphore-bounded async task concurrency.

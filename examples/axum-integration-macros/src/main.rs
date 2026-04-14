@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use jaeb::{DeadLetter, Dep, Deps, EventBus, HandlerResult, SubscriptionPolicy, dead_letter_handler, handler};
+use jaeb::{DeadLetter, Dep, Deps, EventBus, HandlerResult, SubscriptionDefaults, dead_letter_handler, handler};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -76,7 +76,7 @@ struct AppState {
     mailer: Arc<Mailer>,
 }
 
-#[handler(retries = 2, dead_letter = true, priority = 20, name = "notification")]
+#[handler(retries = 2, dead_letter = true, name = "notification")]
 async fn notify_customer(event: &OrderCreated, Dep(mailer): Dep<Arc<Mailer>>) -> HandlerResult {
     tokio::time::sleep(Duration::from_millis(10)).await;
     mailer.send(&event.customer_email, &format!("Order {} confirmed", event.order_id));
@@ -88,7 +88,7 @@ async fn notify_customer(event: &OrderCreated, Dep(mailer): Dep<Arc<Mailer>>) ->
     Ok(())
 }
 
-#[handler(retries = 1, dead_letter = true, priority = 10, name = "inventory")]
+#[handler(retries = 1, dead_letter = true, name = "inventory")]
 async fn project_inventory(event: &OrderCreated, db: Dep<Arc<DbPool>>) -> HandlerResult {
     tokio::time::sleep(Duration::from_millis(5)).await;
     db.0.update_inventory(&event.order_id);
@@ -131,9 +131,8 @@ async fn main() {
     let mailer = Arc::new(Mailer);
 
     let bus = EventBus::builder()
-        .buffer_size(256)
         .max_concurrent_async(64)
-        .default_subscription_policy(SubscriptionPolicy::default().with_priority(0))
+        .default_subscription_policies(SubscriptionDefaults::default())
         .handler(notify_customer)
         .handler(project_inventory)
         .handler(append_audit)
@@ -178,7 +177,7 @@ async fn main() {
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let bus_healthy = state.bus.is_healthy().await;
+    let bus_healthy = state.bus.is_healthy();
     let db_connected = state.db.is_connected();
     let mailer_available = state.mailer.is_available();
     let healthy = bus_healthy && db_connected && mailer_available;
@@ -192,9 +191,7 @@ async fn stats(State(state): State<AppState>) -> impl IntoResponse {
                 "total_subscriptions": stats.total_subscriptions,
                 "registered_event_types": stats.registered_event_types,
                 "in_flight_async": stats.in_flight_async,
-                "queue_capacity": stats.queue_capacity,
-                "publish_permits_available": stats.publish_permits_available,
-                "publish_in_flight": stats.publish_in_flight,
+                "dispatches_in_flight": stats.dispatches_in_flight,
                 "shutdown_called": stats.shutdown_called,
             });
             (StatusCode::OK, Json(body)).into_response()

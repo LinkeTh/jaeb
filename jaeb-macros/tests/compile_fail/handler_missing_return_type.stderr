@@ -1,0 +1,5 @@
+error: #[handler] function must have an explicit return type (-> HandlerResult)
+ --> tests/compile_fail/handler_missing_return_type.rs:9:1
+  |
+9 | async fn on_event(event: &MyEvent) {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

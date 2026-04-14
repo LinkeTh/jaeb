@@ -57,9 +57,6 @@ impl Default for SimConfig {
 
 impl SimConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.bus.buffer_size == 0 {
-            return Err("Buffer size must be > 0".into());
-        }
         if self.event_types.is_empty() {
             return Err("At least 1 event type required".into());
         }
@@ -156,7 +153,6 @@ impl fmt::Display for PublishPattern {
 
 #[derive(Clone, Debug)]
 pub struct BusConfigForm {
-    pub buffer_size: usize,
     pub handler_timeout_ms: u64,
     pub max_concurrent_async: usize,
     pub shutdown_timeout_ms: u64,
@@ -165,7 +161,6 @@ pub struct BusConfigForm {
 impl Default for BusConfigForm {
     fn default() -> Self {
         Self {
-            buffer_size: 256,
             handler_timeout_ms: 0,
             max_concurrent_async: 0,
             shutdown_timeout_ms: 3000,

@@ -1,8 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jaeb::{EventBus, EventHandler, HandlerResult, SubscriptionPolicy, SyncEventHandler, SyncSubscriptionPolicy};
+use jaeb::{AsyncSubscriptionPolicy, EventBus, HandlerResult, SubscriptionDefaults, SyncEventHandler, SyncSubscriptionPolicy};
 
 #[derive(Clone)]
 struct PriorityEvent;
@@ -13,22 +12,7 @@ struct OrderedSync {
 }
 
 impl SyncEventHandler<PriorityEvent> for OrderedSync {
-    fn handle(&self, _event: &PriorityEvent) -> HandlerResult {
-        let mut guard = self.order.lock().expect("lock order");
-        guard.push(self.id);
-        Ok(())
-    }
-}
-
-struct OrderedAsync {
-    id: usize,
-    order: Arc<Mutex<Vec<usize>>>,
-    hits: Arc<AtomicUsize>,
-}
-
-impl EventHandler<PriorityEvent> for OrderedAsync {
-    async fn handle(&self, _event: &PriorityEvent) -> HandlerResult {
-        self.hits.fetch_add(1, Ordering::SeqCst);
+    fn handle(&self, _event: &PriorityEvent, _bus: &EventBus) -> HandlerResult {
         let mut guard = self.order.lock().expect("lock order");
         guard.push(self.id);
         Ok(())
@@ -37,7 +21,7 @@ impl EventHandler<PriorityEvent> for OrderedAsync {
 
 #[tokio::test]
 async fn sync_priority_orders_high_to_low() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let order = Arc::new(Mutex::new(Vec::new()));
 
     let low = SyncSubscriptionPolicy::default().with_priority(-10);
@@ -86,7 +70,7 @@ async fn sync_priority_orders_high_to_low() {
 
 #[tokio::test]
 async fn sync_equal_priority_keeps_fifo_order() {
-    let bus = EventBus::builder().buffer_size(64).build().await.expect("valid config");
+    let bus = EventBus::builder().build().await.expect("valid config");
     let order = Arc::new(Mutex::new(Vec::new()));
 
     let p = SyncSubscriptionPolicy::default().with_priority(7);
@@ -132,57 +116,39 @@ async fn sync_equal_priority_keeps_fifo_order() {
 }
 
 #[tokio::test]
-async fn async_priority_orders_spawn_sequence() {
+async fn subscribe_uses_sync_defaults_for_sync_handlers() {
     let bus = EventBus::builder()
-        .buffer_size(64)
-        .max_concurrent_async(1)
+        .default_subscription_policies(SubscriptionDefaults {
+            policy: AsyncSubscriptionPolicy::default(),
+            sync_policy: SyncSubscriptionPolicy::default().with_priority(10),
+        })
         .build()
         .await
         .expect("valid config");
-
     let order = Arc::new(Mutex::new(Vec::new()));
-    let hits = Arc::new(AtomicUsize::new(0));
 
     let _ = bus
         .subscribe_with_policy::<PriorityEvent, _, _>(
-            OrderedAsync {
+            OrderedSync {
                 id: 1,
                 order: Arc::clone(&order),
-                hits: Arc::clone(&hits),
             },
-            SubscriptionPolicy::default().with_priority(-1),
+            SyncSubscriptionPolicy::default().with_priority(-10),
         )
         .await
-        .expect("subscribe low");
+        .expect("subscribe 1");
 
     let _ = bus
-        .subscribe_with_policy::<PriorityEvent, _, _>(
-            OrderedAsync {
-                id: 2,
-                order: Arc::clone(&order),
-                hits: Arc::clone(&hits),
-            },
-            SubscriptionPolicy::default().with_priority(20),
-        )
+        .subscribe::<PriorityEvent, _, _>(OrderedSync {
+            id: 2,
+            order: Arc::clone(&order),
+        })
         .await
-        .expect("subscribe high");
-
-    let _ = bus
-        .subscribe_with_policy::<PriorityEvent, _, _>(
-            OrderedAsync {
-                id: 3,
-                order: Arc::clone(&order),
-                hits: Arc::clone(&hits),
-            },
-            SubscriptionPolicy::default().with_priority(0),
-        )
-        .await
-        .expect("subscribe mid");
+        .expect("subscribe 2");
 
     bus.publish(PriorityEvent).await.expect("publish");
     bus.shutdown().await.expect("shutdown");
 
-    assert_eq!(hits.load(Ordering::SeqCst), 3);
     let got = order.lock().expect("lock order").clone();
-    assert_eq!(got, vec![2, 3, 1]);
+    assert_eq!(got, vec![2, 1]);
 }

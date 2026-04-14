@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use crate::bus::{EventBus, EventBusBuilder};
 use crate::error::EventBusError;
 use crate::handler::SyncEventHandler;
-use crate::types::{Event, SubscriptionPolicy};
+use crate::types::{Event, SubscriptionDefaults};
 
 type AnyBuffer = Arc<Mutex<Vec<Box<dyn Any + Send + Sync>>>>;
 
@@ -86,7 +86,7 @@ impl TestBus {
         }
 
         impl<E: Event + Clone + Send + Sync + 'static> SyncEventHandler<E> for CaptureHandler<E> {
-            fn handle(&self, event: &E) -> crate::error::HandlerResult {
+            fn handle(&self, event: &E, _bus: &EventBus) -> crate::error::HandlerResult {
                 let cloned: Box<dyn Any + Send + Sync> = Box::new(event.clone());
                 self.buffer.lock().expect("capture buffer lock poisoned").push(cloned);
                 Ok(())
@@ -167,12 +167,6 @@ pub struct TestBusBuilder {
 }
 
 impl TestBusBuilder {
-    /// See [`EventBusBuilder::buffer_size`].
-    pub fn buffer_size(mut self, size: usize) -> Self {
-        self.inner = self.inner.buffer_size(size);
-        self
-    }
-
     /// See [`EventBusBuilder::handler_timeout`].
     pub fn handler_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.inner = self.inner.handler_timeout(timeout);
@@ -191,9 +185,9 @@ impl TestBusBuilder {
         self
     }
 
-    /// See [`EventBusBuilder::default_subscription_policy`].
-    pub fn default_subscription_policy(mut self, policy: SubscriptionPolicy) -> Self {
-        self.inner = self.inner.default_subscription_policy(policy);
+    /// See [`EventBusBuilder::default_subscription_policies`].
+    pub fn default_subscription_policies(mut self, defaults: SubscriptionDefaults) -> Self {
+        self.inner = self.inner.default_subscription_policies(defaults);
         self
     }
 

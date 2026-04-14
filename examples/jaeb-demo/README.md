@@ -14,17 +14,17 @@ Metrics are exposed at `http://localhost:3000/metrics`. Override log verbosity w
 
 ## What it demonstrates
 
-| Concept | Where |
-|---|---|
-| Async handler with transient failure + retry | `OnOrderCheckout` — fails on attempt 1, succeeds on retry |
-| Sync handler (serialized FIFO lane) | `OnOrderCancelled` |
-| Multiple handlers for the same event | `OnOrderCheckout` + `CheckoutLogger` both handle `OrderCheckOutEvent` |
-| Dead-letter pipeline | `OnPaymentFailed` always fails → after 2 retries, `DeadLetterLogger` receives the dead letter |
-| Custom handler names | `fn name()` on each handler struct for tracing/metrics labels |
-| `SubscriptionPolicy` builder | `with_max_retries`, `with_retry_strategy`, `with_dead_letter` |
-| Graceful shutdown | `bus.shutdown().await` drains in-flight async tasks |
-| Prometheus metrics | Counter, histogram, and dead-letter metrics via `metrics-exporter-prometheus` |
-| Structured tracing | `tracing-subscriber` with env-filter and per-thread IDs |
+| Concept                                      | Where                                                                                         |
+|----------------------------------------------|-----------------------------------------------------------------------------------------------|
+| Async handler with transient failure + retry | `OnOrderCheckout` — fails on attempt 1, succeeds on retry                                     |
+| Sync handler (serialized FIFO lane)          | `OnOrderCancelled`                                                                            |
+| Multiple handlers for the same event         | `OnOrderCheckout` + `CheckoutLogger` both handle `OrderCheckOutEvent`                         |
+| Dead-letter pipeline                         | `OnPaymentFailed` always fails → after 2 retries, `DeadLetterLogger` receives the dead letter |
+| Custom handler names                         | `fn name()` on each handler struct for tracing/metrics labels                                 |
+| `AsyncSubscriptionPolicy` builder            | `with_max_retries`, `with_retry_strategy`, `with_dead_letter`                                 |
+| Graceful shutdown                            | `bus.shutdown().await` drains in-flight async tasks                                           |
+| Prometheus metrics                           | Counter, histogram, and dead-letter metrics via `metrics-exporter-prometheus`                 |
+| Structured tracing                           | `tracing-subscriber` with env-filter and per-thread IDs                                       |
 
 ## Event flow
 

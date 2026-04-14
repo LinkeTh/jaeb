@@ -35,7 +35,7 @@ curl -X POST http://localhost:8080/orders/42/ship
 | Dead-letter listener (auto-detected)  | `on_dead_letter` — macro infers `subscribe_dead_letters()` from the `DeadLetter` event type |
 | Component injection (`Component<T>`)  | `on_order_placed` receives a `DbPool` resolved from summer's DI registry                    |
 | Plugin dependency ordering            | `.with_dependency("DbPoolPlugin")` ensures `DbPool` is registered before listener wiring    |
-| TOML configuration                    | `config/app.toml` sets `buffer_size`, `handler_timeout_secs`, and web port                  |
+| TOML configuration                    | `config/app.toml` sets `handler_timeout_secs` and web port                                   |
 | HTTP endpoints publishing events      | `place_order` and `ship_order` inject `EventBus` via `WebComponent<EventBus>`               |
 | OpenAPI schema generation             | `JsonSchema` derive on request/response types, docs at `/docs`                              |
 

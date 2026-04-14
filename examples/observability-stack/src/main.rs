@@ -12,7 +12,7 @@ mod telemetry;
 
 use std::time::Duration;
 
-use jaeb::{EventBus, RetryStrategy, SubscriptionPolicy};
+use jaeb::{AsyncSubscriptionPolicy, EventBus, RetryStrategy};
 use tokio::sync::watch;
 use tracing::info;
 
@@ -34,7 +34,6 @@ async fn main() {
 
     // ── Event bus ──────────────────────────────────────────────────────────
     let bus = EventBus::builder()
-        .buffer_size(256)
         .shutdown_timeout(Duration::from_secs(5))
         .build()
         .await
@@ -47,7 +46,7 @@ async fn main() {
     let _ = bus.subscribe(OrderEmailHandler).await.expect("subscribe failed");
 
     // PaymentProcessed: flaky ledger handler with retries + dead-letter.
-    let retry_policy = SubscriptionPolicy::default()
+    let retry_policy = AsyncSubscriptionPolicy::default()
         .with_max_retries(2)
         .with_retry_strategy(RetryStrategy::ExponentialWithJitter {
             base: Duration::from_millis(50),
@@ -66,7 +65,7 @@ async fn main() {
     let _ = bus.subscribe(WarehouseNotifier).await.expect("subscribe failed");
 
     // FraudCheckFailed: always-failing handler with dead-letter.
-    let fraud_policy = SubscriptionPolicy::default().with_max_retries(1).with_dead_letter(true);
+    let fraud_policy = AsyncSubscriptionPolicy::default().with_max_retries(1).with_dead_letter(true);
     let _ = bus
         .subscribe_with_policy(FraudAlertHandler, fraud_policy)
         .await
