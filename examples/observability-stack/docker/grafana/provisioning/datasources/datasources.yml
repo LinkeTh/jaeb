@@ -21,9 +21,11 @@ datasources:
     jsonData:
       derivedFields:
         - datasourceUid: tempo
-          matcherRegex: "trace_id=(\\w+)"
-          name: TraceID
-          url: "$${__value.raw}"
+          matcherType: label
+          matcherRegex: trace_id
+          name: trace
+          url: '$${__value.raw}'
+          urlDisplayLabel: 'View trace'
 
   - name: Tempo
     type: tempo
@@ -33,10 +35,13 @@ datasources:
     jsonData:
       tracesToLogsV2:
         datasourceUid: loki
+        filterByTraceID: true
+        filterBySpanID: false
         spanStartTimeShift: "-1m"
         spanEndTimeShift: "1m"
         tags:
-          - key: "app"
+          - key: "service.name"
+            value: "service_name"
       serviceMap:
         datasourceUid: prometheus
       nodeGraph:

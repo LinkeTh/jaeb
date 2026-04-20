@@ -9,15 +9,12 @@ volumes:
   grafana_data: { }
 
 services:
-
-  # ── Rust app ─────────────────────────────────────────────────────────────
   app:
     build:
       context: ../../..
       dockerfile: examples/observability-stack/Dockerfile
     environment:
-      LOKI_URL: "http://loki:3100"
-      OTLP_ENDPOINT: "http://tempo:4317"
+      OTLP_ENDPOINT: "http://collector:4317"
       PROMETHEUS_PORT: "3000"
       TICK_MS: "400"
       RUST_LOG: "info,jaeb=debug"
@@ -25,13 +22,31 @@ services:
       - "3000:3000"
     networks: [ obs ]
     depends_on:
+      collector:
+        condition: service_healthy
+    restart: on-failure
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./otelcol/otelcol-config.yml:/etc/otelcol/config.yml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    networks: [ obs ]
+    depends_on:
       loki:
         condition: service_healthy
       tempo:
         condition: service_healthy
-    restart: on-failure
+    healthcheck:
+      test: [ "CMD", "/otelcol-contrib", "--version" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
-  # ── Prometheus ────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v3.3.1
     volumes:
@@ -53,7 +68,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Loki ──────────────────────────────────────────────────────────────────
   loki:
     image: grafana/loki:3.4.2
     volumes:
@@ -69,7 +83,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── Tempo ─────────────────────────────────────────────────────────────────
   tempo:
     image: grafana/tempo:2.7.2
     volumes:
@@ -77,9 +90,7 @@ services:
       - tempo_data:/var/tempo
     command: -config.file=/etc/tempo/tempo-config.yml
     ports:
-      - "3200:3200"   # Tempo HTTP query API
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
+      - "3200:3200"
     networks: [ obs ]
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:3200/ready" ]
@@ -87,7 +98,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── Grafana ───────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:11.6.1
     volumes:
@@ -104,9 +114,7 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
-      loki:
-        condition: service_healthy
-      tempo:
+      collector:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://localhost:3000/api/health" ]

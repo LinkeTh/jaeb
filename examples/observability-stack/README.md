@@ -5,8 +5,8 @@ A full-stack observability example for [jaeb](../../README.md) using Docker Comp
 Demonstrates:
 
 - **Metrics** — Prometheus pull endpoint + pre-built Grafana dashboard
-- **Distributed tracing** — spans exported via OTLP gRPC to Grafana Tempo
-- **Structured logs** — pushed directly to Grafana Loki via `tracing-loki` (no Promtail)
+- **Distributed tracing** — spans exported via OTLP gRPC to an OpenTelemetry Collector, then forwarded to Grafana Tempo
+- **Structured logs** — tracing events exported as OTLP logs to the collector, then forwarded to Grafana Loki
 - **Automatic span propagation** — jaeb's `trace` feature captures `Span::current()` at publish time and instruments every async handler future; no
   event payload changes required
 
@@ -16,6 +16,8 @@ Demonstrates:
 |------------|---------------------------------|----------------------------|
 | Grafana    | <http://localhost:3001>         | admin / admin              |
 | Prometheus | <http://localhost:9090>         |                            |
+| Collector  | `localhost:4317`                | OTLP gRPC ingest           |
+| Collector health | <http://localhost:13133>   | Collector readiness        |
 | Loki       | <http://localhost:3100>         | HTTP API                   |
 | Tempo      | <http://localhost:3200>         | HTTP query API             |
 | App        | <http://localhost:3000/metrics> | Prometheus scrape endpoint |
@@ -51,7 +53,7 @@ The `jaeb Overview` dashboard has four rows:
 Trace-to-metrics correlation is handled by Tempo's `metrics_generator` and Grafana datasource cross-linking. To explore a trace:
 
 1. Open **Explore** → select the **Loki** datasource.
-2. Query `{app="observability-stack"}` and find a log line with a `trace_id` field.
+2. Query `{service_name="observability-stack"}` and expand a log line's fields.
 3. Click the **Tempo** link next to the trace ID to open the span waterfall.
 
 ## Simulation
@@ -73,8 +75,7 @@ All options are set via environment variables. Defaults are suitable for the Doc
 
 | Variable          | Default                 | Description                                      |
 |-------------------|-------------------------|--------------------------------------------------|
-| `LOKI_URL`        | `http://localhost:3100` | Loki push endpoint                               |
-| `OTLP_ENDPOINT`   | `http://localhost:4317` | Tempo OTLP gRPC receiver                         |
+| `OTLP_ENDPOINT`   | `http://localhost:4317` | Collector OTLP gRPC receiver                     |
 | `PROMETHEUS_PORT` | `3000`                  | Port for the `/metrics` scrape endpoint          |
 | `TICK_MS`         | `500`                   | Base tick interval in milliseconds (±50% jitter) |
 | `RUST_LOG`        | `info,jaeb=debug`       | `tracing` filter directive                       |
@@ -88,8 +89,8 @@ You can run the app binary directly against local instances of the backends:
 cargo run -p observability-stack
 ```
 
-You will need Loki, Tempo, and Prometheus reachable at their default localhost ports,
-or override `LOKI_URL` / `OTLP_ENDPOINT` / `PROMETHEUS_PORT` as needed.
+You will need the Collector, Loki, Tempo, and Prometheus reachable at their default localhost ports,
+or override `OTLP_ENDPOINT` / `PROMETHEUS_PORT` as needed.
 
 ## Stopping
 

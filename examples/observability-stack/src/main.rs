@@ -21,14 +21,13 @@ use handlers::*;
 #[tokio::main]
 async fn main() {
     // ── Read config from env (with sane defaults for local dev) ────────────
-    let loki_url = std::env::var("LOKI_URL").unwrap_or_else(|_| "http://localhost:3100".into());
     let otlp_url = std::env::var("OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4317".into());
     let prom_port: u16 = std::env::var("PROMETHEUS_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
     let tick_ms: u64 = std::env::var("TICK_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
 
     // ── Telemetry ──────────────────────────────────────────────────────────
     telemetry::init_prometheus(prom_port);
-    let tel = telemetry::init_tracing(&loki_url, &otlp_url).await;
+    let tel = telemetry::init_tracing(&otlp_url).await;
 
     info!("observability-stack starting");
 
