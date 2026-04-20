@@ -221,21 +221,17 @@ fn expand_handler(attrs: HandlerAttrs, func: ItemFn) -> syn::Result<TokenStream2
 
     if let Some(ref strategy) = attrs.retry_strategy {
         match strategy.as_str() {
-            "exponential" | "exponential_jitter" => {
-                if attrs.retry_base_ms.is_none() || attrs.retry_max_ms.is_none() {
-                    return Err(syn::Error::new_spanned(
-                        &func.sig,
-                        format!("`retry_strategy = \"{strategy}\"` requires both `retry_base_ms` and `retry_max_ms`"),
-                    ));
-                }
+            "exponential" | "exponential_jitter" if attrs.retry_base_ms.is_none() || attrs.retry_max_ms.is_none() => {
+                return Err(syn::Error::new_spanned(
+                    &func.sig,
+                    format!("`retry_strategy = \"{strategy}\"` requires both `retry_base_ms` and `retry_max_ms`"),
+                ));
             }
-            "fixed" => {
-                if attrs.retry_base_ms.is_none() {
-                    return Err(syn::Error::new_spanned(
-                        &func.sig,
-                        "`retry_strategy = \"fixed\"` requires `retry_base_ms`",
-                    ));
-                }
+            "fixed" if attrs.retry_base_ms.is_none() => {
+                return Err(syn::Error::new_spanned(
+                    &func.sig,
+                    "`retry_strategy = \"fixed\"` requires `retry_base_ms`",
+                ));
             }
             _ => {}
         }
