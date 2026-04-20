@@ -73,7 +73,6 @@ use jaeb::{
     AsyncSubscriptionPolicy, DeadLetter, EventBus, EventBusError, EventHandler, HandlerResult, RetryStrategy, SyncEventHandler,
 };
 
-#[derive(Clone)]
 struct OrderCheckoutEvent {
     order_id: i64,
 }
@@ -235,7 +234,7 @@ use summer::extractor::Component;
 use summer::plugin::{MutableComponentRegistry, Plugin};
 use summer_jaeb::{SummerJaeb, event_listener};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OrderPlacedEvent {
     order_id: u32,
 }
@@ -318,7 +317,7 @@ Register it via `EventBusBuilder::dead_letter`.
 use std::time::Duration;
 use jaeb::{DeadLetter, EventBus, HandlerResult, dead_letter_handler, handler};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Payment {
     id: u32,
 }
@@ -358,10 +357,8 @@ async fn main() -> Result<(), jaeb::EventBusError> {
 use std::sync::Arc;
 use jaeb::{Dep, Deps, EventBus, HandlerResult, handler};
 
-#[derive(Clone)]
 struct AuditLog;
 
-#[derive(Clone)]
 struct Payment;
 
 #[handler]
@@ -392,7 +389,7 @@ async fn main() -> Result<(), jaeb::EventBusError> {
 ## Notes
 
 - JAEB requires a running Tokio runtime.
-- Events published through JAEB must be `Send + Sync + 'static + Clone`.
+- Events published through JAEB must be `Send + Sync + 'static`.
 - The crate enforces `#![forbid(unsafe_code)]`.
 
 ## License

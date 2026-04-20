@@ -13,17 +13,17 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 // ── Events ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OrderCheckOutEvent {
     order_id: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct OrderCancelledEvent {
     order_id: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct PaymentFailedEvent {
     order_id: i32,
 }
