@@ -605,6 +605,55 @@
         "x": 0,
         "y": 35
       },
+      "id": 104,
+      "title": "Recent Errors & Dead Letters",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 12,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "builder",
+          "expr": "{service_name=\"observability-stack\"} |= \"dead letter received\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Errors & Dead Letters",
+      "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
       "id": 103,
       "title": "System Health",
       "type": "row"
@@ -636,7 +685,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 45
       },
       "id": 10,
       "options": {
@@ -695,7 +744,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 45
       },
       "id": 11,
       "options": {
@@ -767,5 +816,5 @@
   "timezone": "",
   "title": "jaeb Overview",
   "uid": "jaeb-overview",
-  "version": 2
+  "version": 3
 }

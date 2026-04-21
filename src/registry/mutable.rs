@@ -34,7 +34,7 @@ impl MutableTypeSlot {
                 .cmp(&a.subscription_policy.priority)
                 .then_with(|| a.registration_order.cmp(&b.registration_order))
         });
-        async_listeners.sort_by(|a, b| a.registration_order.cmp(&b.registration_order));
+        async_listeners.sort_by_key(|a| a.registration_order);
 
         for middleware in &self.middlewares {
             if matches!(middleware.middleware, TypedMiddlewareEntry::Async(_)) {
